@@ -260,7 +260,7 @@ const codexFooter = (line: string): boolean => isComposerFooter(line)
 
 /** Preserve faint styling so autocomplete ghosts can be separated from authored
  * text. Color channel values must never be interpreted as style codes. */
-function styledLines(screen: string) {
+function styledTextLines(screen: string) {
   let faint = false;
   return screen.replace(/\r\n/g, "\n").split("\n").map(raw => {
     let text = "", offset = 0;
@@ -296,7 +296,7 @@ export function inspectComposerInput(snapshot: ComposerSnapshot | null, runtime:
   if (!snapshot || snapshot.inMode) return unknown();
   const { x, y, width, height } = snapshot.cursor;
   if (![x, y, width, height].every(Number.isInteger) || x < 0 || y < 0 || x >= width || y >= height || width < 3 || height < 1) return unknown();
-  const styled = styledLines(snapshot.screen);
+  const styled = styledTextLines(snapshot.screen);
   const lines = styled.map(line => line.text);
   if (lines.at(-1) === "") lines.pop();
   if (lines.length > height || !lines[y]) return unknown();
@@ -489,7 +489,7 @@ export function classifyPaneActivity(paneContent: string, options: ClassifyPaneO
   if (options.composerSnapshot) {
     const snapshot = options.composerSnapshot;
     const { ghost } = inspectComposerInput(snapshot, options.runtime);
-    const lines = styledLines(snapshot.screen).map(line => line.text);
+    const lines = styledTextLines(snapshot.screen).map(line => line.text);
     if (ghost) {
       lines[ghost.line] = lines[ghost.line]!.slice(0, ghost.offset);
       lines.splice(ghost.line + 1, ghost.continuationRows);
