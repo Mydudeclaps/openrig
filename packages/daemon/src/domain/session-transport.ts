@@ -2237,7 +2237,10 @@ export class SessionTransport {
       const preTarget = guard.maybeTarget(sessionName);
       if (!preTarget) return null;
       const prePref = guard.preference(preTarget.nodeId);
-      if (prePref.effective || prePref.desired) return null;
+      // Hold mode retains in the lease, and draft-aware mode reads the input there first and returns its
+      // immediate result (held, or refused with its reason): neither takes the lease-free wait. A
+      // draft-aware send whose input is empty waits for idle inside the lease, as before this wait existed.
+      if (prePref.effective || prePref.desired || prePref.desiredMode === "draft-aware" || prePref.effectiveMode === "draft-aware") return null;
       meta = this.getSessionMeta(sessionName);
       bound = guard.target(sessionName);
     } catch {
