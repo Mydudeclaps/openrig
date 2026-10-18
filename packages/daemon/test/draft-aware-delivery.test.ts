@@ -30,12 +30,12 @@ function signal() {
   return { ready: new Promise<void>(resolve => { release = resolve; }), release: () => release() };
 }
 
-function fixture(saved?: Buffer) {
+function fixture(saved?: Buffer, opts: { runtime?: string; idleHook?: boolean } = {}) {
   const db = new Database(saved ?? ":memory:");
   if (!saved) {
     migrate(db, ALL_MIGRATIONS);
     db.exec(`INSERT INTO rigs(id,name) VALUES ('rig','test');
-      INSERT INTO nodes(id,rig_id,logical_id,runtime) VALUES ('a','rig','worker','terminal'),('b','rig','sibling','terminal');
+      INSERT INTO nodes(id,rig_id,logical_id,runtime) VALUES ('a','rig','worker','${opts.runtime ?? "terminal"}'),('b','rig','sibling','terminal');
       INSERT INTO bindings(id,node_id,tmux_session,tmux_pane) VALUES ('ba','a','worker@test','%1'),('bb','b','sibling@test','%2');
       INSERT INTO sessions(id,node_id,session_name,status) VALUES ('sa','a','worker@test','running'),('sb','b','sibling@test','running');
       INSERT INTO occupant_tenures(id,node_id,generation_ordinal,generation_uuid,kind) VALUES ('ga','a',1,'g1','fresh'),('gb','b',1,'g2','fresh');`);
@@ -75,7 +75,8 @@ function fixture(saved?: Buffer) {
   let at = Date.now();
   const rigRepo = new RigRepository(db), sessionRegistry = new SessionRegistry(db), outbox = new OutboxHandler(db);
   const transport = new SessionTransport({ db, tmuxAdapter: tmux, rigRepo, sessionRegistry, now: () => new Date(at), sleep: async ms => { await hooks.sleep?.(ms); },
-    agentActivityStore: { getLatestForNode: () => ({ state: "idle", reason: "fixture idle hook", evidenceSource: "runtime_hook", sampledAt: new Date(at).toISOString(), evidence: null }) } as never });
+    agentActivityStore: { getLatestForNode: () => opts.idleHook === false ? null
+      : ({ state: "idle", reason: "fixture idle hook", evidenceSource: "runtime_hook", sampledAt: new Date(at).toISOString(), evidence: null }) } as never });
   const guarded = transport.guardedDelivery!;
   const repo = new QueueRepository(db, new EventBus(db), { transport, loadHumanRegistry: () => ({ ok: true, entities: [], warnings: [] }) });
   repo.attachOutbox(outbox);
@@ -120,6 +121,28 @@ describe("single-attempt draft-aware delivery through the real transport", () =>
     await f.send("not-confirmed");
     expect(f.outbox.getById("not-confirmed")!.deliveryState).toBe("indeterminate");
     expect(f.submissions).toHaveLength(1);
+  });
+
+  // With no authoritative idle hook, a Claude seat's readiness comes from its screen, so the lease-free idle wait would read a draft as
+  // needs-input, or an unreadable screen as unknown until the deadline, before the draft-aware check ran. A draft-aware seat keeps the
+  // check's immediate result instead.
+  it.each(["draft", "unknown"])("a Claude seat with no idle hook returns the exact %s refusal and original ID immediately with wait-for-idle", async condition => {
+    const f = fixture(undefined, { runtime: "claude-code", idleHook: false }); await f.enable();
+    f.bodies.a = condition === "unknown" ? null : "unfinished human request";
+    const reason = condition === "unknown" ? "draft_input_unknown" : "draft_input_busy";
+    const sleep = vi.fn((ms: number) => f.advance(ms)); f.hooks.sleep = sleep; // a wait, if any, reaches its deadline
+    expect(await f.send("held-claude", "incoming message", { waitForIdleMs: 60000, verify: false })).toMatchObject({
+      outcome: "retained", sent: false, reason, outboxIds: ["held-claude"], delivery: { state: "held", reason },
+    });
+    expect(sleep).not.toHaveBeenCalled();
+    expect(f.writes).toEqual([]);
+    expect(f.outbox.getById("held-claude")).toMatchObject({ body: "incoming message", deliveryState: "retained" });
+  });
+
+  it("a Claude seat with no idle hook and an empty input box takes a wait-for-idle send once", async () => {
+    const f = fixture(undefined, { runtime: "claude-code", idleHook: false }); await f.enable();
+    expect(await f.send("empty-claude", "incoming message", { waitForIdleMs: 60000, verify: false })).toMatchObject({ ok: true, sent: true });
+    expect(f.submissions).toEqual(["incoming message"]);
   });
 
   it.each(["draft", "unknown"])("returns the exact %s refusal and original ID immediately, including with wait-for-idle", async condition => {
