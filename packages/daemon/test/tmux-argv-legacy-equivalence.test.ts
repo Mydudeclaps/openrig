@@ -72,6 +72,11 @@ function recordingAdapter(calls: RunCall[], opts: { failing?: string[]; guard?: 
       input: (_name: string, fn: () => Promise<unknown>) => fn(),
       operation: (_name: string, fn: () => Promise<unknown>) => fn(),
       humanInput: (_name: string, fn: () => Promise<unknown>) => fn(),
+      // The draft-aware hooks (#1072); off here, so input takes the same path as without them.
+      attachInputInspection: () => {},
+      needsInputCheck: () => false,
+      beforeInput: async () => {},
+      notePasted: async () => {},
     } as unknown as SeatDeliveryGuard;
   }
   const self = adapter as unknown as { run: (argv: string[], legacy?: string) => Promise<string> };
