@@ -1225,7 +1225,7 @@ bundleRoutes.post("/install", async (c) => {
       });
       if (result.status === "planned") {
         eventBus.emit({ type: "bootstrap.planned", runId: result.runId, sourceRef: bundlePath, stages: result.stages.length });
-        return c.json({ ...result, ...(installMeta.warnings ? { warnings: [...new Set([...installMeta.warnings, ...(result.warnings ?? [])])] } : {}) }, 200);
+        return c.json({ ...result, ...(installMeta.warnings ? { warnings: [...installMeta.warnings.filter(w => !result.warnings?.includes(w)), ...(result.warnings ?? [])] } : {}) }, 200);
       }
       // Plan failed — structured mapping (same as bootstrap plan route)
       eventBus.emit({ type: "bootstrap.failed", runId: result.runId, sourceRef: bundlePath, error: result.errors[0] ?? "plan failed" });
@@ -1258,7 +1258,8 @@ bundleRoutes.post("/install", async (c) => {
       const routing: BundleContentRouting | undefined = bundleRouting
         ?? (result.status === "completed" ? await bootstrapOrchestrator.routeBundleContents(bundlePath) : undefined);
       // The hook already put its failures in warnings; the legacy fallback adds its own here.
-      const warnings = [...new Set([...(installMeta.warnings ?? []), ...(result.warnings ?? []), ...(bundleRouting ? [] : routingFailureWarnings(routing))])];
+      const warnings = [...(result.warnings ?? []), ...(bundleRouting ? [] : routingFailureWarnings(routing))];
+      warnings.unshift(...(installMeta.warnings ?? []).filter(w => !warnings.includes(w)));
       const responseBody = routing ? { ...bootstrapResult, ...routing, warnings } : { ...bootstrapResult, warnings };
       if (result.status === "completed") {
         eventBus.emit({ type: "bootstrap.completed", runId: result.runId, rigId: result.rigId!, sourceRef: bundlePath });

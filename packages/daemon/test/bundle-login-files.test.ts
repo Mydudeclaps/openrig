@@ -210,4 +210,13 @@ describe("known harness login paths in selected bundle content", () => {
     expect(manifest.included_login_files).toEqual(LOGIN_FILES.map(file => `packages/pkg/nested/${file}`).sort());
   });
 
+  it("ordinary install warnings retain their existing order and duplicates", async () => {
+    const f = await existingArchive(root, ["auth.json"]);
+    vi.spyOn(harness.bootstrapOrchestrator, "bootstrap").mockResolvedValue({ status: "completed", runId: "fixture", rigId: "fixture-rig", stages: [], warnings: ["ordinary warning", "ordinary warning"] } as never);
+    vi.spyOn(harness.bootstrapOrchestrator, "routeBundleContents").mockResolvedValue({} as never);
+    const response = await post("install", { bundlePath: f.archive, targetRoot: path.join(root, "inert-target") });
+    expect(response.status).toBe(201);
+    expect((await response.json()).warnings).toEqual(["ordinary warning", "ordinary warning"]);
+  });
+
 });
