@@ -1,6 +1,6 @@
 ---
 name: rigs
-description: Use when the user mentions OpenRig, rigs or the rig command, or wants a team of coding agents (Claude Code, Codex) on their project. That includes installing, setting up, starting or updating OpenRig, seeing or getting back to their OpenRig agents, TUI or operator, starting or sharing a team, and joining this session to one.
+description: Use when a person in their own Claude Code or Codex session mentions OpenRig, rigs or the rig command, or wants a team of coding agents (Claude Code, Codex) on their project. That includes installing, setting up, starting or updating OpenRig, seeing, getting back to or re-attaching to their OpenRig agents (including bringing a stopped team back), TUI or operator, starting or sharing a team, and joining this session to one. Operating a running rig from inside it (fleet recovery, seat handover, watchdog wakes, in-rig upgrades) is the openrig-skills skill.
 ---
 
 # rigs: your route into OpenRig
@@ -24,8 +24,13 @@ guidance in `AGENTS.md` or `CLAUDE.md` plus the team's skills and plugins. Say s
 - **Check first:** `rig --version`. If it prints a version, go to step 2.
 - **What it needs:** macOS or Linux, Node.js 22 or 24, tmux, and Claude Code or Codex signed in. Check only what's
   missing: `node --version`, `tmux -V`, `claude auth status` or `codex login status`.
-- **Install:** `npm install -g @openrig/cli`, then `rig preflight` (Node, tmux, the daemon port and state folders)
-  and `rig doctor`.
+- **A check that needs the network** (`gh auth status`, a registry or other fetch) can fail falsely in a sandbox without
+  network access, such as Codex's default one. Re-run that one command with network access before you tell the person
+  to sign in again or fix anything.
+- **Install:** `npm install -g @openrig/cli`, then `rig setup --providers codex` (or `claude`, or `both`: the harness
+  the person uses). Setup checks Node, tmux and the logins. It installs tmux (with Homebrew, when present) or the chosen
+  harness (with npm) if either is missing, installs Herdr for the OpenRig view unless they decline it (`--no-herdr`),
+  and adds an OpenRig block to `~/.tmux.conf`, so say all of that first. It doesn't start the daemon. Then `rig doctor`.
 - **Then go on to step 2:** say it's installed and ask what they want worked on, and in which repository. A plain
   "install OpenRig" includes this. Stop here only if they say not to start a team.
 - **If something fails:** `rig context get help` is the help guide for the installed version. If `rig` itself won't
@@ -68,9 +73,10 @@ guidance in `AGENTS.md` or `CLAUDE.md` plus the team's skills and plugins. Say s
     and ends with `run:` and a command (the `error` field with `--json`). That command already names the installed
     herdr binary and the daemon's socket, or the conversation to attach. Relay it exactly rather than composing one.
     If a note asks you to place the view once Herdr starts, run that `rig terminal open` yourself after they start it.
-  - **If it printed no command:** find `operator.agent` in `rig ps --nodes --rig kernel --json`, take its
-    `canonicalSessionName` (never a guessed name) and give
-    `env -u TMUX tmux attach-session -t '=<canonicalSessionName>'` for the operator's conversation.
+  - **If it printed no command:** find `operator.agent` in
+    `rig ps --nodes --rig kernel --json --fields logicalId,canonicalSessionName,tmuxAttachCommand` and give
+    `env -u TMUX` followed by its `tmuxAttachCommand`, exactly as listed (never a guessed name), for the operator's
+    conversation. That command names the daemon's tmux server when it isn't the default one.
 
   For any other failure, the table under "What can interrupt installation and the OpenRig view" in
   `rig context get reference/getting-started.md#open-the-kernel-conversations` says why and what to do next.
@@ -80,7 +86,8 @@ guidance in `AGENTS.md` or `CLAUDE.md` plus the team's skills and plugins. Say s
   `rig send <canonicalSessionName> 'This is the agent that installed OpenRig. The person will answer in your pane. Goal: <goal>. Project folder: <absolute path>. Branch: <branch>.'`
   Or the person types the goal and folder in the operator's pane. If they give you a goal later, forward it the same
   way. The operator helps them pick a team that fits their logins, starts it on their yes and gives the goal to the
-  team's lead. Show them where the operator answers, and don't build the project yourself.
+  team's lead. Before that yes, it says what launching into their folder changes for their own agent there; relay
+  that with the question. Show them where the operator answers, and don't build the project yourself.
 - **Relay the operator's questions:** the operator asks in its own pane, and the person may not be looking there.
   After each step you hand it, read its screen with `rig capture <canonicalSessionName>`. When it asks the person
   something (start this team? which folder? which option?), ask them here in the operator's words and send their
@@ -116,7 +123,7 @@ guidance in `AGENTS.md` or `CLAUDE.md` plus the team's skills and plugins. Say s
   actually did (the branch, commit, review or PR text), not just that you sent it.
 - **Give the team more work:** write the goal to a file: what to change, in which repository and branch, what done
   looks like, and that the result comes back to you (the branch or commit, the review, any PR text). Then
-  `rig queue create --source <your name> --destination <seat>@<rig> --body-file <file>`, and tell that agent with
+  `rig queue create --source <your name> --destination <seat>@<rig> --summary "<the goal in a sentence>" --body-file <file>`, and tell that agent with
   `rig send <seat>@<rig> "task <id> is yours"`. A message informs, and a queue task is the work someone owns.
   `--source` names you when this session hasn't joined the team.
 - **Then ask what's next.** If no team can take the work, fix that or ask the person. Don't quietly do it yourself.

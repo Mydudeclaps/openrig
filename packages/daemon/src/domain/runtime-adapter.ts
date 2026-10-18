@@ -94,12 +94,21 @@ export function isAttentionRequiredReadinessCode(code: string | undefined): bool
 
 export type HarnessLaunchRecovery = "retry_fresh" | "attention_required";
 
+// `launchedProcess` (Claude resume launches): the first process the launch's own readiness check
+// pinned as the one it started, kept even when a later sample saw it replaced (#1077).
 export type HarnessLaunchResult =
-  | { ok: true; resumeToken?: string; resumeType?: string; appliedLaunch?: import("./permission-drift.js").AppliedLaunchObservation }
+  | { ok: true; resumeToken?: string; resumeType?: string; appliedLaunch?: import("./permission-drift.js").AppliedLaunchObservation;
+    launchedProcess?: import("./native-process-lineage.js").ClaudeLaunchedProcess }
   // `evidence` carries the last-N pane lines for `attention_required` outcomes
   // so the failure can flow honest evidence through to RestoreNodeResult's
   // attentionEvidence field. Omitted for non-attention recoveries.
-  | { ok: false; error: string; recovery?: HarnessLaunchRecovery; evidence?: string };
+  // `missingConversation` is set only when the runtime itself reported that the requested
+  // conversation doesn't exist; other `retry_fresh` failures (such as a pane back at its shell)
+  // leave it unset.
+  | { ok: false; error: string; recovery?: HarnessLaunchRecovery; evidence?: string; missingConversation?: true;
+    /** The native fork command was sent, but its child identity is not yet available. */
+    forkIdentityPending?: boolean;
+    launchedProcess?: import("./native-process-lineage.js").ClaudeLaunchedProcess };
 
 // -- Shared concrete-hint resolver --
 
@@ -132,6 +141,10 @@ export function resolveConcreteHint(
 export interface ForkSource {
   kind: "native_id" | "artifact_path" | "name" | "last";
   value?: string;
+  /** Set only by a seat handover: a launch whose new id isn't captured yet still succeeds, with the id
+   *  pending, so the handover can commit the ready successor. Every other fork caller keeps the
+   *  refusal on a missed capture. */
+  pendingIdAllowed?: boolean;
 }
 
 /**
@@ -171,6 +184,11 @@ export interface RuntimeAdapter {
     binding: NodeBinding,
     opts: { name: string; resumeToken?: string; forkSource?: ForkSource },
   ): Promise<HarnessLaunchResult>;
+
+  /** Observe an already launched fork without sending input or starting another process. */
+  captureForkIdentity?(
+    binding: NodeBinding, parentToken: string,
+  ): Promise<{ resumeToken: string; resumeType: string } | null>;
 
   /** Check if the runtime harness is responsive and ready. */
   checkReady(binding: NodeBinding): Promise<ReadinessResult>;

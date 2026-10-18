@@ -14,7 +14,8 @@ export interface GuardTarget {
 interface Lease {
   target: GuardTarget;
   active: boolean;
-  origin: "automatic" | "human";
+  serialOwner?: Lease;
+  origin: "automatic" | "human" | "custody";
   lifecycle?: boolean;
   freshLifecyclePane?: string;
   config?: TypingGuardConfig;
@@ -205,7 +206,7 @@ export class SeatDeliveryGuard {
     const bound = this.target(name);
     const inherited = this.scope.getStore()?.get(bound.nodeId);
     if (inherited?.active && inherited.target.nodeId === bound.nodeId) {
-      this.assertCurrent(name, inherited);
+      this.checkInput(name);
       return fn();
     }
     return this.serial(bound.nodeId, async () => {
@@ -218,6 +219,7 @@ export class SeatDeliveryGuard {
       }
       const lease: Lease = { target: bound, active: true, origin: "automatic", humanEpoch: this.humanEpochs.get(bound.nodeId) ?? 0,
         config: config.desired.mode === "draft-aware" ? config.desired : config.effective };
+      lease.serialOwner = lease;
       try { return await this.scope.run(new Map([...(this.scope.getStore() ?? []), [lease.target.nodeId, lease]]), fn); }
       finally { lease.active = false; }
     });
@@ -228,6 +230,57 @@ export class SeatDeliveryGuard {
     if (!lease?.active || !lease.lifecycle) return false;
     this.assertCurrent(nodeId, lease);
     return true;
+  }
+
+  /** Custody cleanup can join a writing lifecycle lease without granting input permission. */
+  ownsCustody(nodeId: string): boolean {
+    const lease = this.scope.getStore()?.get(nodeId);
+    if (!lease?.active || (lease.origin !== "custody" && !lease.lifecycle)) return false;
+    this.assertCurrent(nodeId, lease);
+    return true;
+  }
+
+  /** Serialize metadata/custody cleanup even when typing is paused. Capture every
+   * target before waiting, then validate all of them before the first effect. */
+  async custody<T>(nodeIds: string[], fn: () => Promise<T>, onTargetChanged?: (nodeId: string, error: DeliveryGuardError) => void): Promise<T> {
+    const targets = [...new Set(nodeIds)].sort().map(id => this.target(id));
+    const excluded = new Set<string>();
+    const validate = (target: GuardTarget, inherited?: Lease): boolean => {
+      if (excluded.has(target.nodeId)) return false;
+      try {
+        if (inherited) this.assertCurrent(target.nodeId, inherited);
+        if (!this.same(target, this.target(target.nodeId))) {
+          throw new DeliveryGuardError("guard_target_changed", "Custody target changed while waiting; no cleanup performed for this seat.");
+        }
+        return true;
+      } catch (error) {
+        if (!onTargetChanged || !(error instanceof DeliveryGuardError)) throw error;
+        excluded.add(target.nodeId);
+        onTargetChanged(target.nodeId, error);
+        return false;
+      }
+    };
+    const acquire = async (index: number): Promise<T> => {
+      const target = targets[index];
+      if (!target) { for (const captured of targets) validate(captured); return fn(); }
+      const inherited = this.scope.getStore()?.get(target.nodeId);
+      const run = async () => {
+        const lease: Lease = { target, active: true, origin: "custody", humanEpoch: this.humanEpochs.get(target.nodeId) ?? 0 };
+        lease.serialOwner = inherited?.active && inherited.serialOwner?.active ? inherited.serialOwner : lease;
+        try {
+          return await this.scope.run(new Map([...(this.scope.getStore() ?? []), [target.nodeId, lease]]), () => acquire(index + 1));
+        } finally { lease.active = false; }
+      };
+      if (inherited?.active && inherited.serialOwner?.active) {
+        if (!validate(target, inherited)) return acquire(index + 1);
+        return inherited.origin === "custody" || inherited.lifecycle ? acquire(index + 1) : run();
+      }
+      return this.serial(target.nodeId, async () => {
+        if (!validate(target)) return acquire(index + 1);
+        return run();
+      });
+    };
+    return acquire(0);
   }
 
   /** Multi-seat restore takes leases in stable order before any rig mutation.
@@ -288,6 +341,9 @@ export class SeatDeliveryGuard {
     const lease = this.scope.getStore()?.get(target.nodeId);
     if (!lease) throw new DeliveryGuardError("guard_lease_required", "Input requires an active operation lease.");
     this.assertCurrent(name, lease);
+    if (lease.origin === "custody") {
+      throw new DeliveryGuardError("guard_lease_required", "Custody cleanup does not authorize input or writing lifecycle operations.");
+    }
     if (lease.origin === "automatic" && !this.ownsFreshInput(lease) && lease.config?.mode === "draft-aware"
       && lease.humanEpoch !== (this.humanEpochs.get(target.nodeId) ?? 0)) {
       throw new DeliveryGuardError("draft_input_changed", "Human input arrived during this delivery. No further automatic input was written.");
@@ -366,7 +422,7 @@ export class SeatDeliveryGuard {
   async input<T>(name: string, fn: () => Promise<T>): Promise<T> {
     const target = this.target(name);
     const lease = this.scope.getStore()?.get(target.nodeId);
-    if (lease?.active) { this.assertCurrent(name, lease); return fn(); }
+    if (lease?.active) { this.checkInput(name); return fn(); }
     return this.operation(name, fn);
   }
 
@@ -375,7 +431,8 @@ export class SeatDeliveryGuard {
     const target = this.target(name);
     const humanEpoch = (this.humanEpochs.get(target.nodeId) ?? 0) + 1;
     this.humanEpochs.set(target.nodeId, humanEpoch);
-    const lease: Lease = { target, active: true, origin: "human", humanEpoch };
+    const inherited = this.scope.getStore()?.get(target.nodeId);
+    const lease: Lease = { target, active: true, serialOwner: inherited?.active ? inherited.serialOwner : undefined, origin: "human", humanEpoch };
     this.humanLeases.add(lease);
     try { return await this.scope.run(new Map([...(this.scope.getStore() ?? []), [lease.target.nodeId, lease]]), fn); }
     finally { lease.active = false; this.humanLeases.delete(lease); }
