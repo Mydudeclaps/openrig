@@ -9,7 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 44bea397d
+          ref: c6d41cb90154585f1f1eca815085c086fe69318e
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -33,5 +33,5 @@ jobs:
           node -e 'const r=require("/tmp/cleanup-prior.json"); const f=r.testResults.flatMap(x=>x.assertionResults).filter(x=>x.status==="failed"); if(r.numFailedTests!==12 || r.numPassedTests!==0 || f.length!==12 || f.some(x=>!x.fullName.includes("cleanup failure accounting")))process.exit(1); console.log("Exactly12 prior forwarding-head cleanup-accounting target failures.")'
       - name: Candidate preserves cleanup guidance and non-success results with effects measured
         run: |
-          git checkout 44bea397d -- packages/daemon/src/domain/types.ts packages/daemon/src/domain/rigspec-instantiator.ts packages/daemon/src/domain/bootstrap-orchestrator.ts packages/cli/src/commands/up.ts packages/cli/src/commands/bundle.ts
+          git checkout c6d41cb90154585f1f1eca815085c086fe69318e -- packages/daemon/src/domain/types.ts packages/daemon/src/domain/rigspec-instantiator.ts packages/daemon/src/domain/bootstrap-orchestrator.ts packages/cli/src/commands/up.ts packages/cli/src/commands/bundle.ts
           npx vitest run packages/daemon/test/bootstrap-orchestrator.test.ts packages/daemon/test/rigspec-instantiator.test.ts packages/daemon/test/up-route-env.test.ts packages/daemon/test/node-launcher-one-off-env.test.ts packages/daemon/test/seat-env.test.ts packages/cli/test/up.test.ts packages/cli/test/bundle.test.ts
