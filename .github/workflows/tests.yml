@@ -9,7 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: b50e03e1c567d88c1687726894537fdedae4a3f0
+          ref: 420f0ab2297a1915f7cfc0e74446b4dc0c46a197
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -67,6 +67,12 @@ jobs:
               assert [x['result']['ready'] for x in new['readiness']]==[False,False]
             else:
               assert old['assessments']==new['assessments'] and old['readiness']==new['readiness'],old['id']
+            if current:
+              assert old['startupPermission'] is None and new['startupPermission'] is True
+              assert old['inventory'][0]['state']=='unknown' and new['inventory'][0]['state']=='needs_input'
+            else:
+              assert old['startupPermission']==new['startupPermission']
+              assert old['inventory']==new['inventory']
             for a,b in zip(old['sends'],new['sends']):
               if current and a['hook']=='none':
                 assert a['status']==200 and [x['kind'] for x in a['effects']]==['paste','keys']
@@ -86,7 +92,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          npm exec -w packages/daemon -- vitest run test/native-resume-probe.test.ts test/claude-runtime-adapter.test.ts test/claude-resume.test.ts test/session-transport.test.ts test/seat-structural-activity-service.test.ts test/startup-route.test.ts test/codex-selection-history.test.ts --reporter verbose | tee "$RUNNER_TEMP/mcp-menu/preservation.log"
+          npm exec -w packages/daemon -- vitest run test/native-resume-probe.test.ts test/claude-runtime-adapter.test.ts test/claude-resume.test.ts test/session-transport.test.ts test/seat-structural-activity-service.test.ts test/startup-route.test.ts test/codex-selection-history.test.ts test/seat-activity-service.test.ts --reporter verbose | tee "$RUNNER_TEMP/mcp-menu/preservation.log"
           npx tsc -p packages/daemon/tsconfig.json --noEmit
       - uses: actions/upload-artifact@v4
         if: always()
