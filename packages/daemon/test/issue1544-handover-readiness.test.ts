@@ -145,7 +145,7 @@ describe("SeatHandoverService", () => {
 
   it.each(["classic-predecessor-history", "screen-without-predecessor-history", "new-runtime-already-ready"])("1544 %s", async mode => {
     seedSeat({ runtime: "claude-code" });
-    let elapsed = 0, requested = false;
+    let elapsed = 0, requested = false, packetPasted = false;
     const nativeAt = mode === "new-runtime-already-ready" ? 0 : 500;
     const oldFrame = "Claude Code v2.1.303\n❯ predecessor finished turn\n  ⏵⏵ accept edits on (shift+tab to cycle)";
     const freshFrame = "Claude Code v2.1.303\n❯ \n  ⏵⏵ accept edits on (shift+tab to cycle)";
@@ -162,7 +162,7 @@ describe("SeatHandoverService", () => {
     const fsError = () => { throw new Error("unexpected filesystem access"); };
     const listProcesses = vi.fn(() => []);
     const claude = new ClaudeCodeAdapter({ tmux: target, fsOps: { exists: () => false, readFile: fsError,
-      writeFile: fsError, mkdirp: fsError, copyFile: fsError }, listProcesses, sleep: async () => {} });
+      writeFile: fsError, mkdirp: fsError, copyFile: fsError }, listProcesses, sleep: async () => {}, sessionIdFactory: () => successorToken });
     const reads: unknown[] = [];
     const readiness = vi.fn(async (binding) => {
       const result = await claude.checkReady(binding);
@@ -170,21 +170,22 @@ describe("SeatHandoverService", () => {
       return result;
     });
     const successorToken = "22222222-2222-4222-8222-222222222222";
-    launchHarness.mockImplementation(async () => {
-      requested = true; trace.push({ kind: "launch-request", elapsed, nativeAt });
-      return { ok: true, resumeToken: successorToken, resumeType: "claude_id" };
-    });
     sendText.mockImplementation(async (session: string, text: string) => {
+      if (text.includes("claude ") && text.includes("--session-id")) {
+        requested = true; trace.push({ kind: "launch-text", elapsed, session, text, nativeAt });
+        return { ok: true };
+      }
+      packetPasted = true;
       trace.push({ kind: "packet-paste", session, elapsed, successorRuntimeStarted: requested && elapsed >= nativeAt, text });
       return { ok: true };
     });
     sendKeys.mockImplementation(async (session: string, keys: string[]) => {
-      trace.push({ kind: "input", session, elapsed, successorRuntimeStarted: requested && elapsed >= nativeAt, keys });
+      trace.push({ kind: packetPasted ? "input" : "launch-input", session, elapsed, successorRuntimeStarted: requested && elapsed >= nativeAt, keys });
       return { ok: true };
     });
     const handover = new SeatHandoverService({ db, rigRepo, sessionRegistry, discoveryRepo, eventBus,
       tmuxAdapter: target, now: () => new Date("2026-10-19T21:30:00Z"), newSuccessorId: () => "01SUCCID0",
-      runtimeAdapters: { "claude-code": { runtime: "claude-code", launchHarness, checkReady: readiness } as unknown as RuntimeAdapter },
+      runtimeAdapters: { "claude-code": { runtime: "claude-code", launchHarness: claude.launchHarness.bind(claude), checkReady: readiness } as unknown as RuntimeAdapter },
       contextUsageStore: { readSidecar } as never, resumeTokenCapturer: { captureCodexThreadId } as never,
       occupantInvalidator: { invalidateRetiringOccupant }, activityOracle: { declareOccupantSwap },
       predecessorRecapResolver: resolvePredecessorRecap as never, readinessTimeoutMs: 5000,
