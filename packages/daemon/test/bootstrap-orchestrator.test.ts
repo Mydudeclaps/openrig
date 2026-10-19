@@ -246,6 +246,13 @@ describe("BootstrapOrchestrator", () => {
         specPath, outputDir: staging, bundleName: "env-fixture", bundleVersion: "1.0.0",
         packages: [{ name: "test-pkg", version: "1.0.0", sourcePath: pkgDir, originalSource: "./package", manifestHash: "fixture" }],
       });
+      const { computeIntegrity, writeIntegrity } = await import("../src/domain/bundle-integrity.js");
+      const integrityFs = {
+        ...realFsOps(), readFileBuffer: (p: string) => fs.readFileSync(p),
+        writeFile: (p: string, content: string) => fs.writeFileSync(p, content),
+        walkFiles: realFsOps().listFiles,
+      };
+      writeIntegrity(staging, computeIntegrity(staging, integrityFs), integrityFs);
       const sourceRef = path.join(tmpDir, "env.rigbundle");
       await pack(staging, sourceRef);
       return { sourceRef, sourceKind: "rig_bundle" };
