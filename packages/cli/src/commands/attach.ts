@@ -112,6 +112,7 @@ export function attachCommand(depsOverride?: StatusDeps): Command {
         cwd: opts.cwd ?? process.cwd(),
       };
       if (opts.runtime) body["runtime"] = opts.runtime;
+      if (opts.displayName) body["displayName"] = opts.displayName;
 
       const attachContext = resolveAttachContext();
       body["attachmentType"] = attachContext.attachmentType;
@@ -119,8 +120,6 @@ export function attachCommand(depsOverride?: StatusDeps): Command {
         body["tmuxSession"] = attachContext.tmuxSession;
         if (attachContext.tmuxWindow) body["tmuxWindow"] = attachContext.tmuxWindow;
         body["tmuxPane"] = attachContext.tmuxPane;
-      } else if (opts.displayName) {
-        body["displayName"] = opts.displayName;
       }
 
       if (hasNode) {

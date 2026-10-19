@@ -17,14 +17,12 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Capture the fake-tmux display-name regression on unchanged source
+      - name: Verify display-name forwarding and existing attach behavior
         run: |
           mkdir evidence
-          set +e
-          npm run test -w packages/cli -- test/attach.test.ts --reporter=json --outputFile="$GITHUB_WORKSPACE/evidence/cli-red.json" > evidence/cli-red.log 2>&1
-          code=$?
-          printf '%s\n' "$code" > evidence/cli-red.exit
-          test "$code" -eq 1
+          set -e
+          npm run test -w packages/cli -- test/attach.test.ts --reporter=json --outputFile="$GITHUB_WORKSPACE/evidence/cli-green.json" > evidence/cli-green.log 2>&1
+          npm run lint > evidence/lint.log 2>&1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
