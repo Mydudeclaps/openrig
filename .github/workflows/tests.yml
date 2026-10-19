@@ -30,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          CHECKPOINT_OUTPUT="$RUNNER_TEMP/issue1544" npm exec -w packages/daemon -- vitest run test/claude-handover-readiness.test.ts test/claude-fresh-in-place-scope.test.ts -t "accept-edits-unavailable|keeps unknown identity unknown" --reporter verbose > "$RUNNER_TEMP/issue1544/test.log" 2>&1
+          CHECKPOINT_OUTPUT="$RUNNER_TEMP/issue1544" npm exec -w packages/daemon -- vitest run test/claude-handover-readiness.test.ts test/claude-fresh-in-place-scope.test.ts -t "working-headerless-bypass-unavailable" --reporter verbose > "$RUNNER_TEMP/issue1544/test.log" 2>&1
           code=$?
           set -e
           cat "$RUNNER_TEMP/issue1544/test.log"
@@ -42,6 +42,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: fresh-in-place-round2-red
+          name: fresh-in-place-round2-bypass-red
           path: ${{ runner.temp }}/issue1544/
           if-no-files-found: error
