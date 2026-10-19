@@ -181,9 +181,10 @@ describe("runDoctorChecks", () => {
     expect(cmuxShell?.status).toBe("pass");
   });
 
-  it("cmux_shell warn when shell cmux installed but control unavailable", () => {
+  it.each(["settings", "default"])("cmux_shell warn when shell cmux installed but control unavailable (%s)", (source) => {
     const deps = makeDeps({
-      readFile: (filePath: string) => filePath === CMUX_SETTINGS_PATH ? "{\n  \"automation\": {\n    \"socketControlMode\": \"cmuxOnly\"\n  }\n}\n" : null,
+      readFile: (filePath: string) => filePath === CMUX_SETTINGS_PATH && source === "settings"
+        ? '{"automation":{"socketControlMode":"cmuxOnly"}}' : null,
       exec: (cmd: string) => {
         if (cmd === "tmux -V") return "tmux 3.4\n";
         if (cmd === "cmux capabilities --json") {
@@ -206,6 +207,12 @@ describe("runDoctorChecks", () => {
     expect(cmuxShell?.fix).toContain("reloads saved settings automatically");
     expect(cmuxShell?.fix).not.toContain("rig setup");
     expect(cmuxShell?.fix).not.toContain("rig daemon start");
+    if (source === "default") {
+      expect(cmuxShell?.fix).toContain("~/.config/cmux/settings.json doesn't set automation.socketControlMode");
+      expect(cmuxShell?.fix).toContain("this check assumes cmux's default 'cmuxOnly'");
+      expect(cmuxShell?.fix).toContain("it doesn't read ~/.config/cmux/cmux.json");
+      expect(cmuxShell?.fix).not.toContain("cmux is still using");
+    }
   });
 
   it("cmux_shell warn when cmux missing", () => {
@@ -277,7 +284,7 @@ describe("runDoctorChecks", () => {
     expect(cmuxDaemon?.fix).toContain("automation");
   });
 
-  it("shell cmux pass + implicit default cmuxOnly + daemon cmux unavailable -> cmux_daemon points at effective default, not a fake file value", async () => {
+  it("shell cmux pass + implicit default cmuxOnly + daemon cmux unavailable -> cmux_daemon discloses the check's limited read", async () => {
     const deps = makeDeps({
       readFile: (filePath: string) => filePath === CMUX_SETTINGS_PATH ? null : null,
       fetch: async (url: string) => {
@@ -297,6 +304,10 @@ describe("runDoctorChecks", () => {
     expect(cmuxDaemon?.reason).toContain("default");
     expect(cmuxDaemon?.reason).toContain("cmuxOnly");
     expect(cmuxDaemon?.reason).not.toContain("is 'cmuxOnly' in");
+    expect(cmuxDaemon?.reason).toContain("~/.config/cmux/settings.json doesn't set automation.socketControlMode");
+    expect(cmuxDaemon?.reason).toContain("this check assumes cmux's default 'cmuxOnly'");
+    expect(cmuxDaemon?.reason).toContain("it doesn't read ~/.config/cmux/cmux.json");
+    expect(cmuxDaemon?.reason).not.toContain("cmux is still using");
     expect(cmuxDaemon?.fix).toContain("cmux Settings > Automation");
     expect(cmuxDaemon?.fix).not.toContain("rig setup");
     expect(cmuxDaemon?.fix).not.toContain("rig daemon start");

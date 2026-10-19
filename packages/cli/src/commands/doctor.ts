@@ -174,7 +174,7 @@ export function runDoctorChecks(deps: DoctorDeps, providerChecks: DoctorCheck[] 
       const modeHint = socketMode?.error
         ? ` Likely cause on macOS: ${CMUX_SETTINGS_DISCLOSURE_PATH} is unreadable (${socketMode.error}).`
         : socketMode && !isCmuxSocketControlCompatible(socketMode.mode) && socketMode.source === "default"
-        ? ` Likely cause on macOS: cmux is still using its default automation.socketControlMode '${socketMode.mode}'. ${CMUX_SOCKET_CONTROL_FIX}`
+        ? ` ${CMUX_SETTINGS_DISCLOSURE_PATH} doesn't set automation.socketControlMode, so this check assumes cmux's default '${socketMode.mode}' (it doesn't read ~/.config/cmux/cmux.json). ${CMUX_SOCKET_CONTROL_FIX}`
         : socketMode && !isCmuxSocketControlCompatible(socketMode.mode)
         ? ` Likely cause on macOS: automation.socketControlMode is '${socketMode.mode}' in ${CMUX_SETTINGS_DISCLOSURE_PATH}. ${CMUX_SOCKET_CONTROL_FIX}`
         : "";
@@ -359,7 +359,7 @@ function buildCmuxDaemonWarning(deps: DoctorDeps, platform: NodeJS.Platform): Do
 
   if (platform === "darwin" && socketMode && !isCmuxSocketControlCompatible(socketMode.mode)) {
     const reason = socketMode.source === "default"
-      ? `cmux is still using its default automation.socketControlMode '${socketMode.mode}', so the daemon cannot attach as an external cmux client yet.`
+      ? `${CMUX_SETTINGS_DISCLOSURE_PATH} doesn't set automation.socketControlMode, so this check assumes cmux's default '${socketMode.mode}' (it doesn't read ~/.config/cmux/cmux.json).`
       : `automation.socketControlMode is '${socketMode.mode}' in ${CMUX_SETTINGS_DISCLOSURE_PATH}, so the daemon cannot attach as an external cmux client yet.`;
     return {
       name: "cmux_daemon",
