@@ -3,13 +3,13 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  shared-dialog-diagnosis:
+  mcp-menu-red-green:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: a58c13b3f0d1791cf145b8c375553e47ee8a6f24
+          ref: b50e03e1c
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -17,24 +17,80 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Bind unchanged main source and the private diagnostic fixture
+      - name: Bind identical fixture and measure baseline
+        shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/issue1541"
-          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/issue1541/checkout.txt"
+          mkdir -p "$RUNNER_TEMP/mcp-menu/baseline" "$RUNNER_TEMP/mcp-menu/candidate"
+          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/mcp-menu/checkout.txt"
+          sha256sum packages/daemon/test/claude-mcp-menu.test.ts > "$RUNNER_TEMP/mcp-menu/fixture.before.txt"
+          for source in native-resume-probe session-transport; do
+            git show "7b490de5c:packages/daemon/src/domain/$source.ts" > "packages/daemon/src/domain/$source.ts"
+          done
+          mv packages/daemon/src/domain/claude-mcp-menu.ts "$RUNNER_TEMP/mcp-menu/candidate-helper.ts"
+          sha256sum packages/daemon/src/domain/native-resume-probe.ts packages/daemon/src/domain/session-transport.ts > "$RUNNER_TEMP/mcp-menu/baseline/sources.txt"
+          set +e
+          CHECKPOINT_OUTPUT="$RUNNER_TEMP/mcp-menu/baseline" npm exec -w packages/daemon -- vitest run test/claude-mcp-menu.test.ts --reporter verbose > "$RUNNER_TEMP/mcp-menu/baseline/test.log" 2>&1
+          code=$?
+          set -e
+          cat "$RUNNER_TEMP/mcp-menu/baseline/test.log"
+          printf '%s\n' "$code" > "$RUNNER_TEMP/mcp-menu/baseline/exit.txt"
+          test "$code" -eq 1
+          for source in native-resume-probe session-transport; do
+            git show "HEAD:packages/daemon/src/domain/$source.ts" > "packages/daemon/src/domain/$source.ts"
+          done
+          mv "$RUNNER_TEMP/mcp-menu/candidate-helper.ts" packages/daemon/src/domain/claude-mcp-menu.ts
+      - name: Measure candidate and compare exact changed results
+        shell: bash
+        run: |
+          set -euo pipefail
+          CHECKPOINT_OUTPUT="$RUNNER_TEMP/mcp-menu/candidate" npm exec -w packages/daemon -- vitest run test/claude-mcp-menu.test.ts --reporter verbose | tee "$RUNNER_TEMP/mcp-menu/candidate/test.log"
+          sha256sum packages/daemon/src/domain/native-resume-probe.ts packages/daemon/src/domain/session-transport.ts packages/daemon/src/domain/claude-mcp-menu.ts > "$RUNNER_TEMP/mcp-menu/candidate/sources.txt"
+          sha256sum packages/daemon/test/claude-mcp-menu.test.ts > "$RUNNER_TEMP/mcp-menu/fixture.after.txt"
+          diff -u "$RUNNER_TEMP/mcp-menu/fixture.before.txt" "$RUNNER_TEMP/mcp-menu/fixture.after.txt"
           git diff --exit-code
-          git show "$GITHUB_SHA:packages/daemon/test/issue1541-diagnosis.test.ts" > packages/daemon/test/issue1541-diagnosis.test.ts
-          sha256sum packages/daemon/src/domain/native-resume-probe.ts packages/daemon/src/adapters/claude-code-adapter.ts packages/daemon/src/domain/session-transport.ts packages/daemon/test/issue1541-diagnosis.test.ts > "$RUNNER_TEMP/issue1541/bindings.before.txt"
-      - name: Observe old and new MCP menus through actual assessment, readiness and HTTP send
+          python3 - <<'PYCOMPARE'
+          import json,os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'mcp-menu'
+          before=json.loads((p/'baseline/observations.json').read_text())
+          after=json.loads((p/'candidate/observations.json').read_text())
+          assert len(before)==len(after)==9
+          changed=[]
+          for old,new in zip(before,after):
+            assert old['id']==new['id'] and old['pane']==new['pane']
+            current=old['id'] in ['old-current-MCP','2.1.303-current-MCP']
+            if old['id']=='2.1.303-current-MCP':
+              assert [x['result']['code'] for x in old['assessments']]==['returned_to_shell','verified_native_identity','active_runtime']
+              assert [x['result']['code'] for x in new['assessments']]==['mcp_gate']*3
+              assert [x['result']['ready'] for x in old['readiness']]==[False,True]
+              assert [x['result']['ready'] for x in new['readiness']]==[False,False]
+            else:
+              assert old['assessments']==new['assessments'] and old['readiness']==new['readiness'],old['id']
+            for a,b in zip(old['sends'],new['sends']):
+              if current and a['hook']=='none':
+                assert a['status']==200 and [x['kind'] for x in a['effects']]==['paste','keys']
+                assert b['status']==409 and b['effects']==[] and b['body']['reason']=='target_needs_input'
+                changed.append([old['id'],a['hook']])
+              else: assert a==b,(old['id'],a['hook'])
+            if current:
+              assert old['classifier']['state']=='unknown'
+              assert new['classifier']['state']=='attention' and new['classifier']['reason']=='selection_prompt'
+            else: assert old['classifier']==new['classifier'],old['id']
+            assert old['structural']['state']==old['classifier']['state']
+            assert new['structural']['state']==new['classifier']['state']
+          assert len(changed)==2
+          (p/'comparison.json').write_text(json.dumps({'changedRoutes':changed,'unchangedRoutes':25,'nineFrames':9,'assessmentChangedFrames':['2.1.303-current-MCP'],'readinessChangedFrames':['2.1.303-current-MCP'],'classifierChangedFrames':['old-current-MCP','2.1.303-current-MCP']},indent=2)+'\n')
+          PYCOMPARE
+      - name: Focused downstream preservation and daemon typecheck
+        shell: bash
         run: |
           set -euo pipefail
-          CHECKPOINT_OUTPUT="$RUNNER_TEMP/issue1541" npm exec -w packages/daemon -- vitest run test/issue1541-diagnosis.test.ts --reporter verbose | tee "$RUNNER_TEMP/issue1541/test.log"
-          git diff --exit-code -- packages/daemon/src
-          sha256sum packages/daemon/src/domain/native-resume-probe.ts packages/daemon/src/adapters/claude-code-adapter.ts packages/daemon/src/domain/session-transport.ts packages/daemon/test/issue1541-diagnosis.test.ts > "$RUNNER_TEMP/issue1541/bindings.after.txt"
-          diff -u "$RUNNER_TEMP/issue1541/bindings.before.txt" "$RUNNER_TEMP/issue1541/bindings.after.txt"
+          npm exec -w packages/daemon -- vitest run test/native-resume-probe.test.ts test/claude-runtime-adapter.test.ts test/claude-resume.test.ts test/session-transport.test.ts test/seat-structural-activity-service.test.ts test/startup-route.test.ts test/codex-selection-history.test.ts --reporter verbose | tee "$RUNNER_TEMP/mcp-menu/preservation.log"
+          npx tsc -p packages/daemon/tsconfig.json --noEmit
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: issue1541-shared-dialog-diagnosis
-          path: ${{ runner.temp }}/issue1541/
+          name: claude-mcp-menu-red-green
+          path: ${{ runner.temp }}/mcp-menu/
           if-no-files-found: error
