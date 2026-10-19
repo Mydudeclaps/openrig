@@ -161,7 +161,7 @@ describe("SeatHandoverService", () => {
       trace.push({ kind: "read", elapsed, lines, successorRuntimeStarted: requested && elapsed >= nativeAt, pane: pane() });
       return currentScreenInput ? (unavailable ? null : requested && elapsed < nativeAt ? "operator@host$ " : pane()) : pane();
     });
-    const target = { ...tmux(), capturePaneContent } as unknown as TmuxAdapter;
+    const target = { ...tmux(), capturePaneContent, getPanePid: vi.fn(async () => 100) } as unknown as TmuxAdapter;
     const fsError = () => { throw new Error("unexpected filesystem access"); };
     const listProcesses = vi.fn(() => { if (unavailable) throw new Error("fixture ps unavailable"); return []; });
     const claude = new ClaudeCodeAdapter({ tmux: target, fsOps: { exists: () => false, readFile: fsError,
