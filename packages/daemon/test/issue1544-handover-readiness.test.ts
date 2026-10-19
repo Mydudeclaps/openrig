@@ -143,27 +143,38 @@ describe("SeatHandoverService", () => {
   }
 
 
-  it.each(["classic-predecessor-history", "screen-without-predecessor-history", "new-runtime-already-ready", "stale-wrapper-screen-unavailable", "working-wrapper-screen-unavailable"])("1544 %s", async mode => {
+  it.each(["classic-predecessor-history", "screen-without-predecessor-history", "new-runtime-already-ready", "stale-wrapper-screen-unavailable", "working-wrapper-screen-unavailable", "working-headerless-auto-proof", "working-headerless-auto-unavailable"])("1544 %s", async mode => {
     seedSeat({ runtime: "claude-code" });
     let elapsed = 0, requested = false, packetPasted = false;
-    const nativeAt = mode === "new-runtime-already-ready" || mode === "working-wrapper-screen-unavailable" ? 0 : 500;
+    const headerless = mode.startsWith("working-headerless-auto");
+    const nativeAt = mode === "new-runtime-already-ready" || mode === "working-wrapper-screen-unavailable" || headerless ? 0 : 500;
     const unavailable = mode.endsWith("screen-unavailable");
     let currentScreenInput = false;
     const identicalFrame = "Claude Code v2.1.303\n❯ \n  ⏵⏵ accept edits on (shift+tab to cycle)";
+    const autoFrame = "Restored conversation\n─────────\n❯ \n─────────\n  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents";
     const oldFrame = "Claude Code v2.1.303\n❯ predecessor finished turn\n  ⏵⏵ accept edits on (shift+tab to cycle)";
     const freshFrame = "Claude Code v2.1.303\n❯ \n  ⏵⏵ accept edits on (shift+tab to cycle)";
     const trace: unknown[] = [];
-    const pane = () => unavailable ? identicalFrame : requested && elapsed >= nativeAt ? freshFrame
+    const pane = () => headerless ? identicalFrame + "\n" + autoFrame : unavailable ? identicalFrame : requested && elapsed >= nativeAt ? freshFrame
       : mode === "classic-predecessor-history" ? oldFrame + "\noperator@host$ " : "operator@host$ ";
-    getPaneCommand.mockImplementation(async () => unavailable && requested ? "sh" : requested && elapsed >= nativeAt ? "claude" : "zsh");
-    capturePaneScreen.mockImplementation(async () => unavailable ? null : requested && elapsed < nativeAt ? "operator@host$ " : pane());
+    getPaneCommand.mockImplementation(async () => (unavailable || headerless) && requested ? "sh" : requested && elapsed >= nativeAt ? "claude" : "zsh");
+    capturePaneScreen.mockImplementation(async () => unavailable ? null : headerless ? autoFrame : requested && elapsed < nativeAt ? "operator@host$ " : pane());
     const capturePaneContent = vi.fn(async (_session: string, lines: number) => {
       trace.push({ kind: "read", elapsed, lines, successorRuntimeStarted: requested && elapsed >= nativeAt, pane: pane() });
-      return currentScreenInput ? (unavailable ? null : requested && elapsed < nativeAt ? "operator@host$ " : pane()) : pane();
+      return currentScreenInput ? (unavailable ? null : headerless ? autoFrame : requested && elapsed < nativeAt ? "operator@host$ " : pane()) : pane();
     });
     const target = { ...tmux(), capturePaneContent, getPanePid: vi.fn(async () => 100) } as unknown as TmuxAdapter;
     const fsError = () => { throw new Error("unexpected filesystem access"); };
-    const listProcesses = vi.fn(() => { if (unavailable) throw new Error("fixture ps unavailable"); return []; });
+    const listProcesses = vi.fn(() => {
+      if (unavailable || mode === "working-headerless-auto-unavailable") throw new Error("fixture ps unavailable");
+      if (mode !== "working-headerless-auto-proof") return [];
+      const startedAt = "Mon Oct 19 21:30:00 2026";
+      return [
+        { pid: 100, ppid: 1, pgid: 100, tpgid: 101, command: "-bash", executableName: "bash", startedAt },
+        { pid: 101, ppid: 100, pgid: 101, tpgid: 101, command: "/bin/sh fixture-launch.txt", executableName: "sh", startedAt },
+        { pid: 102, ppid: 101, pgid: 101, tpgid: 101, command: `/opt/claude.exe --permission-mode auto --session-id ${successorToken} --name dev-impl@seat-rig`, executableName: "claude", startedAt },
+      ];
+    });
     const claude = new ClaudeCodeAdapter({ tmux: target, fsOps: { exists: () => false, readFile: fsError,
       writeFile: fsError, mkdirp: fsError, copyFile: fsError }, listProcesses, sleep: async () => {}, sessionIdFactory: () => successorToken });
     const reads: unknown[] = [];
@@ -211,6 +222,11 @@ describe("SeatHandoverService", () => {
       expect(first.result.ready).toBe(true);
       expect(first.successorRuntimeStarted).toBe(false);
       expect(first.withCurrentScreen.ready).toBe(false);
+    } else if (headerless) {
+      expect(first.result.ready).toBe(true);
+      expect(first.successorRuntimeStarted).toBe(true);
+      expect(first.withCurrentScreen.ready).toBe(mode === "working-headerless-auto-proof");
+      if (mode === "working-headerless-auto-unavailable") expect(first.withCurrentScreen.code).toBe("claude_auto_identity_required");
     } else if (unavailable) {
       expect(first.result.ready).toBe(true);
       expect(first.withCurrentScreen).toMatchObject({ ready: false, code: "awaiting_runtime" });

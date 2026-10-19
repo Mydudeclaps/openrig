@@ -29,7 +29,7 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          CHECKPOINT_OUTPUT="$RUNNER_TEMP/issue1544" npm exec -w packages/daemon -- vitest run test/issue1544-handover-readiness.test.ts --reporter verbose > "$RUNNER_TEMP/issue1544/test.log" 2>&1
+          CHECKPOINT_OUTPUT="$RUNNER_TEMP/issue1544" npm exec -w packages/daemon -- vitest run test/issue1544-handover-readiness.test.ts -t working-headerless-auto --reporter verbose > "$RUNNER_TEMP/issue1544/test.log" 2>&1
           code=$?
           set -e
           cat "$RUNNER_TEMP/issue1544/test.log"
@@ -43,19 +43,13 @@ jobs:
           from pathlib import Path
           p=Path(os.environ['RUNNER_TEMP'])/'issue1544'
           rows=json.loads((p/'observations.json').read_text())
-          assert len(rows)==5
-          pair=[]
+          assert len(rows)==2
           for r in rows:
-            assert r['result']['ok'],r
-            first=r['reads'][0]
-            if r['mode'].endswith('screen-unavailable'):
-              assert first['result']['ready'] is True
-              assert first['withCurrentScreen']['ready'] is False
-              pair.append(r)
-          assert len(pair)==2
-          assert pair[0]['reads'][0]['successorRuntimeStarted'] is False
-          assert pair[1]['reads'][0]['successorRuntimeStarted'] is True
-          (p/'assessment.json').write_text(json.dumps({'currentScreenSeparatesRetainedCase':True,'workingAndStaleUnavailablePair':'old ready/strict-current-screen not-ready on both','productPatch':'NONE','nativeExecution':'NOT RUN'},indent=2)+'\n')
+            assert r['result']['ok']
+            assert r['reads'][0]['result']['ready'] is True
+            assert r['reads'][0]['successorRuntimeStarted'] is True
+            assert r['reads'][0]['withCurrentScreen']['ready'] == (r['mode']=='working-headerless-auto-proof')
+          (p/'assessment.json').write_text(json.dumps({'headerlessWorkingProof':rows[0]['reads'],'headerlessWorkingProofUnavailable':rows[1]['reads'],'productPatch':'NONE','nativeExecution':'NOT RUN'},indent=2)+'\n')
           PYCHECK
       - uses: actions/upload-artifact@v4
         if: always()
