@@ -242,7 +242,6 @@ describe("runDoctorChecks", () => {
     expect(cmuxDaemon?.status).toBe("warn");
     expect(cmuxDaemon?.message).toContain("daemon cannot control");
     expect(cmuxDaemon?.fix).toContain("rig doctor");
-    expect(cmuxDaemon?.fix).toContain("rig daemon logs");
     expect(cmuxDaemon?.fix).not.toContain("rig daemon start");
     expect(cmuxDaemon?.fix).not.toContain("rig setup");
   });
@@ -348,6 +347,9 @@ describe("runDoctorChecks", () => {
     const cmuxDaemon = allChecks.find((c) => c.name === "cmux_daemon");
     expect(cmuxDaemon?.status).toBe("warn");
     expect(cmuxDaemon?.reason).toContain("probe failed in the daemon");
+    expect(cmuxDaemon?.fix).toContain("rig daemon logs");
+    expect(cmuxDaemon?.fix).toContain("rig doctor");
+    expect(cmuxDaemon?.fix).not.toContain("rig daemon start");
     expect(cmuxDaemon?.reason).not.toContain("socketControlMode");
   });
 
