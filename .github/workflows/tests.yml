@@ -9,6 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: 31b003b2fdb5089e441fa41de4259c3e70b83bd8
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -16,15 +17,59 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Bind unchanged production source and diagnosis fixture
+      - name: Bind exact candidate and unchanged route fixture
         run: |
-          mkdir -p "$RUNNER_TEMP/issue1533"
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/issue1533/baseline" "$RUNNER_TEMP/issue1533/candidate"
           git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/issue1533/checkout.txt"
-          git diff --exit-code a1f6a808d0e26c5e40f02b4e739613553d058858 HEAD -- packages/daemon/src packages/shared/src
-          git diff --stat a1f6a808d0e26c5e40f02b4e739613553d058858 HEAD > "$RUNNER_TEMP/issue1533/delta.txt"
-          sha256sum packages/daemon/src/domain/session-transport.ts packages/daemon/src/domain/composer-prompts.ts packages/daemon/test/issue1533-diagnosis.test.ts > "$RUNNER_TEMP/issue1533/bindings.txt"
-      - name: Diagnose actual classifier and guarded SessionTransport seam
-        run: CHECKPOINT_OUTPUT="$RUNNER_TEMP/issue1533" npm exec -w packages/daemon -- vitest run test/issue1533-diagnosis.test.ts --reporter verbose
+          git diff --exit-code
+          sha256sum packages/daemon/test/codex-selection-history.test.ts > "$RUNNER_TEMP/issue1533/fixture.before.txt"
+          git show 0b3b85115e25ae3469fae820e437d43b4a607767:packages/daemon/src/domain/session-transport.ts > packages/daemon/src/domain/session-transport.ts
+          sha256sum packages/daemon/src/domain/session-transport.ts > "$RUNNER_TEMP/issue1533/baseline/source.txt"
+      - name: Baseline route RED, retain actual results and input commands
+        run: |
+          set +e
+          CHECKPOINT_OUTPUT="$RUNNER_TEMP/issue1533/baseline" npm exec -w packages/daemon -- vitest run test/codex-selection-history.test.ts --reporter verbose > "$RUNNER_TEMP/issue1533/baseline/test.log" 2>&1
+          result=$?
+          cat "$RUNNER_TEMP/issue1533/baseline/test.log"
+          echo "$result" > "$RUNNER_TEMP/issue1533/baseline/exit.txt"
+          test "$result" -eq 1
+          test -s "$RUNNER_TEMP/issue1533/baseline/route-observations.json"
+      - name: Candidate route GREEN, identical fixtures and explicit source binding
+        run: |
+          set -euo pipefail
+          git restore --source=31b003b2fdb5089e441fa41de4259c3e70b83bd8 --worktree packages/daemon/src/domain/session-transport.ts
+          git diff --exit-code
+          sha256sum packages/daemon/src/domain/session-transport.ts > "$RUNNER_TEMP/issue1533/candidate/source.txt"
+          sha256sum packages/daemon/test/codex-selection-history.test.ts > "$RUNNER_TEMP/issue1533/fixture.after.txt"
+          diff -u "$RUNNER_TEMP/issue1533/fixture.before.txt" "$RUNNER_TEMP/issue1533/fixture.after.txt"
+          CHECKPOINT_OUTPUT="$RUNNER_TEMP/issue1533/candidate" npm exec -w packages/daemon -- vitest run test/codex-selection-history.test.ts --reporter verbose | tee "$RUNNER_TEMP/issue1533/candidate/test.log"
+      - name: Check changed route outcomes are only the three selected no-hook histories
+        run: |
+          node --input-type=module <<'JS'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import assert from 'node:assert/strict';
+          const dir = process.env.RUNNER_TEMP + '/issue1533';
+          const base = JSON.parse(readFileSync(dir + '/baseline/route-observations.json'));
+          const head = JSON.parse(readFileSync(dir + '/candidate/route-observations.json'));
+          assert.equal(base.length, 81); assert.equal(head.length, 81);
+          const allowed = new Set(['supported history', 'retained frame plus synthetic history: after-enter-0.4s.J.txt', 'retained frame plus synthetic history: after-enter-15s.J.txt']);
+          const byKey = new Map(base.map(x => [x.hook + ':' + x.id, x]));
+          assert.equal(byKey.size, 81);
+          const changed = [];
+          const outcome = x => ({ status: x.status, ok: x.body.ok, reason: x.body.reason, effects: x.effects });
+          for (const next of head) {
+            const prior = byKey.get(next.hook + ':' + next.id); assert.ok(prior);
+            if (allowed.has(next.id) && next.hook === 'none') {
+              assert.equal(prior.status, 409); assert.equal(prior.body.reason, 'target_needs_input'); assert.deepEqual(prior.effects, []);
+              assert.equal(next.status, 200); assert.equal(next.body.ok, true); assert.deepEqual(next.effects.map(x => x.kind), ['paste', 'keys']);
+              changed.push(next.id);
+            } else assert.deepEqual(outcome(next), outcome(prior), next.hook + ':' + next.id);
+          }
+          assert.equal(changed.length, 3);
+          writeFileSync(dir + '/comparison.json', JSON.stringify({ unchangedRouteOutcomes: 78, changedNoHookHistories: changed, observationCountPerCut: 81 }, null, 2));
+          console.log('Only the three selected no-hook history routes changed; 78 other route outcomes and input commands equal.');
+          JS
       - uses: actions/upload-artifact@v4
         if: always()
         with:
