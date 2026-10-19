@@ -160,8 +160,10 @@ describe("SeatHandoverService", () => {
     getPaneCommand.mockImplementation(async () => (unavailable || headerless) && requested ? "sh" : requested && elapsed >= nativeAt ? "claude" : "zsh");
     capturePaneScreen.mockImplementation(async () => unavailable ? null : headerless ? autoFrame : requested && elapsed < nativeAt ? "operator@host$ " : pane());
     const capturePaneContent = vi.fn(async (_session: string, lines: number) => {
-      trace.push({ kind: "read", elapsed, lines, successorRuntimeStarted: requested && elapsed >= nativeAt, pane: pane() });
-      return currentScreenInput ? (unavailable ? null : headerless ? autoFrame : requested && elapsed < nativeAt ? "operator@host$ " : pane()) : pane();
+      const returnedPane = currentScreenInput ? (unavailable ? null : headerless ? autoFrame : requested && elapsed < nativeAt ? "operator@host$ " : pane()) : pane();
+      trace.push({ kind: "read", reader: currentScreenInput ? "current-screen-input" : "40-line-input", elapsed, lines,
+        successorRuntimeStarted: requested && elapsed >= nativeAt, returnedPane });
+      return returnedPane;
     });
     const target = { ...tmux(), capturePaneContent, getPanePid: vi.fn(async () => 100) } as unknown as TmuxAdapter;
     const fsError = () => { throw new Error("unexpected filesystem access"); };
