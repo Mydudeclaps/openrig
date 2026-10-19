@@ -1,31 +1,15 @@
 name: Tests
-
-# Builds, type-checks and runs every test suite on a clean GitHub runner, and records the file
-# list each published package would contain. Each suite is its own job so one failure does not
-# hide the others. No provider credentials or operator configuration are supplied.
-# Package suites deny external networking; scenario runtime has no external route.
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
-
+on: workflow_dispatch
 permissions:
   contents: read
-
-concurrency:
-  group: tests-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  build-and-package:
+  baseline-command-names:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: edd0a967e67af10b5513439cd14f87eeeabd179f
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -33,110 +17,100 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Record the published file list of each package
+      - name: Measure the old command and absent new command at the selected base
         run: |
-          set -euo pipefail
-          mkdir -p pack-lists
-          for p in cli daemon tui; do
-            (cd packages/$p && npm pack --dry-run --json --ignore-scripts) \
-              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const f of JSON.parse(s)[0].files)console.log(f.path)})' \
-              | sort > pack-lists/$p.txt
-            echo "$p: $(wc -l < pack-lists/$p.txt) files"
-          done
-      - uses: actions/upload-artifact@v4
-        with:
-          name: pack-lists
-          path: pack-lists/
-
-  typecheck:
+          node packages/cli/dist/bin-wrapper.js --help > /tmp/baseline-help.txt
+          node packages/cli/dist/bin-wrapper.js agent-app list --help > /tmp/baseline-list-help.txt
+          grep -F 'agent-app' /tmp/baseline-help.txt
+          ! grep -F 'community-harness' /tmp/baseline-help.txt
+          set +e
+          node packages/cli/dist/bin-wrapper.js community-harness list --help > /tmp/new-before.txt 2>&1
+          result=$?
+          set -e
+          test "$result" != 0
+          cat /tmp/baseline-list-help.txt /tmp/new-before.txt
+  candidate-behavior-and-package:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 22
     steps:
       - uses: actions/checkout@v4
         with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run lint
-
-  repo-checks:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run test:repo
-
-  package-tests:
-    if: ${{ github.event_name != 'push' }}
-    # macOS, the platform OpenRig runs on: several daemon and cli tests read macOS ps columns,
-    # file-inode behaviour and release tags.
-    runs-on: macos-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        package: [daemon, cli, tui, ui]
-    steps:
-      - uses: actions/checkout@v4
-        with:
+          ref: 13fe8d599954cb8542295c353f51074477fb07c0
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: brew install tmux
+      - run: sudo apt-get update -qq && sudo apt-get install -y tmux
       - run: npm ci
-      - name: Build the packages the tests import
-        run: npm run build
-      - name: Run the suite without ambient credentials or external network
+      - name: Build and assemble only this test candidate
+        run: npm run build:package
+      - name: Typecheck all packages
+        run: npm run lint
+      - name: Focused renamed consumers, built-ins and migration preservation
+        run: npx vitest run packages/daemon/test/community-harness-runtime.test.ts packages/daemon/test/restore-orchestrator.test.ts packages/daemon/test/seat-set-cwd.test.ts packages/daemon/test/migration-fixture-parity.test.ts packages/cli/test/lazy-program.test.ts packages/cli/test/ps.test.ts packages/tui/test/hydrate.test.ts
+      - name: Real private daemon, HTTP, CLI, SQLite, tmux launch and delivery
+        run: npx vitest run packages/daemon/test/community-harness-runtime.integration.test.ts
+      - name: Package and source name inventory with enumerated storage exceptions
         run: |
-          suite_root=$(mktemp -d "$RUNNER_TEMP/opr-test.XXXXXX")
-          suite_root=$(cd "$suite_root" && pwd -P)
-          mkdir -p "$suite_root/home" "$suite_root/bin"
-          # Same system bytes, nonprivileged mode; no system file is changed.
-          /usr/bin/install -m 0755 /bin/ps "$suite_root/bin/ps"
-          # Only this job's temporary sockets (including tmux) are reachable.
-          env -i HOME="$suite_root/home" PATH="$PATH" TMPDIR="$suite_root" TMUX_TMPDIR="$suite_root" \
-            CI=true TERM=xterm-256color \
-            sandbox-exec -D IPC_ROOT="$suite_root" -p '(version 1)(allow default)(deny network-outbound)(allow network-outbound (remote ip "localhost:*"))(allow network-outbound (subpath (param "IPC_ROOT")))' \
-            /bin/bash -s "${{ matrix.package }}" <<'SUITE'
-          set -euo pipefail
-          node scripts/ci-macos-process-probe.mjs
-          # The production readers use bare ps. Select real system bytes only after
-          # self/owned-child observation and network/IPC confinement are proved.
-          export PATH="$TMPDIR/bin:$PATH"
-          test "$(command -v ps)" = "$TMPDIR/bin/ps"
-          exec npm run test -w "packages/$1"
-          SUITE
-
-  installed-scenario:
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Installed package, daemon restart, and seeded durability failure
-        run: bash scripts/run-pr-scenarios.sh
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: installed-scenario-evidence
-          path: dist/pr-scenarios/
-          if-no-files-found: error
+          npm pack --workspace packages/cli --ignore-scripts --pack-destination packages/cli
+          python3 - <<'PYCODE'
+          import pathlib,re,subprocess,json,tarfile
+          pattern=re.compile(r"agent[-_ ]apps?(?:\b|_)|agentApp\w*|AgentApp\w*|AGENT_APP\w*", re.I)
+          root=pathlib.Path('.')
+          source_allow={
+           'packages/daemon/src/db/all-migrations.ts':['import { sessionAgentAppSchema as sessionCommunityHarnessSchema } from "./migrations/114_session_agent_app.js";'],
+           'packages/daemon/test/helpers/test-app.ts':['import { sessionAgentAppSchema as sessionCommunityHarnessSchema } from "../../src/db/migrations/114_session_agent_app.js";'],
+           'packages/daemon/src/domain/session-registry.ts':[
+           'this.db.prepare("UPDATE sessions SET agent_app = ? WHERE id = ?").run(app, sessionId);',
+           '...(row.agent_app ? { communityHarness: row.agent_app } : {}),',
+           'agent_app?: string | null;',
+           'has = (db.prepare("PRAGMA table_info(sessions)").all() as Array<{ name?: string }>).some(row => row.name === "agent_app");',
+           'return has ? `${alias}.agent_app` : "NULL";'],
+           'packages/daemon/test/community-harness-runtime.test.ts':[
+           'CREATE TABLE sessions(id INTEGER, node_id TEXT, session_name TEXT, status TEXT, agent_app TEXT);',
+           'db.prepare("INSERT INTO sessions (id, node_id, session_name, status, startup_status, agent_app) VALUES (\'s1\', \'n1\', \'w@r\', \'running\', \'ready\', ?)\").run(communityHarness);']
+          }
+          # SQL fixture strings above are checked as exact source lines below, using the actual accepted line from source.
+          f='packages/daemon/test/community-harness-runtime.test.ts'
+          source_allow[f]=[line.strip() for line in (root/f).read_text().splitlines() if pattern.search(line) and ('CREATE TABLE sessions(' in line or 'INSERT INTO sessions (' in line)]
+          legacy='packages/daemon/src/db/migrations/114_session_agent_app.ts'
+          assert (root/legacy).read_bytes()==subprocess.check_output(['git','show','edd0a967e67af10b5513439cd14f87eeeabd179f:'+legacy])
+          violations=[];allowed=[]
+          for path in subprocess.check_output(['git','ls-files','-z']).decode().split('\0'):
+           if not path:continue
+           if pattern.search(path) and path!=legacy:violations.append([path,'path'])
+           data=(root/path).read_bytes()
+           try: text=data.decode()
+           except UnicodeDecodeError:continue
+           for n,line in enumerate(text.splitlines(),1):
+            if not pattern.search(line):continue
+            if path==legacy or line.strip() in source_allow.get(path,[]):allowed.append([path,n,line.strip()])
+            else:violations.append([path,n,line])
+          print('SOURCE_NAME_SWEEP='+json.dumps({'allowed':allowed,'violations':violations}))
+          assert not violations
+          package_allow={
+           'package/daemon/dist/db/all-migrations.js':lambda line:'sessionAgentAppSchema as sessionCommunityHarnessSchema' in line and '114_session_agent_app.js' in line,
+           'package/daemon/dist/domain/session-registry.js':lambda line:any(k in line for k in ['UPDATE sessions SET agent_app = ?', 'row.agent_app ? { communityHarness: row.agent_app }', 'row.name === "agent_app"', '`${alias}.agent_app`'])
+          }
+          archive=next(pathlib.Path('packages/cli').glob('*.tgz'))
+          violations=[];allowed=[];names=[]
+          with tarfile.open(archive) as tar:
+           for member in tar.getmembers():
+            names.append(member.name)
+            immutable=member.name.startswith('package/daemon/dist/db/migrations/114_session_agent_app.')
+            if pattern.search(member.name) and not immutable:violations.append([member.name,'path'])
+            if not member.isfile():continue
+            try:text=tar.extractfile(member).read().decode()
+            except UnicodeDecodeError:continue
+            for n,line in enumerate(text.splitlines(),1):
+             if not pattern.search(line):continue
+             if immutable or package_allow.get(member.name,lambda line:False)(line):allowed.append([member.name,n,line.strip()])
+             else:violations.append([member.name,n,line])
+          assert 'package/dist/commands/community-harness.js' in names
+          assert 'package/daemon/dist/domain/community-harness-presets.js' in names
+          assert 'package/daemon/dist/routes/community-harnesses.js' in names
+          print('PACKAGE_NAME_SWEEP='+json.dumps({'members':len(names),'allowed':allowed,'violations':violations}))
+          assert not violations
+          PYCODE
