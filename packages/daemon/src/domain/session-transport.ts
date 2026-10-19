@@ -3201,8 +3201,10 @@ export class SessionTransport {
       hookActivity.reason !== "permission_request_pending" &&
       hookActivity.reason !== "permission_prompt_cleared"
     ) {
-      // Fresh hook (within the 15s send window): authoritative for any state.
-      if (this.hookFreshForSend(hookActivity, now)) {
+      const freshForSend = this.hookFreshForSend(hookActivity, now);
+      // A fresh positive prompt or unknown hook keeps its existing verdict. Idle/running hooks
+      // still allow delivery, but cannot override the pane's positive current-prompt veto.
+      if (freshForSend && hookActivity.state !== "idle" && hookActivity.state !== "running") {
         return hookActivity;
       }
       // OPR.0.4.3.28 Part A — a stale-but-latest `idle` hook (older than the 15s
@@ -3213,7 +3215,7 @@ export class SessionTransport {
       // A stale NON-idle hook (running/needs_input >15s) still falls through to
       // the pane probe below. No 15s widen; scoped to stale!==true so a
       // truly-abandoned seat (>5min) still degrades to the probe.
-      if (hookActivity.state === "idle") {
+      if (hookActivity.state === "idle" || (freshForSend && hookActivity.state === "running")) {
         // Guard code-review 2026-07-02 (Blocker 1): a NARROW real-time veto
         // before trusting the stale-idle hook — never paste+Enter onto a VISIBLE
         // picker/permission prompt. Only a POSITIVE needs_input from the pane
