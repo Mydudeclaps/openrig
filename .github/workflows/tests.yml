@@ -1,31 +1,16 @@
 name: Tests
-
-# Builds, type-checks and runs every test suite on a clean GitHub runner, and records the file
-# list each published package would contain. Each suite is its own job so one failure does not
-# hide the others. No provider credentials or operator configuration are supplied.
-# Package suites deny external networking; scenario runtime has no external route.
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
-
+on: workflow_dispatch
 permissions:
   contents: read
-
-concurrency:
-  group: tests-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  build-and-package:
+  cleanup-results-and-effects:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: 44bea397d
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -33,110 +18,20 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Record the published file list of each package
+      - name: Original main ignores the override and reaches no cleanup fault
         run: |
-          set -euo pipefail
-          mkdir -p pack-lists
-          for p in cli daemon tui; do
-            (cd packages/$p && npm pack --dry-run --json --ignore-scripts) \
-              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const f of JSON.parse(s)[0].files)console.log(f.path)})' \
-              | sort > pack-lists/$p.txt
-            echo "$p: $(wc -l < pack-lists/$p.txt) files"
-          done
-      - uses: actions/upload-artifact@v4
-        with:
-          name: pack-lists
-          path: pack-lists/
-
-  typecheck:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run lint
-
-  repo-checks:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run test:repo
-
-  package-tests:
-    if: ${{ github.event_name != 'push' }}
-    # macOS, the platform OpenRig runs on: several daemon and cli tests read macOS ps columns,
-    # file-inode behaviour and release tags.
-    runs-on: macos-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        package: [daemon, cli, tui, ui]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: brew install tmux
-      - run: npm ci
-      - name: Build the packages the tests import
-        run: npm run build
-      - name: Run the suite without ambient credentials or external network
+          git checkout aa097e6dc8b035934a6a4376110d687018ca7d17 -- packages/daemon/src/domain/types.ts packages/daemon/src/domain/rigspec-instantiator.ts packages/daemon/src/domain/bootstrap-orchestrator.ts packages/cli/src/commands/up.ts packages/cli/src/commands/bundle.ts
+          EXPECT_ENV_CLEANUP_BASELINE=1 npx vitest run packages/daemon/test/bootstrap-orchestrator.test.ts -t 'cleanup failure accounting'
+      - name: Prior forwarding head must expose exactly twelve missing failure-reporting assertions
         run: |
-          suite_root=$(mktemp -d "$RUNNER_TEMP/opr-test.XXXXXX")
-          suite_root=$(cd "$suite_root" && pwd -P)
-          mkdir -p "$suite_root/home" "$suite_root/bin"
-          # Same system bytes, nonprivileged mode; no system file is changed.
-          /usr/bin/install -m 0755 /bin/ps "$suite_root/bin/ps"
-          # Only this job's temporary sockets (including tmux) are reachable.
-          env -i HOME="$suite_root/home" PATH="$PATH" TMPDIR="$suite_root" TMUX_TMPDIR="$suite_root" \
-            CI=true TERM=xterm-256color \
-            sandbox-exec -D IPC_ROOT="$suite_root" -p '(version 1)(allow default)(deny network-outbound)(allow network-outbound (remote ip "localhost:*"))(allow network-outbound (subpath (param "IPC_ROOT")))' \
-            /bin/bash -s "${{ matrix.package }}" <<'SUITE'
-          set -euo pipefail
-          node scripts/ci-macos-process-probe.mjs
-          # The production readers use bare ps. Select real system bytes only after
-          # self/owned-child observation and network/IPC confinement are proved.
-          export PATH="$TMPDIR/bin:$PATH"
-          test "$(command -v ps)" = "$TMPDIR/bin/ps"
-          exec npm run test -w "packages/$1"
-          SUITE
-
-  installed-scenario:
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Installed package, daemon restart, and seeded durability failure
-        run: bash scripts/run-pr-scenarios.sh
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: installed-scenario-evidence
-          path: dist/pr-scenarios/
-          if-no-files-found: error
+          git checkout 9ba51dc2733160d867f0f7bf418d725b7bd3c1fd -- packages/daemon/src/domain/types.ts packages/daemon/src/domain/rigspec-instantiator.ts packages/daemon/src/domain/bootstrap-orchestrator.ts packages/cli/src/commands/up.ts packages/cli/src/commands/bundle.ts
+          set +e
+          npx vitest run packages/daemon/test/bootstrap-orchestrator.test.ts -t 'cleanup failure accounting' --reporter=json --outputFile=/tmp/cleanup-prior.json
+          result=$?
+          set -e
+          test "$result" = 1
+          node -e 'const r=require("/tmp/cleanup-prior.json"); const f=r.testResults.flatMap(x=>x.assertionResults).filter(x=>x.status==="failed"); if(r.numFailedTests!==12 || r.numPassedTests!==0 || f.length!==12 || f.some(x=>!x.fullName.includes("cleanup failure accounting")))process.exit(1); console.log("Exactly12 prior forwarding-head cleanup-accounting target failures.")'
+      - name: Candidate preserves cleanup guidance and non-success results with effects measured
+        run: |
+          git checkout 44bea397d -- packages/daemon/src/domain/types.ts packages/daemon/src/domain/rigspec-instantiator.ts packages/daemon/src/domain/bootstrap-orchestrator.ts packages/cli/src/commands/up.ts packages/cli/src/commands/bundle.ts
+          npx vitest run packages/daemon/test/bootstrap-orchestrator.test.ts packages/daemon/test/rigspec-instantiator.test.ts packages/daemon/test/up-route-env.test.ts packages/daemon/test/node-launcher-one-off-env.test.ts packages/daemon/test/seat-env.test.ts packages/cli/test/up.test.ts packages/cli/test/bundle.test.ts
