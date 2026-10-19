@@ -159,7 +159,7 @@ describe("BootstrapOrchestrator", () => {
     };
   }
 
-  function buildOrchestrator(opts?: { exec?: ExecFn; instantiator?: unknown; podInstantiator?: unknown }) {
+  function buildOrchestrator(opts?: { exec?: ExecFn; instantiator?: unknown; podInstantiator?: unknown; bundleSourceResolver?: unknown }) {
     const exec = opts?.exec ?? createMockExec({
       "tmux -V": "tmux 3.4",
       "claude --version": "claude 1.0.0",
@@ -195,7 +195,7 @@ describe("BootstrapOrchestrator", () => {
       packageInstallService,
       rigInstantiator: instantiator as any,
       fsOps: realFsOps(),
-      bundleSourceResolver: null,
+      bundleSourceResolver: (opts?.bundleSourceResolver ?? null) as any,
       podInstantiator: opts?.podInstantiator as any,
     });
   }
@@ -226,6 +226,86 @@ describe("BootstrapOrchestrator", () => {
     const result = await orch.bootstrap({ mode: "apply", sourceRef: writeSpec(yaml), nonInterruptive: request });
     expect(result.status, JSON.stringify(result)).toBe("completed");
     expect(instantiate).toHaveBeenCalledWith(expect.any(String), expect.any(String), expect.objectContaining({ nonInterruptive: expected }));
+  });
+
+  describe.each(["flat spec", "v1 bundle"])("one-off launch environment: %s", (format) => {
+    async function source() {
+      const specPath = writeSpec(SIMPLE_SPEC_YAML.replace("    runtime: claude-code", "    runtime: claude-code\n  - id: reviewer\n    runtime: codex"));
+      if (format === "flat spec") return { sourceRef: specPath };
+      const { LegacyBundleAssembler } = await import("../src/domain/bundle-assembler.js");
+      const { pack } = await import("../src/domain/bundle-archive.js");
+      const pkgDir = path.join(tmpDir, "package");
+      writePkg(pkgDir, VALID_MANIFEST_YAML, { "skills/helper/SKILL.md": "# Helper" });
+      const staging = path.join(tmpDir, "bundle");
+      new LegacyBundleAssembler({ fsOps: {
+        readFile: (p) => fs.readFileSync(p, "utf-8"), exists: fs.existsSync,
+        mkdirp: (p) => fs.mkdirSync(p, { recursive: true }),
+        writeFile: (p, content) => fs.writeFileSync(p, content),
+        copyDir: (from, to) => fs.cpSync(from, to, { recursive: true }),
+      } }).assemble({
+        specPath, outputDir: staging, bundleName: "env-fixture", bundleVersion: "1.0.0",
+        packages: [{ name: "test-pkg", version: "1.0.0", sourcePath: pkgDir, originalSource: "./package", manifestHash: "fixture" }],
+      });
+      const sourceRef = path.join(tmpDir, "env.rigbundle");
+      await pack(staging, sourceRef);
+      return { sourceRef, sourceKind: "rig_bundle" };
+    }
+
+    async function realLaunch() {
+      const { RigRepository } = await import("../src/domain/rig-repository.js");
+      const { SessionRegistry } = await import("../src/domain/session-registry.js");
+      const { EventBus } = await import("../src/domain/event-bus.js");
+      const { NodeLauncher } = await import("../src/domain/node-launcher.js");
+      const { RigInstantiator } = await import("../src/domain/rigspec-instantiator.js");
+      const { RigSpecPreflight } = await import("../src/domain/rigspec-preflight.js");
+      const { LegacyBundleSourceResolver } = await import("../src/domain/bundle-source-resolver.js");
+      const rigRepo = new RigRepository(db);
+      const sessionRegistry = new SessionRegistry(db);
+      const eventBus = new EventBus(db);
+      // Only the terminal/process boundary is inert; bootstrap, instantiation, launch and SQLite are real.
+      const tmux = {
+        createSession: vi.fn(async () => ({ ok: true })),
+        killSession: vi.fn(async () => ({ ok: true })),
+        hasSession: async () => false, listPanes: async () => [],
+        unsetSessionEnv: vi.fn(async () => {}),
+      } as unknown as import("../src/adapters/tmux.js").TmuxAdapter;
+      const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux });
+      const preflight = new RigSpecPreflight({ rigRepo, tmuxAdapter: tmux, exec: async () => "fixture runtime" });
+      const instantiator = new RigInstantiator({ db, rigRepo, sessionRegistry, eventBus, nodeLauncher, preflight });
+      const orch = buildOrchestrator({ instantiator, bundleSourceResolver: new LegacyBundleSourceResolver({ fsOps: realFsOps() }) });
+      return { orch, tmux, rigRepo };
+    }
+
+    it("delivers the synthetic override to every first pane without saving it for later launches", async () => {
+      const { orch, tmux, rigRepo } = await realLaunch();
+      const envOverride = { DOCSDESK_ENV_PROBE: "synthetic=with spaces" };
+      const result = await orch.bootstrap({ mode: "apply", ...await source(), envOverride });
+      expect(result.status, JSON.stringify(result)).toBe("completed");
+      expect(tmux.createSession).toHaveBeenCalledTimes(2);
+      for (const call of vi.mocked(tmux.createSession).mock.calls) {
+        expect(call[2]).toMatchObject(envOverride);
+        expect(call[2]?.OPENRIG_SEAT_ENV_KEYS).toBe("DOCSDESK_ENV_PROBE");
+        expect(tmux.unsetSessionEnv).toHaveBeenCalledWith(call[0], "DOCSDESK_ENV_PROBE");
+      }
+      expect(rigRepo.getRig(result.rigId!)!.nodes.every((node) => !node.env)).toBe(true);
+    });
+
+    it("keeps a launch without an override unchanged", async () => {
+      const { orch, tmux } = await realLaunch();
+      const result = await orch.bootstrap({ mode: "apply", ...await source() });
+      expect(result.status, JSON.stringify(result)).toBe("completed");
+      expect(tmux.createSession).toHaveBeenCalledTimes(2);
+      for (const call of vi.mocked(tmux.createSession).mock.calls) expect(call[2]?.DOCSDESK_ENV_PROBE).toBeUndefined();
+      expect(tmux.unsetSessionEnv).not.toHaveBeenCalled();
+    });
+
+    it("does not launch a pane in plan mode even with an override", async () => {
+      const { orch, tmux, rigRepo } = await realLaunch();
+      const result = await orch.bootstrap({ mode: "plan", ...await source(), envOverride: { DOCSDESK_ENV_PROBE: "synthetic" } });
+      expect(result.status, JSON.stringify(result)).toBe("planned");
+      expect(tmux.createSession).not.toHaveBeenCalled();
+      expect(rigRepo.listRigs()).toEqual([]);
+    });
   });
 
   // T1: Plan mode returns plan, 0 bootstrap_actions rows
