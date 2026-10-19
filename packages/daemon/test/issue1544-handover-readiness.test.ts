@@ -143,30 +143,38 @@ describe("SeatHandoverService", () => {
   }
 
 
-  it.each(["classic-predecessor-history", "screen-without-predecessor-history", "new-runtime-already-ready"])("1544 %s", async mode => {
+  it.each(["classic-predecessor-history", "screen-without-predecessor-history", "new-runtime-already-ready", "stale-wrapper-screen-unavailable", "working-wrapper-screen-unavailable"])("1544 %s", async mode => {
     seedSeat({ runtime: "claude-code" });
     let elapsed = 0, requested = false, packetPasted = false;
-    const nativeAt = mode === "new-runtime-already-ready" ? 0 : 500;
+    const nativeAt = mode === "new-runtime-already-ready" || mode === "working-wrapper-screen-unavailable" ? 0 : 500;
+    const unavailable = mode.endsWith("screen-unavailable");
+    let currentScreenInput = false;
+    const identicalFrame = "Claude Code v2.1.303\n❯ \n  ⏵⏵ accept edits on (shift+tab to cycle)";
     const oldFrame = "Claude Code v2.1.303\n❯ predecessor finished turn\n  ⏵⏵ accept edits on (shift+tab to cycle)";
     const freshFrame = "Claude Code v2.1.303\n❯ \n  ⏵⏵ accept edits on (shift+tab to cycle)";
     const trace: unknown[] = [];
-    const pane = () => requested && elapsed >= nativeAt ? freshFrame
+    const pane = () => unavailable ? identicalFrame : requested && elapsed >= nativeAt ? freshFrame
       : mode === "classic-predecessor-history" ? oldFrame + "\noperator@host$ " : "operator@host$ ";
-    getPaneCommand.mockImplementation(async () => requested && elapsed >= nativeAt ? "claude" : "zsh");
-    capturePaneScreen.mockImplementation(async () => pane());
+    getPaneCommand.mockImplementation(async () => unavailable && requested ? "sh" : requested && elapsed >= nativeAt ? "claude" : "zsh");
+    capturePaneScreen.mockImplementation(async () => unavailable ? null : requested && elapsed < nativeAt ? "operator@host$ " : pane());
     const capturePaneContent = vi.fn(async (_session: string, lines: number) => {
       trace.push({ kind: "read", elapsed, lines, successorRuntimeStarted: requested && elapsed >= nativeAt, pane: pane() });
-      return pane();
+      return currentScreenInput ? (unavailable ? null : requested && elapsed < nativeAt ? "operator@host$ " : pane()) : pane();
     });
     const target = { ...tmux(), capturePaneContent } as unknown as TmuxAdapter;
     const fsError = () => { throw new Error("unexpected filesystem access"); };
-    const listProcesses = vi.fn(() => []);
+    const listProcesses = vi.fn(() => { if (unavailable) throw new Error("fixture ps unavailable"); return []; });
     const claude = new ClaudeCodeAdapter({ tmux: target, fsOps: { exists: () => false, readFile: fsError,
       writeFile: fsError, mkdirp: fsError, copyFile: fsError }, listProcesses, sleep: async () => {}, sessionIdFactory: () => successorToken });
     const reads: unknown[] = [];
     const readiness = vi.fn(async (binding) => {
       const result = await claude.checkReady(binding);
-      reads.push({ elapsed, successorRuntimeStarted: requested && elapsed >= nativeAt, result });
+      // Counterfactual reader qualification only: same public method with visible-screen bytes,
+      // no production source edit, no fresh-launch refusal shipped.
+      currentScreenInput = true;
+      const withCurrentScreen = await claude.checkReady(binding);
+      currentScreenInput = false;
+      reads.push({ elapsed, successorRuntimeStarted: requested && elapsed >= nativeAt, result, withCurrentScreen });
       return result;
     });
     const successorToken = "22222222-2222-4222-8222-222222222222";
@@ -198,10 +206,20 @@ describe("SeatHandoverService", () => {
       sessions, oldProbe, respawn: respawnPane.mock.calls });
     expect(result.ok).toBe(true);
     expect(reads.length).toBeGreaterThan(0);
-    // Desired invariant. It fails for the stale classic tail on the released implementation.
-    expect(reads.filter((x: any) => x.result.ready).every((x: any) => x.successorRuntimeStarted)).toBe(true);
-    expect(trace.filter((x: any) => x.kind === "packet-paste" || x.kind === "input")
-      .every((x: any) => x.successorRuntimeStarted)).toBe(true);
+    const first = reads[0] as any;
+    if (mode === "classic-predecessor-history") {
+      expect(first.result.ready).toBe(true);
+      expect(first.successorRuntimeStarted).toBe(false);
+      expect(first.withCurrentScreen.ready).toBe(false);
+    } else if (unavailable) {
+      expect(first.result.ready).toBe(true);
+      expect(first.withCurrentScreen).toMatchObject({ ready: false, code: "awaiting_runtime" });
+      expect(first.successorRuntimeStarted).toBe(mode === "working-wrapper-screen-unavailable");
+    } else if (mode === "new-runtime-already-ready") expect(first.withCurrentScreen.ready).toBe(true);
+    else {
+      expect(first.result.ready).toBe(false);
+      expect((reads.at(-1) as any).withCurrentScreen.ready).toBe(true);
+    }
   });
 });
 
