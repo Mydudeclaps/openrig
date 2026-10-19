@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import http from "node:http";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Command } from "commander";
 import { attachCommand, resolveAttachContext } from "../src/commands/attach.js";
 import { DaemonClient } from "../src/client.js";
@@ -129,6 +132,41 @@ describe("Attach CLI", () => {
     expect(exitCode).toBeUndefined();
     expect(logs.join("\n")).toContain("Attached this shell to node orch1.lead");
     expect(receivedBody).toMatchObject({ logicalId: "orch1.lead", runtime: "codex" });
+  });
+
+  it.each([
+    ["--node", "orch1.lead"],
+    ["--pod", "orch1", "--member", "lead", "--runtime", "codex"],
+  ])("forwards --display-name from tmux in %s mode without changing its physical target", async (...target) => {
+    const bin = mkdtempSync(join(tmpdir(), "openrig-attach-tmux-"));
+    const savedPane = process.env["TMUX_PANE"];
+    const savedPath = process.env["PATH"];
+    writeFileSync(join(bin, "tmux"), "#!/bin/sh\nprintf '0\\n@12\\n%%42\\n'\n");
+    chmodSync(join(bin, "tmux"), 0o755);
+    process.env["TMUX_PANE"] = "%42";
+    process.env["PATH"] = `${bin}:${savedPath ?? ""}`;
+    try {
+      const { exitCode } = await captureLogs(async () => {
+        await makeCmd().parseAsync([
+          "node", "rig", "attach", "--self", "--rig", "rig-1", ...target,
+          "--display-name", "Taylor",
+        ]);
+      });
+      expect(exitCode).toBeUndefined();
+      expect(receivedBody).toMatchObject({
+        displayName: "Taylor",
+        attachmentType: "tmux",
+        tmuxSession: "0",
+        tmuxWindow: "@12",
+        tmuxPane: "%42",
+      });
+    } finally {
+      if (savedPane === undefined) delete process.env["TMUX_PANE"];
+      else process.env["TMUX_PANE"] = savedPane;
+      if (savedPath === undefined) delete process.env["PATH"];
+      else process.env["PATH"] = savedPath;
+      rmSync(bin, { recursive: true, force: true });
+    }
   });
 
   it("attach --self --print-env prints shell exports only", async () => {
