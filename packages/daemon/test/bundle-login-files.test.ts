@@ -122,6 +122,15 @@ describe("known harness login paths in selected bundle content", () => {
       expect(inspected.error || inspected.integrityResult?.errors.join("\n")).toMatch(/included_login_files/);
     });
 
+  it.each([1, 2] as const)("v%s inspect keeps a malformed login record diagnostic", async schemaVersion => {
+    const f = await existingArchive(root, undefined, true, schemaVersion);
+    const response = await post("inspect", { bundlePath: f.archive });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.digestValid).toBe(true);
+    expect(body.error).toMatch(/included_login_files/);
+  });
+
   it("an additional unrecorded login file still fails every consumer", async () => {
     const paths = LOGIN_FILES.map(file => `agents/worker/${file}`);
     const f = await existingArchive(root, paths, paths.slice(0, 2));
