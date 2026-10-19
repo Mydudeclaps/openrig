@@ -16,13 +16,15 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run build
-      - name: Verify display-name forwarding and existing attach behavior
+      - run: npm run build -w packages/daemon
+      - name: Check whether a logical reply address reaches a raw tmux binding
         run: |
           mkdir evidence
-          set -e
-          npm run test -w packages/cli -- test/attach.test.ts --reporter=json --outputFile="$GITHUB_WORKSPACE/evidence/cli-green.json" > evidence/cli-green.log 2>&1
-          npm run lint > evidence/lint.log 2>&1
+          set +e
+          npm run test -w packages/daemon -- test/self-attach-reply-address.test.ts --reporter=json --outputFile="$GITHUB_WORKSPACE/evidence/reply-address.json" > evidence/reply-address.log 2>&1
+          code=$?
+          printf '%s\n' "$code" > evidence/reply-address.exit
+          test "$code" -eq 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
