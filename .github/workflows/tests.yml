@@ -6,18 +6,10 @@ jobs:
   fresh-in-place-readiness:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - cut: baseline
-            ref: 80f74f608636ca9289602a2664fb31037370df21
-          - cut: candidate
-            ref: f7213dfa08a2da609830151b04e9efff4228d612
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.ref }}
+          ref: f7213dfa08a2da609830151b04e9efff4228d612
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -38,24 +30,18 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          CHECKPOINT_OUTPUT="$RUNNER_TEMP/issue1544" npm exec -w packages/daemon -- vitest run test/claude-handover-readiness.test.ts test/claude-fresh-in-place-scope.test.ts --reporter verbose > "$RUNNER_TEMP/issue1544/test.log" 2>&1
+          CHECKPOINT_OUTPUT="$RUNNER_TEMP/issue1544" npm exec -w packages/daemon -- vitest run test/claude-handover-readiness.test.ts test/claude-fresh-in-place-scope.test.ts -t "accept-edits-unavailable|keeps unknown identity unknown" --reporter verbose > "$RUNNER_TEMP/issue1544/test.log" 2>&1
           code=$?
           set -e
           cat "$RUNNER_TEMP/issue1544/test.log"
           printf '%s\n' "$code" > "$RUNNER_TEMP/issue1544/test-exit.txt"
-          if [ '${{ matrix.cut }}' = baseline ]; then test "$code" -eq 1; else test "$code" -eq 0; fi
+          test "$code" -eq 1
           git diff --exit-code -- packages/daemon/src
           sha256sum packages/daemon/src/adapters/claude-code-adapter.ts packages/daemon/src/domain/runtime-adapter.ts packages/daemon/src/domain/successor-session-launcher.ts packages/daemon/test/claude-handover-readiness.test.ts packages/daemon/test/claude-fresh-in-place-scope.test.ts > "$RUNNER_TEMP/issue1544/bindings.after.txt"
           diff -u "$RUNNER_TEMP/issue1544/bindings.before.txt" "$RUNNER_TEMP/issue1544/bindings.after.txt"
-      - name: Affected preservation
-        if: matrix.cut == 'candidate'
-        run: |
-          set -euo pipefail
-          npm exec -w packages/daemon -- vitest run test/claude-runtime-adapter.test.ts test/claude-auto-startup.test.ts test/claude-wrapper-launch-startup.test.ts test/native-resume-probe.test.ts test/successor-session-launcher.test.ts test/seat-handover-service.test.ts test/seat-handover-sources.test.ts --reporter verbose > "$RUNNER_TEMP/issue1544/preservation.log" 2>&1
-          cat "$RUNNER_TEMP/issue1544/preservation.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: fresh-in-place-${{ matrix.cut }}
+          name: fresh-in-place-round2-red
           path: ${{ runner.temp }}/issue1544/
           if-no-files-found: error
