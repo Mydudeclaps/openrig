@@ -112,7 +112,7 @@ describe("known harness login paths in selected bundle content", () => {
     const plan = await installed.json(); for (const file of LOGIN_FILES) expectLoginMessage(plan.warnings.join("\n"), file);
   });
 
-  it.each([null, true, "*", ["*"], ["agents/*/.codex/auth.json"], ["agents/worker/.codex"], ["../.codex/auth.json"], [".codex/auth.json", ".codex/auth.json"]])(
+  it.each([null, true, "*", ["*"], ["agents/*/.codex/auth.json"], ["agents/worker/.codex"], ["../.codex/auth.json"], ["/.codex/auth.json"], [".codex/auth.json", ".codex/auth.json"]])(
     "rejects a malformed or non-exact login record: %j", async record => {
       const f = await existingArchive(root, undefined, record);
       const result = verifyIntegrity(f.staging, { integrity: f.integrity, includedLoginFiles: record } as never, integrityFs);

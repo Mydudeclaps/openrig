@@ -17,26 +17,16 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run build -w packages/daemon
-      - name: Capture the known inspect regression and ordinary v1 head bytes
+      - run: npm run build
+      - name: Validate the corrected inspect and messages, and capture ordinary v1 head bytes
         run: |
           set -euo pipefail
           mkdir evidence
-          set +e
-          npm run test -w packages/daemon -- test/bundle-login-files.test.ts -t 'inspect keeps a malformed login record diagnostic' --reporter=json --outputFile="$GITHUB_WORKSPACE/evidence/inspect-red.json" > evidence/inspect-red.log 2>&1
-          result=$?
-          set -e
-          test "$result" = 1
-          python3 - <<'CHECK'
-          import json
-          r=json.load(open('evidence/inspect-red.json'))
-          cases=[a for t in r['testResults'] for a in t['assertionResults']]
-          selected=[a for a in cases if a['status']!='pending']
-          assert len(selected)==2, selected
-          failed=[a for a in selected if a['status']=='failed']
-          assert len(failed)==1 and 'v1 inspect' in failed[0]['title'], selected
-          assert '500' in '\n'.join(failed[0]['failureMessages'])
-          CHECK
+          npm run test -w packages/daemon -- test/bundle-login-files.test.ts test/bundle-routes.test.ts test/bundle-binary-bytes.test.ts --reporter=json --outputFile="$GITHUB_WORKSPACE/evidence/daemon-green.json" > evidence/daemon-green.log 2>&1
+          npm run test -w packages/cli -- test/bundle-login-files.test.ts test/bundle-source.test.ts --reporter=json --outputFile="$GITHUB_WORKSPACE/evidence/cli-green.json" > evidence/cli-green.log 2>&1
+          npm run test -w packages/ui -- test/bundle-inspector.test.tsx --reporter=json --outputFile="$GITHUB_WORKSPACE/evidence/ui-green.json" > evidence/ui-green.log 2>&1
+          npm run lint > evidence/lint.log 2>&1
+          node scripts/check-docs-guard.mjs > evidence/docs.log 2>&1
           BUNDLE_ARCHIVE_CAPTURE="$GITHUB_WORKSPACE/evidence/head-v1.rigbundle" npm run test -w packages/daemon -- test/bundle-v1-byte-probe.test.ts > evidence/head-bytes.log 2>&1
       - name: Capture exact base v1 bytes with the unchanged fixture
         run: |
