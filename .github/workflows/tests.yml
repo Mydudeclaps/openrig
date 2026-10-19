@@ -30,23 +30,18 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          CHECKPOINT_OUTPUT="$RUNNER_TEMP/issue1544" npm exec -w packages/daemon -- vitest run test/claude-handover-readiness.test.ts test/claude-fresh-in-place-scope.test.ts --reporter verbose > "$RUNNER_TEMP/issue1544/test.log" 2>&1
+          CHECKPOINT_OUTPUT="$RUNNER_TEMP/issue1544" npm exec -w packages/daemon -- vitest run test/claude-handover-readiness.test.ts test/claude-fresh-in-place-scope.test.ts -t classic-chevron --reporter verbose > "$RUNNER_TEMP/issue1544/test.log" 2>&1
           code=$?
           set -e
           cat "$RUNNER_TEMP/issue1544/test.log"
           printf '%s\n' "$code" > "$RUNNER_TEMP/issue1544/test-exit.txt"
-          test "$code" -eq 0
+          test "$code" -eq 1
           git diff --exit-code -- packages/daemon/src
           sha256sum packages/daemon/src/adapters/claude-code-adapter.ts packages/daemon/src/domain/runtime-adapter.ts packages/daemon/src/domain/successor-session-launcher.ts packages/daemon/test/claude-handover-readiness.test.ts packages/daemon/test/claude-fresh-in-place-scope.test.ts > "$RUNNER_TEMP/issue1544/bindings.after.txt"
           diff -u "$RUNNER_TEMP/issue1544/bindings.before.txt" "$RUNNER_TEMP/issue1544/bindings.after.txt"
-      - name: Affected preservation
-        run: |
-          set -euo pipefail
-          npm exec -w packages/daemon -- vitest run test/claude-runtime-adapter.test.ts test/claude-auto-startup.test.ts test/claude-wrapper-launch-startup.test.ts test/native-resume-probe.test.ts test/successor-session-launcher.test.ts test/seat-handover-service.test.ts test/seat-handover-sources.test.ts test/native-process-lineage.test.ts --reporter verbose > "$RUNNER_TEMP/issue1544/preservation.log" 2>&1
-          cat "$RUNNER_TEMP/issue1544/preservation.log"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: fresh-in-place-round2-green
+          name: fresh-in-place-round3-red
           path: ${{ runner.temp }}/issue1544/
           if-no-files-found: error
