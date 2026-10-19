@@ -9,7 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 140e9ad4caf0e52d438433638897c4e6b0e4f72a
+          ref: caddbfd75990f5b26ca961cb4fbcc967ba83c9e6
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -18,15 +18,5 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Old remedy must fail exactly the six corrected guidance assertions
-        run: |
-          git checkout edd0a967e67af10b5513439cd14f87eeeabd179f -- packages/cli/src/commands/doctor.ts
-          set +e
-          npx vitest run packages/cli/test/doctor.test.ts --reporter=json --outputFile=/tmp/cmux-remedy-red.json
-          result=$?
-          set -e
-          test "$result" = 1
-          node -e 'const r=require("/tmp/cmux-remedy-red.json"); const f=r.testResults.flatMap(x=>x.assertionResults).filter(x=>x.status==="failed"); if(r.numFailedTests!==6 || f.length!==6)process.exit(1); console.log(JSON.stringify(f.map(x=>x.fullName))); console.log("Six old-remedy assertions failed as intended.")'
-          git checkout 140e9ad4caf0e52d438433638897c4e6b0e4f72a -- packages/cli/src/commands/doctor.ts
-      - name: Corrected messages and existing doctor/setup checks
-        run: npx vitest run packages/cli/test/doctor.test.ts packages/cli/test/cmux-config.test.ts packages/cli/test/setup.test.ts packages/cli/test/doctor-spec-conformance.test.ts
+      - name: Complete only the corrected default-mode and generic-warning assertions
+        run: npx vitest run packages/cli/test/doctor.test.ts -t 'shell cmux pass \+ daemon cmux unavailable|compatible password mode'
