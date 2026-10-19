@@ -148,6 +148,7 @@ export class RigInstantiator {
     const nodeResults: { logicalId: string; status: "launched" | "failed"; error?: string }[] = [];
     const launchedSessionNames: string[] = [];
     const instantiateWarnings: string[] = [];
+    const envCleanupErrors: string[] = [];
 
     for (const logicalId of launchOrder) {
       const result = await this.nodeLauncher.launchNode(rigId!, logicalId, opts?.env ? { env: opts.env } : undefined);
@@ -159,6 +160,7 @@ export class RigInstantiator {
         }
       } else {
         nodeResults.push({ logicalId, status: "failed", error: result.message });
+        if (result.code === "seat_env_cleanup_failed") envCleanupErrors.push(`${logicalId}: ${result.message}`);
       }
     }
 
@@ -180,7 +182,8 @@ export class RigInstantiator {
       return {
         ok: false,
         code: "instantiate_error",
-        message: "all node launches failed",
+        message: envCleanupErrors.length ? `all node launches failed — ${envCleanupErrors.join("; ")}` : "all node launches failed",
+        ...(envCleanupErrors.length ? { envCleanupErrors } : {}),
       };
     }
 
@@ -211,6 +214,7 @@ export class RigInstantiator {
       this.eventBus.emit({
         type: "rig.imported",
         rigId: rigId!,
+        ...(envCleanupErrors.length ? { envCleanupErrors } : {}),
         specName: spec.name,
         specVersion: spec.version,
       });
