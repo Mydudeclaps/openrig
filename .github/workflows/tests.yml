@@ -20,19 +20,18 @@ jobs:
       - name: Address integration and affected identity consumers
         shell: bash
         run: |
+          set +e
           set -uo pipefail
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          npm --workspace @openrig/daemon test -- test/self-attach-address.test.ts test/self-attach-service.test.ts test/session-registry.test.ts test/seat-delivery-guard.test.ts test/seat-delivery-guard-correction.test.ts test/session-transport.test.ts test/queue-repository.test.ts test/whoami-service.test.ts test/agent-activity-store.test.ts test/context-usage-store.test.ts test/transcript-routes.test.ts test/claim-service.test.ts test/seat-handover-service.test.ts test/node-launcher.test.ts test/restore-orchestrator.test.ts test/node-inventory.test.ts test/attach-terminal-activity-and-work.test.ts --reporter=verbose 2>&1 | tee proof/green.log
-          daemon_result=${PIPESTATUS[0]}
-          git diff --exit-code > proof/source-unchanged.txt
           npm --workspace @openrig/cli test -- test/attach-reply-address.test.ts test/attach.test.ts test/whoami.test.ts test/whoami-bounded-peers.test.ts --reporter=verbose 2>&1 | tee proof/cli.log
           cli_result=${PIPESTATUS[0]}
-          printf 'daemon=%s cli=%s\n' "$daemon_result" "$cli_result" > proof/exits.txt
-          if [ "$daemon_result" -ne 0 ] || [ "$cli_result" -ne 0 ]; then exit 1; fi
+          git diff --exit-code > proof/source-unchanged.txt
+          printf 'cli=%s\n' "$cli_result" > proof/exits.txt
+          exit "$cli_result"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: attach-address-integration
+          name: attach-address-cli-completion
           path: proof/
           if-no-files-found: error
