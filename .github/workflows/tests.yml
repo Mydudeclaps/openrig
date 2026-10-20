@@ -9,7 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 20d2ca7c55585aba6c328e1fbca1b01e03d5318e
+          ref: ec5b9cea8771ecf3f8a0b2f2c069fdd6bcf257a1
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -18,21 +18,23 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y tmux
       - run: npm ci
       - run: npm run build
-      - name: Stopped fresh occupant down and up before correction
+      - name: Stopped fresh correction and restore preservation
         shell: bash
         run: |
           set +e
           set -uo pipefail
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          npm --workspace @openrig/daemon test -- test/stopped-fresh-up.test.ts -t "apply without a plan" --reporter=verbose 2>&1 | tee proof/daemon.log
+          npm --workspace @openrig/daemon test -- test/stopped-fresh-up.test.ts test/snapshot-capture.test.ts test/up-route.test.ts test/stopped-seat-restore-contract.test.ts test/restore-plan-preview.test.ts test/restore-check-rehydrate-eligibility.test.ts test/restore-orchestrator.test.ts test/restore-preconditions.test.ts test/seat-fresh-launch.test.ts test/seat-lifecycle-service.test.ts --reporter=verbose 2>&1 | tee proof/daemon.log
           result=${PIPESTATUS[0]}
+          npm run lint 2>&1 | tee proof/typecheck.log
+          lint_result=${PIPESTATUS[0]}
           git diff --exit-code > proof/source-unchanged.txt
-          printf 'daemon=%s\n' "$result" > proof/exits.txt
-          test "$result" -eq 0
+          printf 'daemon=%s\ntypecheck=%s\n' "$result" "$lint_result" > proof/exits.txt
+          test "$result" -eq 0 && test "$lint_result" -eq 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: stopped-fresh-apply-red
+          name: stopped-fresh-green
           path: proof/
           if-no-files-found: error
