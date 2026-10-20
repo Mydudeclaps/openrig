@@ -1604,7 +1604,8 @@ export interface SendOpts {
    *  envelope lines. Agent recipients keep `text`. */
   exactText?: string;
   /** Internal: one of OpenRig's own notices (the watchdog, the model monitor); never accepted from
-   *  HTTP send options. A terminal seat refuses it rather than having it typed into its shell or TUI. */
+   *  HTTP send options. It marks the send and changes nothing by itself: a notice to a terminal seat is
+   *  typed as before, until a per-seat setting can hold OpenRig's notices apart from deliberate sends. */
   openrigNotice?: true;
 }
 
@@ -2152,12 +2153,6 @@ export class SessionTransport {
    * send, add a notice saying so. The notice is context beside the send's own result, which it never changes.
    */
   async send(sessionName: string, text: string, opts?: SendOpts): Promise<SendResult> {
-    // OpenRig's own notices (the watchdog, the model monitor) are never typed into a terminal seat,
-    // whose shell or TUI would run them. Queue wakes stop earlier, in performWakeSend.
-    if (opts?.openrigNotice && isBoundTerminalSeat(this.db, sessionName)) {
-      return { ok: false, sessionName, sent: false, reason: "terminal_seat",
-        error: `'${sessionName}' is a terminal seat (runtime: terminal); OpenRig does not type its own notices into it. Nothing was sent.` };
-    }
     // A terminal seat's shell would run the envelope lines as commands. Swap before the guard,
     // whose outbox body, hash and delivery-ID identity all key on the text actually typed.
     // Without the envelope there's no Sent: line, so stampISO is dropped too: the delivered-latency

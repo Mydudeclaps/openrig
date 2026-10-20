@@ -205,7 +205,6 @@ describe("terminal-runtime send framing", () => {
     expect(isBoundTerminalSeat(db, f.name)).toBe(false);
     const result = await f.transport.send(f.name, "current agent notice", { openrigNotice: true });
     expect(result.ok).toBe(true);
-    expect(result.reason).not.toBe("terminal_seat");
     expect(f.pasted).toEqual(["current agent notice"]);
   });
 
@@ -220,7 +219,15 @@ describe("terminal-runtime send framing", () => {
       }
       const result = await f.transport.send(f.name, "ordinary notice", { openrigNotice: true });
       expect(result.ok).toBe(true);
-      expect(result.reason).not.toBe("terminal_seat");
       expect(f.pasted).toEqual(["ordinary notice"]);
     });
+
+  it("an OpenRig notice to a bound terminal seat types as before: the marker changes nothing by itself", async () => {
+    const f = fixture("terminal", false);
+    expect(isBoundTerminalSeat(db, f.name)).toBe(true);
+    const result = await f.transport.send(f.name, "[OpenRig watchdog] a reminder", { openrigNotice: true });
+    expect(result.ok).toBe(true);
+    expect(result.envelopeOmitted).toBeUndefined();
+    expect(f.pasted).toEqual(["[OpenRig watchdog] a reminder"]);
+  });
 });
