@@ -176,7 +176,7 @@ describe("attached team address preserves physical custody", () => {
   it("hook resolution uses the current physical identity and retains old-session mismatch checks", async () => {
     const rig = rigs.createRig("team"), node = rigs.addNode(rig.id, "person.agent", { runtime: "terminal" });
     await attach.attachToNode({ rigId: rig.id, logicalId: node.logicalId, context: context("0") });
-    const activity = new AgentActivityStore(db, bus);
+    const activity = new AgentActivityStore({ db, eventBus: bus });
     expect(activity.resolveSession({ sessionName: "person-agent@team" })).toMatchObject({ nodeId: node.id, sessionName: "0" });
     expect(sessions.currentOccupantGenerationForSession("person-agent@team")).toBe(sessions.currentOccupantGenerationForSession("0"));
     expect(sessions.findResumeContextByName("person-agent@team")?.nodeId).toBe(node.id);
