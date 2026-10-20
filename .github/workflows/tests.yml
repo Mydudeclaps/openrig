@@ -3,13 +3,13 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  slack-answer-after-question-green:
+  partial-up-pod-red:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: cd161c5994b67094695cf7e8d9d79bc06e55753a
+          ref: 5cbd028e3e930880cf0c73181023de7257be2290
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -17,17 +17,22 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Episode timing and gateway preservation
+      - name: Pod and explicit-delete guidance RED on unchanged production source
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          npm --workspace @openrig/daemon test -- test/slack-answer-after-question.test.ts test/slack-thread-return.test.ts test/slack-reply-to-thread.test.ts test/slack-structured-questions.test.ts test/slack-reactions.test.ts test/complete-human-notifications.test.ts test/slack-message.test.ts test/slack-thread-recovery.test.ts test/slack-inbound-gate.test.ts test/slack-long-human-ask.test.ts test/slack-durability.test.ts --reporter=verbose 2>&1 | tee proof/green.log
+          set +e
+          npm --workspace @openrig/daemon test -- test/bootstrap-orchestrator.test.ts -t 'cleanup failure accounting' --reporter=verbose 2>&1 | tee proof/red.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          test "$rc" -ne 0
+          ! grep -q 'Unhandled Errors' proof/red.log
           git diff --exit-code > proof/source-unchanged.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: slack-answer-after-question-green
+          name: partial-up-pod-red
           path: proof/
           if-no-files-found: error
