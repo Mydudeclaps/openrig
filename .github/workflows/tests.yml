@@ -9,7 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 53d1edd84708b7fe8b6117cb69c4c7a681db4784
+          ref: cd161c5994b67094695cf7e8d9d79bc06e55753a
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -23,7 +23,7 @@ jobs:
           set -euo pipefail
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          npm --workspace @openrig/daemon test -- test/slack-answer-after-question.test.ts test/slack-thread-return.test.ts test/slack-reply-to-thread.test.ts test/slack-structured-questions.test.ts test/slack-reactions.test.ts test/complete-human-notifications.test.ts test/slack-message.test.ts test/slack-thread-recovery.test.ts test/slack-inbound-gate.test.ts --reporter=verbose 2>&1 | tee proof/green.log
+          npm --workspace @openrig/daemon test -- test/slack-answer-after-question.test.ts test/slack-thread-return.test.ts test/slack-reply-to-thread.test.ts test/slack-structured-questions.test.ts test/slack-reactions.test.ts test/complete-human-notifications.test.ts test/slack-message.test.ts test/slack-thread-recovery.test.ts test/slack-inbound-gate.test.ts test/slack-long-human-ask.test.ts test/slack-durability.test.ts --reporter=verbose 2>&1 | tee proof/green.log
           git diff --exit-code > proof/source-unchanged.txt
       - uses: actions/upload-artifact@v4
         if: always()
