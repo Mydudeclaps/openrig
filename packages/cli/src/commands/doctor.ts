@@ -433,12 +433,17 @@ export function doctorCommand(depsOverride?: DoctorDeps): Command {
         mkdirp: (dirPath: string) => mkdirSync(dirPath, { recursive: true }),
         checkWritable: (dirPath: string) => accessSync(dirPath, constants.W_OK),
         specPath: opts.spec ? path.resolve(opts.spec) : undefined,
-        // Returns null on ANY failure to read the live side. The conformance check treats null as
+        // Returns null when the live side is unavailable; a known foreign owner is reported. The conformance check treats null as
         // "unknown" and skips — an unreachable daemon must never read as a matching topology.
         fetchLiveLogicalIds: async (rigName: string): Promise<string[] | null> => {
-          const cfg = new ConfigStore().resolve();
-          const base = `http://${formatDaemonHostForUrl(cfg.daemon.host ?? "127.0.0.1")}:${cfg.daemon.port ?? DEFAULT_PORT}`;
-          return readLiveLogicalIds(base, rigName);
+          try {
+            const cfg = new ConfigStore().resolve();
+            const base = `http://${formatDaemonHostForUrl(cfg.daemon.host ?? "127.0.0.1")}:${cfg.daemon.port ?? DEFAULT_PORT}`;
+            return await readLiveLogicalIds(base, rigName);
+          } catch (error) {
+            if (error instanceof ForeignLocalDaemonError) throw error;
+            return null;
+          }
         },
       };
 

@@ -1,9 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { spawn } from "node:child_process";
+import { uiCommand } from "../src/commands/ui.js";
+import { openMissionControl } from "../src/front-door.js";
 import { Command } from "commander";
 import { DaemonClient, ForeignLocalDaemonError } from "../src/client.js";
 import { readLiveLogicalIds } from "../src/commands/doctor.js";
 import { chatroomCommand } from "../src/commands/chatroom.js";
 import { waitForKernelReady, type LifecycleDeps } from "../src/daemon-lifecycle.js";
+
+vi.mock("node:child_process", async () => ({
+  ...await vi.importActual<typeof import("node:child_process")>("node:child_process"),
+  spawn: vi.fn(() => { throw new Error("unexpected TUI spawn"); }),
+}));
 
 const foreign = { state: "foreign" as const, pid: 42, uid: 502, callerUid: 501 };
 const base = "http://127.0.0.1:43219";
@@ -43,6 +51,24 @@ describe("raw CLI daemon readers use the shared owner check", () => {
     await new Command().addCommand(chatroomCommand(deps)).parseAsync(["node", "rig", "chatroom", "watch", "fixture"]);
     expect(process.exitCode).toBe(1); expect(err.mock.calls.flat().join(" ")).toMatch(/different OS user/);
     expect(probe).toHaveBeenCalledTimes(2); expect(requests).not.toHaveBeenCalled();
+  });
+  it("default UI opening refuses before its page probe or browser effect", async () => {
+    vi.spyOn(DaemonClient.prototype, "assertLocalOwner").mockRejectedValue(new ForeignLocalDaemonError(base, foreign));
+    const probeUi = vi.fn(); const exec = vi.fn();
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    await new Command().addCommand(uiCommand({
+      lifecycleDeps: { exists: () => false, readFile: () => null, fetch: async () => ({ ok: true }) } as unknown as LifecycleDeps,
+      probeUi, exec,
+    })).parseAsync(["node", "rig", "ui", "open"]);
+    expect(probeUi).not.toHaveBeenCalled(); expect(exec).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1); expect(err.mock.calls.flat().join(" ")).toMatch(/different OS user/);
+  });
+  it("default TUI opening refuses before spawning its child", async () => {
+    vi.spyOn(DaemonClient.prototype, "assertLocalOwner").mockRejectedValue(new ForeignLocalDaemonError(base, foreign));
+    const err = vi.fn(); const exit = vi.fn();
+    await openMissionControl({ probeDaemon: async () => true, err, exit });
+    expect(spawn).not.toHaveBeenCalled(); expect(exit).toHaveBeenCalledWith(1);
+    expect(err.mock.calls.flat().join(" ")).toMatch(/different OS user/);
   });
   it("kernel polling reports the foreign owner without a business fetch or retry", async () => {
     const check = vi.spyOn(DaemonClient.prototype, "assertLocalOwner").mockRejectedValue(new ForeignLocalDaemonError(base, foreign));

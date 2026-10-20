@@ -79,7 +79,9 @@ describe("bounded Mac endpoint/process owner binding", () => {
     try {
       const started = performance.now();
       expect(await assessLocalDaemonOwner(url)).toMatchObject({ state: "same-user", pid: process.pid, uid: process.geteuid!() });
-      expect(performance.now() - started).toBeLessThan(1500);
+      const elapsedMs = performance.now() - started;
+      console.log(JSON.stringify({ qualification: "owned Mac listener", pid: process.pid, uid: process.geteuid!(), elapsedMs }));
+      expect(elapsedMs).toBeLessThan(1500);
     } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
   });
 });

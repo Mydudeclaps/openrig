@@ -187,7 +187,7 @@ export interface RiggedConfig {
     piOpenRouterCharge: boolean;
   };
   // A verified Claude Code or Codex send reports on input-box evidence (default off). Read by the daemon at
-  // each such send; the CLI key is the lockstep twin.
+  // each such send; the CLI key is the lockstep twin. localUserGuard is the optional CLI-side Mac check.
   transport: {
     verifyInputBox: boolean;
     localUserGuard: boolean;

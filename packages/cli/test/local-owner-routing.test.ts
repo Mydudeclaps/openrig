@@ -63,6 +63,31 @@ describe("optional local user guard at actual CLI consumers", () => {
     await expect(cmd.parseAsync(["node", "rig", "send", "seat@fixture", "harmless"])).rejects.toThrow(/different OS user/);
     expect(business).toEqual([]);
   });
+  it.each(["same-user", "unknown"] as const)("real queue and send preserve %s/no-state/custom-port routing", async state => {
+    vi.stubEnv("OPENRIG_PORT", new URL(base).port);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const instance = new DaemonClient(base, { ownerProbe: async () => state === "same-user"
+      ? { state, pid: 42, uid: 501, callerUid: 501 } : { state, reason: "old_or_missing_health_pid" } });
+    const deps = { lifecycleDeps: lifecycle(), clientFactory: () => instance };
+    await new Command().addCommand(queueCommand(deps)).parseAsync(["node", "rig", "queue", "list", "--json"]);
+    await new Command().addCommand(sendCommand(deps)).parseAsync(["node", "rig", "send", "seat@fixture", "harmless"]);
+    expect(business).toHaveLength(2);
+    expect(business[0]).toMatch(/^GET \/api\/queue\/list\?/);
+    expect(business[1]).toBe("POST /api/transport/send");
+    expect(process.exitCode).toBeUndefined();
+  });
+  it("real send retains its custom endpoint after health timeout and unknown ownership", async () => {
+    vi.stubEnv("OPENRIG_PORT", new URL(base).port);
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const options = { ownerProbe: async () => ({ state: "unknown" as const, reason: "timeout" }) };
+    const deps = lifecycle(); deps.fetch = async () => { throw new Error("fixture health timeout"); };
+    const selected: string[] = [];
+    await new Command().addCommand(sendCommand({ lifecycleDeps: deps, clientFactory: url => {
+      selected.push(url); return new DaemonClient(url, options);
+    } })).parseAsync(["node", "rig", "send", "seat@fixture", "harmless"]);
+    expect(selected).toEqual([base]);
+    expect(business).toEqual(["POST /api/transport/send"]);
+  });
   it("defaults off and performs no owner observation", async () => {
     vi.stubEnv("OPENRIG_TRANSPORT_LOCAL_USER_GUARD", "false");
     const { instance, probe } = client();

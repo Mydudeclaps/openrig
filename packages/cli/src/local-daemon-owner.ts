@@ -51,8 +51,9 @@ function listenerOwner(raw: string, port: number, addresses: string[]): { pid: n
 function processIdentity(raw: string): { uid: number; start: string } | undefined {
   // LC_ALL=C: ps lstart is a stable process-start discriminator, not a PID-only check.
   const match = raw.trim().match(/^(\d+)\s+([A-Z][a-z]{2}\s+[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})$/);
-  const uid = match ? integer(match[1]) : undefined;
-  return uid !== undefined && match ? { uid, start: match[2].replace(/\s+/g, " ") } : undefined;
+  if (!match?.[1] || !match[2] || !Number.isFinite(Date.parse(match[2]))) return;
+  const uid = integer(match[1]);
+  return uid !== undefined ? { uid, start: match[2].replace(/\s+/g, " ") } : undefined;
 }
 
 /** Optional accidental-routing mitigation, not authentication or same-user instance isolation.
@@ -65,7 +66,7 @@ export async function assessLocalDaemonOwner(baseUrl: string, deps: OwnerProbeDe
   const deadline = performance.now() + timeoutMs;
   const controller = new AbortController();
   const run = deps.run ?? (async (file: string, args: string[], bound: number) => {
-    const result = await exec(file, args, { timeout: bound, maxBuffer: 64 * 1024, encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
+    const result = await exec(file, args, { timeout: bound, killSignal: "SIGKILL", maxBuffer: 64 * 1024, encoding: "utf8", env: { ...process.env, LC_ALL: "C" } });
     return result.stdout;
   });
   const observe = async (file: string, args: string[]) => {
@@ -104,7 +105,7 @@ export async function assessLocalDaemonOwner(baseUrl: string, deps: OwnerProbeDe
 export class ForeignLocalDaemonError extends Error {
   readonly code = "foreign_local_daemon";
   constructor(baseUrl: string, owner: Extract<LocalDaemonOwner, { state: "same-user" | "foreign" }>) {
-    super(`The optional local user guard found a different OS user at ${baseUrl} (listener PID ${owner.pid}, UID ${owner.uid}; caller UID ${owner.callerUid}). No business request was sent. Start your own daemon on a chosen unused port, or explicitly select an intended shared/remote endpoint with OPENRIG_URL.`);
+    super(`The optional local user guard found a different OS user at ${baseUrl} (listener PID ${owner.pid}, UID ${owner.uid}; caller UID ${owner.callerUid}). No business request was sent after this owner check. Start your own daemon on a chosen unused port, or explicitly select an intended shared/remote endpoint with OPENRIG_URL.`);
     this.name = "ForeignLocalDaemonError";
   }
 }
