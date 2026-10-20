@@ -35,7 +35,7 @@ async function fixture(mode: "token" | "no-token" | "fresh-policy" = "token") {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
   });
   tmux.probeSession = vi.fn(async () => ({ state: "present" as const }));
-  const stopped = await post(`/api/seat/stop/${paused.id}`, { reason: "keep this current seat stopped" });
+  const stopped = await post(`/api/seat/stop/${encodeURIComponent(current.sessionName)}`, { reason: "keep this current seat stopped" });
   expect(stopped.status).toBe(200);
   expect(await stopped.json()).toMatchObject({ ok: true, sessionId: current.id });
   const down = await post("/api/down", { rigId: rig.id, force: true });
