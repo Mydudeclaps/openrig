@@ -51,6 +51,15 @@ async function fixture(mode: "token" | "no-token" | "fresh-policy" = "token") {
 }
 
 describe("a deliberately stopped current fresh seat does not block its siblings", () => {
+  it.each(["cli", "explorer"])("%s apply without a plan resumes from the accurate stopped snapshot", async entry => {
+    const f = await fixture();
+    const result = await f.post(entry === "cli" ? "/api/up" : `/api/rigs/${f.rig.id}/up`, { sourceRef: f.rig.name });
+    const body = await result.json();
+    expect(result.status, JSON.stringify(body)).toBe(200);
+    expect(body.snapshotId).toBe(f.snapshot.id);
+    expect(body.nodes.find((n: { logicalId: string }) => n.logicalId === "paused").status).toBe("awaiting-decision");
+  });
+
   it.each(["cli", "explorer"].flatMap(entry => ["token", "no-token", "fresh-policy"].map(mode => ({ entry, mode: mode as "token" | "no-token" | "fresh-policy" }))))(
     "$entry up keeps the stopped seat stopped ($mode), using the newest accurate snapshot", async ({ entry, mode }) => {
       const f = await fixture(mode);
