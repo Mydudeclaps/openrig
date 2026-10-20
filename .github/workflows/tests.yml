@@ -3,13 +3,13 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  usage-host-fixture-clock:
+  ask-wake-runtime:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 71d9332ee06464a92dbd9e1b301477a12009d12b
+          ref: 4511d122617a6ccea30cb51183193819b3df999d
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -18,40 +18,47 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Bind candidate and verify the expired baseline regression
+      - name: Bind source and reproduce unsupported-runtime fallthrough
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/usage-clock"
-          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/usage-clock/checkout.txt"
-          sha256sum packages/daemon/test/helpers/usage-hosts-harness.ts packages/daemon/test/provider-usage-across-hosts.test.ts packages/daemon/test/chat-repository.test.ts > "$RUNNER_TEMP/usage-clock/bindings.before.txt"
-          cp packages/daemon/test/helpers/usage-hosts-harness.ts "$RUNNER_TEMP/usage-clock/candidate.ts"
-          git show f332ee68:packages/daemon/test/helpers/usage-hosts-harness.ts > packages/daemon/test/helpers/usage-hosts-harness.ts
+          mkdir -p "$RUNNER_TEMP/ask-wake"
+          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/ask-wake/checkout.txt"
+          sha256sum packages/daemon/src/domain/wake-resolver.ts packages/cli/src/commands/ask.ts packages/daemon/test/wake-resolver.test.ts packages/daemon/test/wake-resolve-service.test.ts packages/cli/test/ask-wake-cli.test.ts > "$RUNNER_TEMP/ask-wake/bindings.before.txt"
+          git show f332ee68:packages/daemon/src/domain/wake-resolver.ts > packages/daemon/src/domain/wake-resolver.ts
+          git show f332ee68:packages/cli/src/commands/ask.ts > packages/cli/src/commands/ask.ts
           set +e
-          npm exec -w packages/daemon -- vitest run test/provider-usage-across-hosts.test.ts -t 'a refresh slower than the 5 s read class still succeeds' --reporter verbose > "$RUNNER_TEMP/usage-clock/red.log" 2>&1
-          code=$?
+          npm exec -w packages/daemon -- vitest run test/wake-resolver.test.ts test/wake-resolve-service.test.ts -t 'does not reinterpret unsupported|HTTP resolution does not return' --reporter=json --outputFile="$RUNNER_TEMP/ask-wake/red-daemon.json"
+          daemon_exit=$?
+          npm exec -w packages/cli -- vitest run test/ask-wake-cli.test.ts -t 'does not run a raw-ID|does not execute an unsupported' --reporter=json --outputFile="$RUNNER_TEMP/ask-wake/red-cli.json"
+          cli_exit=$?
           set -e
-          cat "$RUNNER_TEMP/usage-clock/red.log"
-          printf '%s\n' "$code" > "$RUNNER_TEMP/usage-clock/red.exit"
-          test "$code" -ne 0
-          grep -q 'nearing' "$RUNNER_TEMP/usage-clock/red.log"
-          grep -q 'unknown' "$RUNNER_TEMP/usage-clock/red.log"
-          grep -q 'AssertionError' "$RUNNER_TEMP/usage-clock/red.log"
-          cp "$RUNNER_TEMP/usage-clock/candidate.ts" packages/daemon/test/helpers/usage-hosts-harness.ts
-      - name: Verify repaired daemon fixtures and shared CLI and TUI callers
+          printf '%s %s\n' "$daemon_exit" "$cli_exit" > "$RUNNER_TEMP/ask-wake/red.exit"
+          test "$daemon_exit" -ne 0
+          test "$cli_exit" -ne 0
+          python3 - "$RUNNER_TEMP/ask-wake" <<'PYTHON'
+          import json,pathlib,sys
+          root=pathlib.Path(sys.argv[1])
+          for name,count in [('red-daemon.json',7),('red-cli.json',5)]:
+              result=json.loads((root/name).read_text())
+              assert result['numFailedTests']==count, result
+              assert result['numPassedTests']==0, result
+              failures=[a for f in result['testResults'] for a in f['assertionResults'] if a['status']=='failed']
+              assert len(failures)==count
+              assert all(a['failureMessages'] for a in failures)
+          PYTHON
+          git show HEAD:packages/daemon/src/domain/wake-resolver.ts > packages/daemon/src/domain/wake-resolver.ts
+          git show HEAD:packages/cli/src/commands/ask.ts > packages/cli/src/commands/ask.ts
+      - name: Verify supported-runtime preservation and unsupported-runtime no-execution
         run: |
           set -euo pipefail
-          npm exec -w packages/daemon -- vitest run test/provider-usage-across-hosts.test.ts test/chat-repository.test.ts --reporter verbose > "$RUNNER_TEMP/usage-clock/daemon.log" 2>&1
-          cat "$RUNNER_TEMP/usage-clock/daemon.log"
-          npm exec -w packages/cli -- vitest run test/provider-usage-across-hosts.test.ts test/keeping-a-watch-usage-doc.test.ts --reporter verbose > "$RUNNER_TEMP/usage-clock/cli.log" 2>&1
-          cat "$RUNNER_TEMP/usage-clock/cli.log"
-          npm exec -w packages/tui -- vitest run test/usage-hosts-journey.test.ts --reporter verbose > "$RUNNER_TEMP/usage-clock/tui.log" 2>&1
-          cat "$RUNNER_TEMP/usage-clock/tui.log"
-          sha256sum packages/daemon/test/helpers/usage-hosts-harness.ts packages/daemon/test/provider-usage-across-hosts.test.ts packages/daemon/test/chat-repository.test.ts > "$RUNNER_TEMP/usage-clock/bindings.after.txt"
-          diff -u "$RUNNER_TEMP/usage-clock/bindings.before.txt" "$RUNNER_TEMP/usage-clock/bindings.after.txt"
+          npm exec -w packages/daemon -- vitest run test/wake-resolver.test.ts test/wake-resolve-service.test.ts test/history-query-seat.test.ts test/history-query-session.test.ts --reporter=json --outputFile="$RUNNER_TEMP/ask-wake/green-daemon.json"
+          npm exec -w packages/cli -- vitest run test/ask-wake-cli.test.ts test/ask-wake.test.ts test/ask.test.ts test/ask-seat.test.ts test/ask-session.test.ts --reporter=json --outputFile="$RUNNER_TEMP/ask-wake/green-cli.json"
+          sha256sum packages/daemon/src/domain/wake-resolver.ts packages/cli/src/commands/ask.ts packages/daemon/test/wake-resolver.test.ts packages/daemon/test/wake-resolve-service.test.ts packages/cli/test/ask-wake-cli.test.ts > "$RUNNER_TEMP/ask-wake/bindings.after.txt"
+          diff -u "$RUNNER_TEMP/ask-wake/bindings.before.txt" "$RUNNER_TEMP/ask-wake/bindings.after.txt"
           git diff --exit-code
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: usage-host-fixture-clock
-          path: ${{ runner.temp }}/usage-clock/
+          name: ask-wake-runtime
+          path: ${{ runner.temp }}/ask-wake/
           if-no-files-found: error
