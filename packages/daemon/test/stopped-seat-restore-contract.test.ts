@@ -2,13 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { createDefaultRestoreRig } from "../src/domain/crash-cart-conductor.js";
+import { restoreExistingRigUnattended } from "../src/domain/existing-rig-restore.js";
 
 const databases: ReturnType<typeof createFullTestDb>[] = [];
 afterEach(() => { for (const db of databases.splice(0)) db.close(); });
 
 /** Build an isolated restore fixture with saved seat history and mocked terminal effects. */
 function fixture(opts: { status?: string; noRow?: boolean; token?: string | null; policy?: string; kind?: string; intentional?: boolean; fresh?: boolean } = {}) {
-
   const db = createFullTestDb(); databases.push(db);
   const live = new Set<string>();
   const tmux = {
@@ -264,7 +264,7 @@ describe("up --existing keeps proved current stops", () => {
     }
   });
 
-  it.each(["older-stop", "multiple-stops", "missing-tenure", "handover", "adopt", "detached-snapshot", "different-token"])(
+  it.each(["older-stop", "multiple-stops", "missing-tenure", "handover", "adopt", "detached-snapshot", "different-token", "legacy-relation", "terminal"])(
     "does not infer a current deliberate stop from %s", async mode => {
       const h = fixture({ intentional: true, token: null, policy: "relaunch_fresh" });
       if (mode === "older-stop" || mode === "multiple-stops") {
@@ -276,6 +276,17 @@ describe("up --existing keeps proved current stops", () => {
       }
       if (mode === "missing-tenure") h.db.prepare("DELETE FROM occupant_tenures WHERE node_id=?").run(h.node.id);
       if (mode === "handover" || mode === "adopt") h.db.prepare("UPDATE occupant_tenures SET kind=? WHERE node_id=?").run(mode, h.node.id);
+      if (mode === "terminal") {
+        h.db.prepare("UPDATE nodes SET runtime='terminal' WHERE id=?").run(h.node.id);
+        h.db.prepare("UPDATE node_startup_context SET runtime='terminal' WHERE node_id=?").run(h.node.id);
+        h.snapshotCapture.captureSnapshot(h.rig.id, "manual");
+      }
+      if (mode === "legacy-relation") {
+        const data = structuredClone(h.snapshot.data);
+        delete data.activeOccupantsByNode;
+        delete data.activeSessionIdByNode;
+        h.db.prepare("UPDATE snapshots SET data=? WHERE id=?").run(JSON.stringify(data), h.snapshot.id);
+      }
       if (mode === "detached-snapshot" || mode === "different-token") {
         const data = structuredClone(h.snapshot.data);
         if (mode === "detached-snapshot") data.sessions[0]!.status = "detached";
@@ -293,8 +304,48 @@ describe("up --existing keeps proved current stops", () => {
   it("direct snapshot restore keeps its existing initial-seat policy", async () => {
     const h = fixture({ intentional: true, token: null, policy: "relaunch_fresh" });
     expect(await h.restoreOrchestrator.restore(h.snapshot.id)).toMatchObject({
-      ok: true, result: { nodes: [expect.objectContaining({ status: "fresh-primed" })] },
+      // No runtime adapters were supplied to this direct call: it still attempts
+      // launch, then reports its existing missing-adapter attention result.
+      ok: true, result: { nodes: [expect.objectContaining({ status: "attention_required", error: expect.stringContaining("no claude-code runtime adapter") })] },
     });
     expect(h.tmux.createSession).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["cli", "explorer"])("%s up leaves the proved stop while another seat comes back", async entry => {
+    const h = fixture({ intentional: true, token: null, policy: "relaunch_fresh" });
+    const before = h.db.prepare("SELECT * FROM sessions WHERE node_id=?").all(h.node.id);
+    const other = h.rigRepo.addNode(h.rig.id, "dev.other", { runtime: "claude-code", podId: "pod", cwd: "/tmp" });
+    h.db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, '[]', '[]', '[]', 'claude-code')").run(other.id);
+    const snapshot = h.snapshotCapture.captureSnapshot(h.rig.id, "manual");
+    const path = entry === "cli" ? "/api/up" : `/api/rigs/${h.rig.id}/up`;
+    const body = { sourceRef: h.rig.name };
+    const changes = h.db.prepare("SELECT total_changes() AS n").get();
+    const plan = await (await h.post(path, { ...body, plan: true })).json();
+    expect(h.db.prepare("SELECT total_changes() AS n").get()).toEqual(changes);
+    const result = await (await h.post(path, body)).json();
+    expect(result.snapshotId).toBe(snapshot.id);
+    expect(result.rigResult).toBe("partially_restored");
+    expect(plan.nodes.find((n: { logicalId: string }) => n.logicalId === "dev.worker").intendedAction).toBe("awaiting-decision");
+    expect(result.nodes.find((n: { logicalId: string }) => n.logicalId === "dev.worker").status).toBe("awaiting-decision");
+    expect(result.nodes.find((n: { logicalId: string }) => n.logicalId === "dev.other").status).toBe("fresh-primed");
+    expect(h.tmux.createSession).toHaveBeenCalledTimes(1);
+    expect(h.db.prepare("SELECT * FROM sessions WHERE node_id=?").all(h.node.id)).toEqual(before);
+  });
+
+  it("a fresh-generation no-token/relaunch seat keeps its protection", async () => {
+    const h = fixture({ intentional: true, fresh: true, token: null, policy: "relaunch_fresh" });
+    const plan = await (await h.post("/api/up", { sourceRef: h.rig.name, plan: true })).json();
+    const result = await (await h.post("/api/up", { sourceRef: h.rig.name })).json();
+    expect(plan.nodes[0].intendedAction).toBe("awaiting-decision");
+    expect(result.nodes[0].status).toBe("awaiting-decision");
+    expect(h.tmux.createSession).not.toHaveBeenCalled();
+  });
+
+
+  it("unattended startup keeps its existing initial-seat policy", async () => {
+    const h = fixture({ intentional: true, token: null, policy: "relaunch_fresh" });
+    expect(await restoreExistingRigUnattended(h, h.rig.id, () => true)).toEqual({ errors: [] });
+    expect(h.tmux.createSession).toHaveBeenCalledTimes(1);
+  });
+
 });
