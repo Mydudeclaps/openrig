@@ -9,7 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 391cca6091ee0f44c1faeea9bbc760380673f17c
+          ref: 685612f302aa1f5f5298f0837b178dc2ed589374
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -33,6 +33,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: stopped-fresh-red
+          name: stopped-fresh-red-seatref
           path: proof/
           if-no-files-found: error
