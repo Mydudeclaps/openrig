@@ -554,7 +554,8 @@ activityRoutes.get("/parked", (c) => {
   `).all(scope.rig) as Array<{ node_id: string; session_name: string }>;
 
   if (seatParam) {
-    const match = seats.find((s) => s.node_id === seatParam || s.session_name === physicalSessionName(db, seatParam));
+    const physical = physicalSessionName(rigRepo.db, seatParam);
+    const match = seats.find((s) => s.node_id === seatParam || s.session_name === physical);
     if (!match) {
       return c.json({
         ok: false,
