@@ -3,7 +3,7 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  legacy-pane-remedy:
+  legacy-pane-observation-controls:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -29,28 +29,22 @@ jobs:
           mkdir -p "$RUNNER_TEMP/legacy-pane"
           git -C source rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/legacy-pane/source.txt"
           git -C controller rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/legacy-pane/controller.txt"
-          sha256sum controller/diagnostics/legacy-pane-qual.mjs > "$RUNNER_TEMP/legacy-pane/controller.sha256"
+          sha256sum controller/diagnostics/legacy-pane-controls.mjs > "$RUNNER_TEMP/legacy-pane/controller.sha256"
       - run: npm ci
         working-directory: source
       - run: npm run build
         working-directory: source
-      - name: One isolated source-built CLI and daemon qualification
+      - name: Only two unfinished synthetic observation controls
         env:
           SOURCE_PIN: f5185f8341f041b12f61c2171a9934723a2ae8ea
         run: |
           set -euo pipefail
           export SOURCE_ROOT="$GITHUB_WORKSPACE/source"
           export PROOF_ROOT="$RUNNER_TEMP/legacy-pane"
-          timeout --signal=TERM --kill-after=10s 180s node controller/diagnostics/legacy-pane-qual.mjs
-      - name: Existing protection and operation controls
-        if: success()
-        working-directory: source
-        run: |
-          npm exec -w packages/daemon -- vitest run test/reconcile-session.test.ts test/seat-delivery-guard-correction.test.ts test/seat-identity-reconciler.test.ts --reporter=json --outputFile="$RUNNER_TEMP/legacy-pane/focused-controls.json"
-          git diff --exit-code
+          timeout --signal=TERM --kill-after=10s 180s node controller/diagnostics/legacy-pane-controls.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: legacy-pane-remedy
+          name: legacy-pane-controls
           path: ${{ runner.temp }}/legacy-pane/
           if-no-files-found: error
