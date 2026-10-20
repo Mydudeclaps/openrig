@@ -9,7 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 226646cc3b7b4c1a9387ebf43a0f099788649d0a
+          ref: d79e41667725a5fd14cbecf8c9d3a105c1b06dc6
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -25,7 +25,7 @@ jobs:
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
           tmux -V > proof/tmux-version.txt
-          npm --workspace @openrig/daemon test -- test/tmux-environment-premise.test.ts --reporter=verbose 2>&1 | tee proof/premise.log
+          npm --workspace @openrig/daemon test -- test/tmux-agent-environment.test.ts --reporter=verbose 2>&1 | tee proof/premise.log
           result=${PIPESTATUS[0]}
           git diff --exit-code > proof/source-unchanged.txt
           printf 'test=%s\n' "$result" > proof/exits.txt
@@ -33,6 +33,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: tmux-environment-premise
+          name: tmux-environment-red
           path: proof/
           if-no-files-found: error
