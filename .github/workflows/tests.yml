@@ -28,7 +28,7 @@ jobs:
           git show dcda0376fc55f84ea11d8e714c6008464c877252:packages/daemon/test/compaction-generation.test.ts > packages/daemon/test/compaction-generation.test.ts
           sha256sum packages/daemon/src/domain/claude-compaction-enforcer.ts packages/daemon/test/compaction-generation.test.ts > "$RUNNER_TEMP/proof/red.sha256"
           set +e
-          npm exec -w packages/daemon -- vitest run test/compaction-generation.test.ts -t 'explicit skip-map still works' --reporter=json --outputFile="$RUNNER_TEMP/proof/red-daemon.json"
+          npm exec -w packages/daemon -- vitest run test/compaction-generation.test.ts -t 'explicit skip-map still works' --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/proof/red-daemon.json"
           red_exit=$?
           set -e
           printf '%s\n' "$red_exit" > "$RUNNER_TEMP/proof/red.exit"
@@ -38,11 +38,11 @@ jobs:
           r=json.loads((pathlib.Path(sys.argv[1])/'red-daemon.json').read_text())
           assert r['numFailedTests']==1 and r['numPassedTests']==0,r
           failures=[a for f in r['testResults'] for a in f['assertionResults'] if a['status']=='failed']
-          assert len(failures)==1 and '120-second budget' in failures[0]['fullName'] and 'deadlineAt' in str(failures[0]['failureMessages'])
+          assert len(failures)==1 and '120-second budget' in failures[0]['fullName'] and any(m.startswith('AssertionError:') and 'compaction-generation.test.ts:167:48' in m for m in failures[0]['failureMessages'])
           PYTHON
           git show HEAD:packages/daemon/test/compaction-generation.test.ts > packages/daemon/test/compaction-generation.test.ts
-          npm exec -w packages/daemon -- vitest run test/compaction-generation.test.ts test/compaction-preparation.test.ts test/claude-compaction-enforcer.test.ts test/managed-compaction-effect.test.ts --reporter=json --outputFile="$RUNNER_TEMP/proof/green-daemon.json"
-          npm exec -w packages/cli -- vitest run test/compact.test.ts --reporter=json --outputFile="$RUNNER_TEMP/proof/green-cli.json"
+          npm exec -w packages/daemon -- vitest run test/compaction-generation.test.ts test/compaction-preparation.test.ts test/claude-compaction-enforcer.test.ts test/managed-compaction-effect.test.ts --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/proof/green-daemon.json"
+          npm exec -w packages/cli -- vitest run test/compact.test.ts --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/proof/green-cli.json"
           sha256sum packages/daemon/src/domain/claude-compaction-enforcer.ts packages/daemon/test/compaction-generation.test.ts > "$RUNNER_TEMP/proof/after.sha256"
           diff -u "$RUNNER_TEMP/proof/before.sha256" "$RUNNER_TEMP/proof/after.sha256"
           git diff --exit-code
