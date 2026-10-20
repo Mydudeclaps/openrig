@@ -120,11 +120,13 @@ describe("attached team address preserves physical custody", () => {
 
   it("archived namesakes do not own a new live member's address", async () => {
     const old = rigs.createRig("team"), former = rigs.addNode(old.id, "person.agent", { runtime: "terminal" });
-    await attach.attachToNode({ rigId: old.id, logicalId: former.logicalId, context: context("old") });
+    await attach.attachToNode({ rigId: old.id, logicalId: former.logicalId, context: context("person-agent@team") });
     db.prepare("UPDATE rigs SET archived_at='2026-10-01T00:00:00Z' WHERE id=?").run(old.id);
     const rig = rigs.createRig("team"), current = rigs.addNode(rig.id, "person.agent", { runtime: "terminal" });
     expect(await attach.attachToNode({ rigId: rig.id, logicalId: current.logicalId, context: context("0") })).toMatchObject({ ok: true, senderAddress: "person-agent@team" });
     expect(resolveGuardTarget(db, "person-agent@team")?.nodeId).toBe(current.id);
+    expect((await transport.send("person-agent@team", "current reply")).ok).toBe(true);
+    expect(writes.at(-1)?.target).toBe("0");
   });
 
   it("a reused physical name does not newly transfer old raw queue ownership through the alias", async () => {

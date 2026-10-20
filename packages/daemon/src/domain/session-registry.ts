@@ -144,8 +144,7 @@ export function resolveCurrentSessionAddress(db: Database.Database, address: str
  * exact-name consumers keep their existing lookup and mismatch protection. */
 export function physicalSessionName(db: Database.Database, address: string): string {
   if (!address.includes("@")) return address;
-  // Existing physical/historical names retain their exact interpretation.
-  if (db.prepare("SELECT 1 FROM sessions WHERE session_name=? LIMIT 1").get(address)) return address;
+  // A curated/legacy read model with no binding table has no aliases to resolve.
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bindings'").get()) return address;
   return resolveCurrentSessionAddress(db, address)?.sessionName ?? address;
 }
