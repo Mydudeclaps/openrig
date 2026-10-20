@@ -113,12 +113,92 @@ export interface WatchdogRegistrationObserver {
   reconcileHandover?(nodeId: string, sessionName: string): unknown;
 }
 
+export interface CurrentSessionAddress {
+  nodeId: string; sessionId: string; sessionName: string; senderAddress: string;
+  logicalId: string; rigName: string;
+}
+
+/** Explicit node/binding join: never reverse-parse a flattened team address.
+ * Physical names win over derived names. Archived/historical bindings cannot
+ * advertise a new alias, and two current matches never pick an arbitrary seat. */
+export function resolveCurrentSessionAddress(db: Database.Database, address: string): CurrentSessionAddress | null {
+  const rows = db.prepare(`SELECT r.*, n.id AS nodeId, n.logical_id AS logicalId,
+      s.id AS sessionId, s.session_name AS sessionName, s.status,
+      replace(n.logical_id, '.', '-') || '@' || r.name AS senderAddress
+    FROM nodes n JOIN rigs r ON r.id=n.rig_id
+    JOIN bindings b ON b.node_id=n.id AND b.tmux_session IS NOT NULL
+    JOIN sessions s ON s.node_id=n.id AND s.session_name=b.tmux_session
+      AND s.id=(SELECT id FROM sessions WHERE node_id=n.id ORDER BY id DESC LIMIT 1)
+    WHERE s.session_name=? OR replace(n.logical_id, '.', '-') || '@' || r.name=?`)
+    .all(address, address) as Array<CurrentSessionAddress & { name: string; archived_at?: string | null; status: string }>;
+  const active = rows.filter(row => row.archived_at == null && !['superseded', 'detached', 'exited'].includes(row.status));
+  const exact = active.filter(row => row.sessionName === address);
+  const pool = exact.length ? exact : active;
+  if (pool.length !== 1) return null;
+  const row = pool[0]!;
+  return { nodeId: row.nodeId, sessionId: row.sessionId, sessionName: row.sessionName,
+    senderAddress: row.senderAddress, logicalId: row.logicalId, rigName: row.name };
+}
+
+/** Normalize only a positively current tmux address; all legacy/historical
+ * exact-name consumers keep their existing lookup and mismatch protection. */
+export function physicalSessionName(db: Database.Database, address: string): string {
+  return resolveCurrentSessionAddress(db, address)?.sessionName ?? address;
+}
+
+export class SessionAddressConflict extends Error {
+  readonly code = "address_conflict";
+  constructor(address: string) { super(`Team address '${address}' conflicts with another member. Choose another member name.`); }
+}
+
 export class SessionRegistry {
   readonly db: Database.Database;
   private watchdogRegistrationObserver?: WatchdogRegistrationObserver;
   constructor(db: Database.Database, watchdogRegistrationObserver?: WatchdogRegistrationObserver) {
     this.db = db;
     this.watchdogRegistrationObserver = watchdogRegistrationObserver;
+  }
+
+  resolveAddress(address: string): CurrentSessionAddress | null {
+    return resolveCurrentSessionAddress(this.db, address);
+  }
+
+  /** Current queue equivalence, not a rewrite of recorded identity. A raw name
+   * reused by another node has ambiguous history: do not newly attribute its
+   * old rows through the logical spelling. Exact raw access stays unchanged. */
+  sessionAddresses(address: string): string[] {
+    const target = this.resolveAddress(address);
+    if (!target) return [address];
+    const names = new Set([address, target.senderAddress]);
+    const history = this.db.prepare("SELECT DISTINCT node_id FROM sessions WHERE session_name=?").all(target.sessionName) as Array<{ node_id: string }>;
+    if (address === target.sessionName || history.every(row => row.node_id === target.nodeId)) names.add(target.sessionName);
+    return [...names].filter(name => name === address || this.resolveAddress(name)?.nodeId === target.nodeId);
+  }
+
+  /** Run before effects as well as at registration. Declared logical collisions
+   * cannot race two launches into advertising the same address. Reconnecting
+   * this same node is not a clash. No binding or record is renamed here. */
+  assertAddressAvailable(nodeId: string, sessionName: string, tmux = true): void {
+    const node = this.db.prepare(`SELECT n.logical_id, r.name FROM nodes n JOIN rigs r ON r.id=n.rig_id WHERE n.id=?`)
+      .get(nodeId) as { logical_id: string; name: string } | undefined;
+    if (!node) return; // the existing FK/registration error owns an unknown node
+    const logical = `${node.logical_id.replace(/\./g, '-')}@${node.name}`;
+    const proposed = tmux ? [sessionName, logical] : [sessionName];
+    const other = this.db.prepare(`SELECT r.*, n.id AS nodeId,
+        replace(n.logical_id, '.', '-') || '@' || r.name AS logicalAddress,
+        b.tmux_session, b.external_session_name,
+        (SELECT session_name FROM sessions WHERE node_id=n.id ORDER BY id DESC LIMIT 1) AS latestName
+      FROM nodes n JOIN rigs r ON r.id=n.rig_id LEFT JOIN bindings b ON b.node_id=n.id WHERE n.id<>?`)
+      .all(nodeId) as Array<{ nodeId: string; archived_at?: string | null; logicalAddress: string; tmux_session: string | null; external_session_name: string | null; latestName: string | null }>;
+    for (const row of other) {
+      if (row.archived_at != null) continue;
+      const physical = row.tmux_session ?? row.external_session_name;
+      for (const address of proposed) {
+        if (address === row.logicalAddress || (physical && address === physical && (!row.latestName || row.latestName === physical))) {
+          throw new SessionAddressConflict(address);
+        }
+      }
+    }
   }
 
   setWatchdogRegistrationObserver(observer: WatchdogRegistrationObserver): void {
@@ -137,6 +217,7 @@ export class SessionRegistry {
       );
     }
 
+    this.assertAddressAvailable(nodeId, sessionName);
     const id = ulid();
     this.db
       .prepare(
@@ -157,6 +238,7 @@ export class SessionRegistry {
     kind: OccupantKind = "adopt",
     reservedGeneration?: string | null,
   ): Session {
+    this.assertAddressAvailable(nodeId, sessionName, this.getBindingForNode(nodeId)?.attachmentType !== "external_cli");
     const id = ulid();
     this.db
       .prepare(
@@ -307,6 +389,7 @@ export class SessionRegistry {
    *  enforcer's gen-scoped stage gate consumes. Never throws (a bad lookup returns null). */
   currentOccupantGenerationForSession(sessionName: string): string | null {
     try {
+      sessionName = physicalSessionName(this.db, sessionName);
       const row = this.db
         .prepare("SELECT node_id FROM sessions WHERE session_name = ? ORDER BY id DESC LIMIT 1")
         .get(sessionName) as { node_id: string } | undefined;
@@ -538,6 +621,7 @@ export class SessionRegistry {
     runtime: string | null;
     currentProvenance: string | null;
   } | null {
+    sessionName = physicalSessionName(this.db, sessionName);
     const row = this.db.prepare(
       `SELECT s.id as session_id, s.node_id, n.rig_id, n.runtime, s.resume_provenance
        FROM sessions s

@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import { resolveCurrentSessionAddress } from "./session-registry.js";
 import { composerContainsOwnedText, ownCollapsedPaste, type ComposerInput, type ComposerOwnership } from "./composer-prompts.js";
 
 /** A binding is captured before waiting. Never rebind an old operation to a new occupant. */
@@ -445,6 +446,7 @@ export class SeatDeliveryGuard {
  * seat, so unarchived matches win; archived ones count only when nothing else
  * matches. Exactly one match is still required. */
 export function resolveGuardTarget(db: Database.Database, name: string): GuardTarget | null {
+  name = resolveCurrentSessionAddress(db, name)?.nodeId ?? name;
   const rows = db.prepare(`SELECT n.id AS nodeId,
       coalesce(b.tmux_session, replace(n.logical_id,'.','-') || '@' || r.name) AS session,
       b.tmux_pane AS pane,
