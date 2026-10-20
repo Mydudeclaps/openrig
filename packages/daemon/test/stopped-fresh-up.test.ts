@@ -1,28 +1,31 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
+import { bootKernelIfNeeded, classifyManagedKernel } from "../src/domain/kernel-boot.js";
+import { restoreExistingRigUnattended } from "../src/domain/existing-rig-restore.js";
+import { noServerTerminal } from "./helpers/no-server-terminal.js";
 import { snapshotMatchesCurrentOccupants } from "../src/domain/rehydrate-eligibility.js";
 
 const databases: ReturnType<typeof createFullTestDb>[] = [];
 afterEach(() => { for (const db of databases.splice(0)) db.close(); });
 
 // Real seat stop, down/snapshot, up and restore; terminal/provider effects are inert.
-async function fixture(mode: "token" | "no-token" | "fresh-policy" = "token") {
+async function fixture(mode: "token" | "no-token" | "fresh-policy" = "token", rigName = "fresh-stopped") {
   const db = createFullTestDb(); databases.push(db);
   const h = createTestApp(db), { rigRepo, sessionRegistry: sessions, snapshotCapture, tmuxAdapter: tmux } = h;
-  const rig = rigRepo.createRig("fresh-stopped");
+  const rig = rigRepo.createRig(rigName);
   const paused = rigRepo.addNode(rig.id, "paused", { runtime: "codex" });
-  const previous = sessions.registerSession(paused.id, "paused@fresh-stopped");
+  const previous = sessions.registerSession(paused.id, `paused@${rigName}`);
   sessions.updateStatus(previous.id, "running");
   const others = ["one", "two", "three"].map(name => {
     const node = rigRepo.addNode(rig.id, name, { runtime: "claude-code" });
-    const session = sessions.registerSession(node.id, `${name}@fresh-stopped`);
+    const session = sessions.registerSession(node.id, `${name}@${rigName}`);
     sessions.updateStatus(session.id, "running");
     sessions.updateResumeToken(session.id, "claude_name", `native-${name}`, "hook");
     return { node, session };
   });
   const predecessorSnapshot = snapshotCapture.captureSnapshot(rig.id, "manual");
   sessions.updateStatus(previous.id, "exited");
-  const current = sessions.registerSession(paused.id, "paused@fresh-stopped", "fresh");
+  const current = sessions.registerSession(paused.id, `paused@${rigName}`, "fresh");
   sessions.updateStatus(current.id, "running");
   if (mode !== "no-token") sessions.updateResumeToken(current.id, "codex_id", "00000000-0000-4000-8000-000000000002", "hook");
   if (mode === "fresh-policy") db.prepare("UPDATE sessions SET restore_policy='relaunch_fresh' WHERE id=?").run(current.id);
@@ -51,6 +54,65 @@ async function fixture(mode: "token" | "no-token" | "fresh-policy" = "token") {
 }
 
 describe("a deliberately stopped current fresh seat does not block its siblings", () => {
+  it("daemon start still skips a kernel with a deliberately stopped current fresh seat", async () => {
+    const f = await fixture("token", "kernel");
+    const restoreLostKernel = vi.fn(async () => ({ errors: [] as string[] }));
+    const restore = vi.spyOn(f.restoreOrchestrator, "restore");
+    expect(classifyManagedKernel(f.rigRepo, f.sessionRegistry)).toEqual({ kind: "stopped" });
+    const tracker = await bootKernelIfNeeded({
+      rigRepo: f.rigRepo, sessionRegistry: f.sessionRegistry, eventBus: f.eventBus,
+      bootstrapOrchestrator: f.bootstrapOrchestrator, specsDir: "/tmp", cwdOverride: "/tmp",
+      probeRuntimes: async () => ({ claudeCode: "ok", codex: "ok" }), log: () => {},
+      degradedTimeoutMs: 0, restoreLostKernel,
+    });
+    try {
+      expect(tracker.getStatus().kernelState).toBe("skipped");
+      expect(restoreLostKernel).not.toHaveBeenCalled();
+      expect(restore).not.toHaveBeenCalled();
+      expect(f.tmuxAdapter.createSession).not.toHaveBeenCalled();
+      expect(f.db.prepare("SELECT status,intentionally_stopped FROM sessions WHERE id=?").get(f.current.id))
+        .toEqual({ status: "exited", intentionally_stopped: 1 });
+    } finally { tracker.stop(); }
+  });
+
+  it("the shared unattended helper preserves the stopped seat when explicitly invoked", async () => {
+    const f = await fixture("no-token", "kernel");
+    const restore = vi.spyOn(f.restoreOrchestrator, "restore");
+    expect(await restoreExistingRigUnattended(f, f.rig.id, () => true)).toEqual({ errors: [] });
+    expect(restore).toHaveBeenCalledExactlyOnceWith(f.snapshot.id, expect.objectContaining({ automatic: true }));
+    const outcome = await restore.mock.results[0]!.value;
+    expect(outcome).toMatchObject({ ok: true, result: { nodes: expect.arrayContaining([
+      expect.objectContaining({ logicalId: "paused", status: "awaiting-decision" }),
+    ]) } });
+    for (const { node } of f.others) {
+      expect(f.tmuxAdapter.sendText).toHaveBeenCalledWith(expect.any(String), expect.stringContaining(`--resume 'native-${node.logicalId}'`));
+    }
+    expect(vi.mocked(f.tmuxAdapter.createSession).mock.calls.every(([name]) => !name.includes("paused"))).toBe(true);
+    expect(f.db.prepare("SELECT status,intentionally_stopped FROM sessions WHERE id=?").get(f.current.id))
+      .toEqual({ status: "exited", intentionally_stopped: 1 });
+    expect(f.sessionRegistry.currentOccupantTenure(f.paused.id)?.generationUuid).toBe(f.generation);
+    expect(f.sessionRegistry.getBindingForNode(f.paused.id)).toBeNull();
+  });
+
+  it("a no-server down cannot turn detached snapshot history into a proved stopped fresh occupant", async () => {
+    const f = await fixture();
+    // A reboot-shaped row before explicit down: detached, not a prior deliberate stop.
+    f.sessionRegistry.updateStatus(f.current.id, "running");
+    f.sessionRegistry.markDetached(f.current.id);
+    const detached = f.snapshotCapture.captureSnapshot(f.rig.id, "auto-pre-down");
+    expect(detached.data.sessions.find(s => s.id === f.current.id)?.status).toBe("detached");
+    const terminal = noServerTerminal();
+    f.tmuxAdapter.probeSession = terminal.probeSession;
+    f.tmuxAdapter.startServer = terminal.startServer;
+    const result = await f.teardownOrchestrator.teardown(f.rig.id);
+    expect(result).toMatchObject({ alreadyStopped: true, errors: [] });
+    expect(terminal.startServer).toHaveBeenCalledTimes(1);
+    expect(f.db.prepare("SELECT status,intentionally_stopped FROM sessions WHERE id=?").get(f.current.id))
+      .toEqual({ status: "exited", intentionally_stopped: 1 });
+    expect(snapshotMatchesCurrentOccupants(f.db, f.rigRepo.getRig(f.rig.id)!, detached)).toBe(false);
+    expect(f.tmuxAdapter.createSession).not.toHaveBeenCalled();
+  });
+
   it.each(["cli", "explorer"])("%s apply without a plan resumes from the accurate stopped snapshot", async entry => {
     const f = await fixture();
     const result = await f.post(entry === "cli" ? "/api/up" : `/api/rigs/${f.rig.id}/up`, { sourceRef: f.rig.name });
