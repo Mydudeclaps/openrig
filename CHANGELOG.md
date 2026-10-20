@@ -8,6 +8,106 @@ deprecations, and behavioral changes. Breaking changes are called out explicitly
 
 ---
 
+## [0.6.14]
+
+0.6.14 is the last planned release of the 0.6 line: a small set of stability
+fixes on top of 0.6.13. A seat launched by an older OpenRig that refuses every
+send for a missing tmux pane can now be repaired without losing its session, a
+manual compaction keeps waiting while its preparation sits at an approval, `rig
+ask --wake` refuses runtimes it can't wake, refocus finds notes without starting
+the CLI once per ancestor, the docs open with a getting-started page for people,
+and an optional Mac check, off by default, can stop one account's `rig` commands
+from reaching another account's daemon. It is built from the commit tagged
+`v0.6.14`. The changes since 0.6.13:
+
+### Before you upgrade
+
+- Restart the daemon after upgrading the CLI (`rig daemon stop`, then `rig
+  daemon start`). No migration runs. One setting is added,
+  `transport.local_user_guard`, off by default, and `/healthz` gains an `euid`
+  field ([#1566](https://github.com/mvschwarz/openrig/pull/1566)). From 0.6.12
+  or earlier, 0.6.13's migration `117` runs first (and from 0.6.11 or earlier,
+  0.6.12's twelve before it).
+- Expect the bundled openrig-core plugin to go from 0.1.14 to 0.1.15, carrying
+  refocus's own notes lookup
+  ([#1563](https://github.com/mvschwarz/openrig/pull/1563)).
+- Expect `rig ask --wake` to refuse a Pi, custom or unrecorded runtime before
+  any wake starts. The CLI and the daemon both need 0.6.14 to catch every case
+  ([#1561](https://github.com/mvschwarz/openrig/pull/1561)).
+- Expect a manual `rig compact` to wait longer: its preparation has 180 seconds
+  (was 120), and the request times out after 240 seconds (was 180)
+  ([#1562](https://github.com/mvschwarz/openrig/pull/1562)).
+
+### Highlights
+
+- Repair a seat that refuses every send because an older OpenRig never
+  recorded its tmux pane: `rig reconcile-session <seat> --repair-missing-pane
+  --no-launch` fills only the missing pane and keeps the seat's session, resume
+  token and history. It never adopts and records no event. It refuses, writing
+  nothing, when the binding already has a pane, the session has more than one
+  pane or window, the pane changes between its two looks, a seat operation is
+  running, or typing protection is on; an older daemon refuses the request
+  rather than adopting ([#1564](https://github.com/mvschwarz/openrig/pull/1564)).
+- Keep a manual `rig compact` waiting when the seat's preparation stops at an
+  ordinary approval. OpenRig never answers the approval; someone has to, inside
+  the deadline ([#1562](https://github.com/mvschwarz/openrig/pull/1562)).
+- Refuse `rig ask --wake` for a runtime it can't wake, instead of silently
+  trying a Claude wake ([#1561](https://github.com/mvschwarz/openrig/pull/1561)).
+- Resolve each ancestor's notes file inside refocus's trace instead of starting
+  `rig scope resolve-notes` once per ancestor, which could use up the trace's
+  time on a loaded machine
+  ([#1563](https://github.com/mvschwarz/openrig/pull/1563)).
+
+### Off by default
+
+- Add an optional Mac check, `transport.local_user_guard` (or
+  `OPENRIG_TRANSPORT_LOCAL_USER_GUARD`), that makes the CLI refuse a local daemon
+  another account runs when the daemon's `/healthz` report and two `ps` readings
+  agree. Missing or disagreeing evidence, and an older daemon, keep today's
+  behaviour; it isn't authentication. `/healthz` gains `euid` beside `pid`
+  whether or not the check is on
+  ([#1566](https://github.com/mvschwarz/openrig/pull/1566)).
+
+### Guidance and docs
+
+- Add a getting-started page for people, `docs/reference/quickstart.md`, with a
+  glossary; make `getting-started.md` the setup reference for the agent doing
+  the setup; lead the README's install section with the `rigs` skill; and show
+  what OpenRig changes on your machine before you install
+  ([#1565](https://github.com/mvschwarz/openrig/pull/1565)).
+- Drop three finished items from the roadmap
+  ([#1560](https://github.com/mvschwarz/openrig/pull/1560)).
+
+### Dependency and install-script changes
+
+- The README's skill and install-script commands, getting-started and the
+  quickstart's example tag pin `v0.6.14`. No dependency changes.
+
+### Known limitations
+
+- The compaction and refocus fixes are tested without a native compaction or a
+  loaded machine. Confirm a compaction by its restore request or the drop in
+  context, and check that refocus showed the current work
+  ([#1562](https://github.com/mvschwarz/openrig/pull/1562),
+  [#1563](https://github.com/mvschwarz/openrig/pull/1563)).
+- The pane repair refuses while typing protection is on, and the compaction
+  refusal for a protected seat with no recorded pane still suggests plain `rig
+  reconcile-session --no-launch`, which adopts the seat into a new session; for
+  a running launched seat whose pane was never recorded, use `rig
+  reconcile-session <seat> --repair-missing-pane --no-launch` instead, with
+  protection off only if the person agrees. A delivery held from before the
+  repair can still refuse
+  ([#1564](https://github.com/mvschwarz/openrig/pull/1564)).
+- `rig context get reference/quickstart.md` doesn't resolve: the page ships
+  under the package's `docs/reference/` but isn't in the reference context pack
+  ([#1565](https://github.com/mvschwarz/openrig/pull/1565)).
+- On a Mac with more than one user account, a second user's `rig` commands can
+  reach the first user's daemon on its default port unless
+  `transport.local_user_guard` is on. The check trusts the daemon's own report,
+  identity can change between the check and the connection, and direct HTTP
+  clients aren't covered ([#1566](https://github.com/mvschwarz/openrig/pull/1566)).
+- 0.6.13's other limitations still apply.
+
 ## [0.6.13]
 
 0.6.13 is the quick follow-up to 0.6.12: fixes found by running teams on it
