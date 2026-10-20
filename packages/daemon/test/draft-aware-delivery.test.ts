@@ -341,7 +341,8 @@ describe("supported seat and queue integration", () => {
     expect(f.guarded.lookup(ids[1]!)).toEqual(f.guarded.lookup(ids[0]!));
     f.bodies.a = ""; await f.repo.drainPendingWakeIntents();
     expect(f.submissions).toHaveLength(held ? 0 : 1);
-    ids.forEach((id, i) => expect(f.outbox.getById(id)).toMatchObject({ body: original[i], deliveryState: held ? "retained" : "delivered" }));
+    // This pane double doesn't echo a sent message the way Claude does, so the one submitted wake reads indeterminate, not delivered.
+    ids.forEach((id, i) => expect(f.outbox.getById(id)).toMatchObject({ body: original[i], deliveryState: held ? "retained" : "indeterminate" }));
     expect(f.db.prepare("SELECT count(*) n FROM outbox_entries").get()).toEqual({ n: 2 });
   });
 });
