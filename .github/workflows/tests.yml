@@ -3,59 +3,42 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  mac-local-owner-r2:
-    runs-on: macos-latest
-    timeout-minutes: 25
+  partial-up-command-boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 7e2a94fe61168b36e6845852659f5687f36dcf81
+          ref: 95d13031546b4da93563f349bc90b077bf34a7d9
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: brew install tmux
-      - run: |
-          mkdir -p proof
-          git rev-parse HEAD HEAD^{tree} > proof/source.txt
       - run: npm ci
       - run: npm run build
-      - name: Previous poll, health field and descriptor assessment RED
+      - name: Actual main command help and unknown-option boundary
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --no-tags --depth=1 origin 63eed7614ce6a91abb29dd51fb3d7a882a6cbff8
-          check_red() {
-            local file="$1" package="$2" test_file="$3" pattern="$4" expected="$5" name="$6"
-            cp "$file" "$RUNNER_TEMP/candidate-source"
-            git show 63eed7614ce6a91abb29dd51fb3d7a882a6cbff8:"$file" > "$file"
-            trap 'cp "$RUNNER_TEMP/candidate-source" "$file"' RETURN
-            set +e
-            npm --workspace "$package" test -- "$test_file" -t "$pattern" --reporter=verbose 2>&1 | tee "proof/$name-red.log"
-            red_rc=${PIPESTATUS[0]}
-            set -e
-            cp "$RUNNER_TEMP/candidate-source" "$file"
-            trap - RETURN
-            test "$red_rc" -ne 0
-            grep -q "$expected failed" "proof/$name-red.log"
-            ! grep -q 'Unhandled Errors' "proof/$name-red.log"
-          }
-          check_red packages/cli/src/daemon-lifecycle.ts @openrig/cli test/kernel-ready-deadline.test.ts 'guard off|unknown enabled' 3 kernel
-          check_red packages/daemon/src/server.ts @openrig/daemon test/server.test.ts 'reports its process effective UID' 1 health
-          check_red packages/cli/src/local-daemon-owner.ts @openrig/cli test/local-daemon-owner.test.ts 'corroborates reported foreign' 1 assessor
-          git diff --exit-code > proof/restored-source.txt
-      - name: Corrected Mac evidence, kernel boundaries and preservation
-        shell: bash
-        env:
-          OPENRIG_TEST_MAC_OWNER_TOOLS: '1'
-        run: |
-          set -euo pipefail
-          npm --workspace @openrig/cli test -- test/local-daemon-owner.test.ts test/local-owner-routing.test.ts test/local-owner-direct.test.ts test/config-store-extended.test.ts test/client.test.ts test/send.test.ts test/queue.test.ts test/chatroom.test.ts test/doctor.test.ts test/ui.test.ts test/front-door.test.ts test/daemon-lifecycle.test.ts test/kernel-ready-deadline.test.ts test/start-kernel-evidence.test.ts --reporter=verbose 2>&1 | tee proof/green.log
-          npm --workspace @openrig/daemon test -- test/user-settings-store.test.ts test/user-settings-routes.test.ts test/server.test.ts test/event-loop-health-server.test.ts --reporter=verbose 2>&1 | tee proof/settings-health.log
+          mkdir -p proof "$RUNNER_TEMP/empty-home"
+          git rev-parse HEAD HEAD^{tree} > proof/source.txt
+          export HOME="$RUNNER_TEMP/empty-home"
+          node packages/cli/dist/bin-wrapper.js launch --help | tee proof/launch-help.txt
+          node packages/cli/dist/bin-wrapper.js up --help | tee proof/up-help.txt
+          grep -q -- '--env <KEY=VALUE>' proof/up-help.txt
+          ! grep -q -- '--env' proof/launch-help.txt
+          set +e
+          node packages/cli/dist/bin-wrapper.js launch retained-rig failed-seat --env CHECK=synthetic > proof/launch-env.txt 2>&1
+          rc=$?
+          set -e
+          cat proof/launch-env.txt
+          test "$rc" -ne 0
+          grep -q "unknown option '--env'" proof/launch-env.txt
+          git diff --exit-code > proof/source-unchanged.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: mac-local-owner-r2
+          name: partial-up-command-boundary
           path: proof/
           if-no-files-found: error
