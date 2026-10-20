@@ -161,6 +161,19 @@ describe("attached team address preserves physical custody", () => {
     expect(physicalSessionName(db, "person-agent@team")).toBe("person-agent@team");
   });
 
+  it.each(["person-agent@team", "0"])("the same archived seat can continue on %s without taking another member's history", async physical => {
+    const oldRig = rigs.createRig("team"), oldNode = rigs.addNode(oldRig.id, "person.agent", { runtime: "terminal" });
+    expect((await attach.attachToNode({ rigId: oldRig.id, logicalId: oldNode.logicalId, context: context("person-agent@team") })).ok).toBe(true);
+    sessions.updateStatus(sessions.getSessionsForRig(oldRig.id)[0]!.id, "exited"); rigs.archiveRig(oldRig.id);
+    const rig = rigs.createRig("team"), node = rigs.addNode(rig.id, "person.agent", { runtime: "terminal" });
+    expect(await attach.attachToNode({ rigId: rig.id, logicalId: node.logicalId, context: context(physical) }))
+      .toMatchObject({ ok: true, sessionName: physical, senderAddress: "person-agent@team" });
+    expect(resolveGuardTarget(db, "person-agent@team")?.nodeId).toBe(node.id);
+    expect((await transport.send("person-agent@team", "replacement reply")).ok).toBe(true);
+    expect(writes.at(-1)).toEqual({ target: physical, text: "replacement reply" });
+    expect(sessions.getSessionsForRig(oldRig.id)[0]?.sessionName).toBe("person-agent@team");
+  });
+
   it("retained legacy collisions keep exact history and do not select a different occupant", async () => {
     const rig = rigs.createRig("team"), former = rigs.addNode(rig.id, "former.agent", { runtime: "terminal" });
     await attach.attachToNode({ rigId: rig.id, logicalId: former.logicalId, context: context("person-agent@team") });
