@@ -122,18 +122,12 @@ describe("SeatHandoverService", () => {
     });
   }
 
-  function seedSeat(opts?: { rigName?: string; runtime?: string; withSession?: boolean; legacyExisting?: boolean; model?: string; codexConfigProfile?: string; effort?: string }) {
+  function seedSeat(opts?: { rigName?: string; runtime?: string; withSession?: boolean; model?: string; codexConfigProfile?: string; effort?: string }) {
     const rig = rigRepo.createRig(opts?.rigName ?? "seat-rig");
     const node = rigRepo.addNode(rig.id, "dev.impl", { runtime: opts?.runtime ?? "codex", cwd: "/project", model: opts?.model, codexConfigProfile: opts?.codexConfigProfile, effort: opts?.effort });
     let sessionId: string | null = null;
     if (opts?.withSession !== false) {
-      // Archived-generation tests start with retained current-seat data. New admission
-      // now reserves the old spelling, so do not use a new join to synthesize that past.
-      const session = opts?.legacyExisting ? { id: node.id } : sessionRegistry.registerSession(node.id, `dev-impl@${rig.name}`);
-      if (opts?.legacyExisting) {
-        db.prepare("INSERT INTO sessions(id,node_id,session_name) VALUES (?,?,?)").run(session.id, node.id, `dev-impl@${rig.name}`);
-        sessionRegistry.mintOccupantTenure(node.id, "initial");
-      }
+      const session = sessionRegistry.registerSession(node.id, `dev-impl@${rig.name}`);
       sessionRegistry.updateStatus(session.id, "running");
       sessionRegistry.updateStartupStatus(session.id, "ready", "2026-04-20T12:00:00Z");
       sessionRegistry.updateBinding(node.id, { tmuxSession: `dev-impl@${rig.name}`, tmuxPane: "%0" });
@@ -1175,7 +1169,7 @@ describe("SeatHandoverService", () => {
 
   it.each(["fresh", "rebuild"] as const)("#141: an archived earlier generation's binding does not block a %s handover of the live seat", async (source) => {
     seedArchivedGeneration();
-    const { node } = seedSeat({ legacyExisting: true });
+    const { node } = seedSeat();
 
     const result = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source });
 
