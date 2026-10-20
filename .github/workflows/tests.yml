@@ -9,7 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 295c0b28b
+          ref: 295c0b28b34635ce3e1960e1730453a595e10e24
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -27,7 +27,7 @@ jobs:
           set -o pipefail
           npm --workspace @openrig/daemon test -- test/reconcile-session.test.ts test/seat-delivery-guard-correction.test.ts --reporter=verbose 2>&1 | tee proof/daemon.log
       - name: Focused CLI compatibility cases
-        if: ${{ !cancelled() && steps.build.outcome != 'failure' }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           set -o pipefail
           npm --workspace @openrig/cli test -- test/reconcile-session.test.ts --reporter=verbose 2>&1 | tee proof/cli.log
