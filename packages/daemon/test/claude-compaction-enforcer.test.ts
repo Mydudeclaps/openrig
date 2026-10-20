@@ -441,6 +441,41 @@ describe("ClaudeCompactionEnforcer", () => {
     expect(await belowTick(enforcer)).toEqual({ triggered: true }); // no resolver -> gate inert -> drains
   });
 
+  it.each(["busy", "retained"])("a fresh high sample retains the exact owed stage after %s", async kind => {
+    const { enforcer, send } = await queueStageWithGen("same-generation");
+    const highTick = () => enforcer.maybeAutoCompact({ sessionName: "claude-seat@rig", runtime: "claude-code",
+      usedPercentage: 95, transcriptPath: "/tmp/c.jsonl" });
+    const deliveredBefore = send.mock.calls.length;
+    // The initial boundary advances while high; the restore must still respect delivery admission.
+    expect(await highTick()).toEqual({ triggered: true });
+    const held = kind === "busy" ? { ok: false, reason: "wait_for_idle_timeout" } : { ok: true, outcome: "retained" };
+    send.mockResolvedValueOnce(held);
+    expect(await highTick()).toEqual({ triggered: false, reason: "send_failed" });
+    expect(send.mock.calls.at(-1)?.[1]).toContain("restoring this Claude session after compaction");
+    expect(send.mock.calls.at(-1)?.[2]).toEqual({ waitForIdleMs: expect.any(Number) });
+    expect(await highTick()).toEqual({ triggered: true });
+    expect(send.mock.calls.at(-1)?.[1]).toContain("restoring this Claude session after compaction");
+    expect(await highTick()).toEqual({ triggered: true });
+    expect(send.mock.calls.at(-1)?.[1]).toContain("Now audit your compaction restore");
+    expect(send.mock.calls.slice(deliveredBefore).some(call => String(call[1]).includes("preparation is now required") || String(call[1]).startsWith("/compact"))).toBe(false);
+  });
+
+  it.each(["disabled", "replacement"])("a fresh high sample preserves the pending-stage %s gate", async kind => {
+    const policy = { ...POLICY_ENABLED_AT_80 };
+    const { transport, send } = makeSessionTransport();
+    let generation = "original";
+    const enforcer = new ClaudeCompactionEnforcer(makeSettingsStore(policy), transport, {
+      resolveOccupantGeneration: () => generation,
+    });
+    const tick = () => enforcer.maybeAutoCompact({ sessionName: "claude-seat@rig", runtime: "claude-code", usedPercentage: 95 });
+    await tick(); await tick();
+    const count = send.mock.calls.length;
+    if (kind === "disabled") policy.enabled = false;
+    else generation = "replacement";
+    expect(await tick()).toEqual({ triggered: false, reason: kind === "disabled" ? "disabled" : "stale_generation" });
+    expect(send).toHaveBeenCalledTimes(count);
+  });
+
   // A pending post-compact stage drains without a usage sample (ContextMonitor calls this when the
   // latest sample is stale or unknown). A sample-less call never starts a compaction.
   const drainTick = (enforcer: ClaudeCompactionEnforcer) =>
