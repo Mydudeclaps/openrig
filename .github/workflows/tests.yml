@@ -3,13 +3,13 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  attach-address-red:
+  attach-address-core:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 551d6171b925f227fd73844b7e8f12a62352551b
+          ref: c528b2a889ca5d5a16ad156be15fe7106fcead31
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -17,19 +17,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Attach address and collision regression before implementation
+      - name: Core address correction and existing attach/registry checks
         shell: bash
         run: |
-          set -uo pipefail
+          set -euo pipefail
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          npm --workspace @openrig/daemon test -- test/self-attach-address.test.ts --reporter=verbose 2>&1 | tee proof/red.log
-          result=${PIPESTATUS[0]}
+          npm --workspace @openrig/daemon test -- test/self-attach-address.test.ts test/self-attach-service.test.ts test/session-registry.test.ts --reporter=verbose 2>&1 | tee proof/green.log
           git diff --exit-code > proof/source-unchanged.txt
-          exit "$result"
+          npm --workspace @openrig/cli test -- test/attach.test.ts test/whoami.test.ts --reporter=verbose 2>&1 | tee proof/cli.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: attach-address-red
+          name: attach-address-core
           path: proof/
           if-no-files-found: error
