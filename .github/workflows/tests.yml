@@ -9,7 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 295c0b28b34635ce3e1960e1730453a595e10e24
+          ref: 42dca41c64d7b722ebc50dd2ec3add47ebec10d8
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -22,6 +22,33 @@ jobs:
       - run: npm ci
       - id: build
         run: npm run build
+      - name: Corrected baseline guard and CLI fixtures only
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin 6d43323070f56d86b9f8ff50a4faa5523a7d8f7f
+          files=(packages/daemon/src/domain/claim-service.ts packages/daemon/src/domain/topology-converge.ts packages/daemon/src/routes/sessions.ts packages/cli/src/commands/reconcile-session.ts)
+          mkdir -p "$RUNNER_TEMP/repair-source"
+          for file in "${files[@]}"; do
+            cp --parents "$file" "$RUNNER_TEMP/repair-source/"
+            git show 6d43323070f56d86b9f8ff50a4faa5523a7d8f7f:"$file" > "$file"
+          done
+          restore_candidate() { for file in "${files[@]}"; do cp "$RUNNER_TEMP/repair-source/$file" "$file"; done; }
+          trap restore_candidate EXIT
+          set +e
+          npm --workspace @openrig/daemon test -- test/reconcile-session.test.ts -t 'does not change active|does not commit during' --reporter=verbose 2>&1 | tee proof/corrected-red-daemon.log
+          daemon_rc=${PIPESTATUS[0]}
+          npm --workspace @openrig/cli test -- test/reconcile-session.test.ts -t 'distinct repair endpoint|requires explicit|gets 404' --reporter=verbose 2>&1 | tee proof/corrected-red-cli.log
+          cli_rc=${PIPESTATUS[0]}
+          set -e
+          test "$daemon_rc" -ne 0
+          test "$cli_rc" -ne 0
+          grep -q 'reconcile_error' proof/corrected-red-daemon.log
+          grep -q "unknown option '--repair-missing-pane'" proof/corrected-red-cli.log
+          ! grep -q 'Unhandled Errors' proof/corrected-red-daemon.log
+          ! grep -q 'Unhandled Errors' proof/corrected-red-cli.log
+          restore_candidate
+          trap - EXIT
+          git diff --exit-code > proof/restored-source.txt
       - name: Focused daemon repair and guard cases
         run: |
           set -o pipefail
