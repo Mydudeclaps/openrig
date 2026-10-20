@@ -3,13 +3,13 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  fresh-in-place-readiness:
+  usage-host-fixture-clock:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 616c5f285da9964fd8ad2c247de2439271a026c8
+          ref: 71d9332ee
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -17,36 +17,41 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Bind source and regression fixtures
+      - run: npm run build
+      - name: Bind candidate and verify the expired baseline regression
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/issue1544"
-          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/issue1544/checkout.txt"
-          for name in claude-handover-readiness claude-fresh-in-place-scope; do
-            git show "$GITHUB_SHA:packages/daemon/test/$name.test.ts" > "packages/daemon/test/$name.test.ts"
-          done
-          sha256sum packages/daemon/src/adapters/claude-code-adapter.ts packages/daemon/src/domain/runtime-adapter.ts packages/daemon/src/domain/successor-session-launcher.ts packages/daemon/test/claude-handover-readiness.test.ts packages/daemon/test/claude-fresh-in-place-scope.test.ts > "$RUNNER_TEMP/issue1544/bindings.before.txt"
-      - name: Real service chronology and scoped selector
-        run: |
-          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/usage-clock"
+          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/usage-clock/checkout.txt"
+          sha256sum packages/daemon/test/helpers/usage-hosts-harness.ts packages/daemon/test/provider-usage-across-hosts.test.ts packages/daemon/test/chat-repository.test.ts > "$RUNNER_TEMP/usage-clock/bindings.before.txt"
+          cp packages/daemon/test/helpers/usage-hosts-harness.ts "$RUNNER_TEMP/usage-clock/candidate.ts"
+          git show f332ee68:packages/daemon/test/helpers/usage-hosts-harness.ts > packages/daemon/test/helpers/usage-hosts-harness.ts
           set +e
-          CHECKPOINT_OUTPUT="$RUNNER_TEMP/issue1544" npm exec -w packages/daemon -- vitest run test/claude-handover-readiness.test.ts test/claude-fresh-in-place-scope.test.ts --reporter verbose > "$RUNNER_TEMP/issue1544/test.log" 2>&1
+          npm exec -w packages/daemon -- vitest run test/provider-usage-across-hosts.test.ts -t 'a refresh slower than the 5 s read class still succeeds' --reporter verbose > "$RUNNER_TEMP/usage-clock/red.log" 2>&1
           code=$?
           set -e
-          cat "$RUNNER_TEMP/issue1544/test.log"
-          printf '%s\n' "$code" > "$RUNNER_TEMP/issue1544/test-exit.txt"
-          test "$code" -eq 0
-          git diff --exit-code -- packages/daemon/src
-          sha256sum packages/daemon/src/adapters/claude-code-adapter.ts packages/daemon/src/domain/runtime-adapter.ts packages/daemon/src/domain/successor-session-launcher.ts packages/daemon/test/claude-handover-readiness.test.ts packages/daemon/test/claude-fresh-in-place-scope.test.ts > "$RUNNER_TEMP/issue1544/bindings.after.txt"
-          diff -u "$RUNNER_TEMP/issue1544/bindings.before.txt" "$RUNNER_TEMP/issue1544/bindings.after.txt"
-      - name: Affected preservation
+          cat "$RUNNER_TEMP/usage-clock/red.log"
+          printf '%s\n' "$code" > "$RUNNER_TEMP/usage-clock/red.exit"
+          test "$code" -ne 0
+          grep -q 'nearing' "$RUNNER_TEMP/usage-clock/red.log"
+          grep -q 'unknown' "$RUNNER_TEMP/usage-clock/red.log"
+          grep -q 'AssertionError' "$RUNNER_TEMP/usage-clock/red.log"
+          cp "$RUNNER_TEMP/usage-clock/candidate.ts" packages/daemon/test/helpers/usage-hosts-harness.ts
+      - name: Verify repaired daemon fixtures and shared CLI and TUI callers
         run: |
           set -euo pipefail
-          npm exec -w packages/daemon -- vitest run test/claude-runtime-adapter.test.ts test/claude-auto-startup.test.ts test/claude-wrapper-launch-startup.test.ts test/native-resume-probe.test.ts test/successor-session-launcher.test.ts test/seat-handover-service.test.ts test/seat-handover-sources.test.ts test/native-process-lineage.test.ts --reporter verbose > "$RUNNER_TEMP/issue1544/preservation.log" 2>&1
-          cat "$RUNNER_TEMP/issue1544/preservation.log"
+          npm exec -w packages/daemon -- vitest run test/provider-usage-across-hosts.test.ts test/chat-repository.test.ts --reporter verbose > "$RUNNER_TEMP/usage-clock/daemon.log" 2>&1
+          cat "$RUNNER_TEMP/usage-clock/daemon.log"
+          npm exec -w packages/cli -- vitest run test/provider-usage-across-hosts.test.ts test/keeping-a-watch-usage-doc.test.ts --reporter verbose > "$RUNNER_TEMP/usage-clock/cli.log" 2>&1
+          cat "$RUNNER_TEMP/usage-clock/cli.log"
+          npm exec -w packages/tui -- vitest run test/usage-hosts-journey.test.ts --reporter verbose > "$RUNNER_TEMP/usage-clock/tui.log" 2>&1
+          cat "$RUNNER_TEMP/usage-clock/tui.log"
+          sha256sum packages/daemon/test/helpers/usage-hosts-harness.ts packages/daemon/test/provider-usage-across-hosts.test.ts packages/daemon/test/chat-repository.test.ts > "$RUNNER_TEMP/usage-clock/bindings.after.txt"
+          diff -u "$RUNNER_TEMP/usage-clock/bindings.before.txt" "$RUNNER_TEMP/usage-clock/bindings.after.txt"
+          git diff --exit-code
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: fresh-in-place-round3-green
-          path: ${{ runner.temp }}/issue1544/
+          name: usage-host-fixture-clock
+          path: ${{ runner.temp }}/usage-clock/
           if-no-files-found: error
