@@ -3,48 +3,37 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  legacy-pane-observation-controls:
+  missing-pane-focused:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
-          path: controller
-          persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          ref: f5185f8341f041b12f61c2171a9934723a2ae8ea
-          path: source
+          ref: 295c0b28b
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: source/package-lock.json
-      - name: Existing hosted tool availability
+      - name: Record exact source
         run: |
-          command -v tmux
-          command -v cc
-          mkdir -p "$RUNNER_TEMP/legacy-pane"
-          git -C source rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/legacy-pane/source.txt"
-          git -C controller rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/legacy-pane/controller.txt"
-          sha256sum controller/diagnostics/legacy-pane-controls.mjs > "$RUNNER_TEMP/legacy-pane/controller.sha256"
+          mkdir -p proof
+          git rev-parse HEAD HEAD^{tree} > proof/source.txt
       - run: npm ci
-        working-directory: source
-      - run: npm run build
-        working-directory: source
-      - name: Only two unfinished synthetic observation controls
-        env:
-          SOURCE_PIN: f5185f8341f041b12f61c2171a9934723a2ae8ea
+      - id: build
+        run: npm run build
+      - name: Focused daemon repair and guard cases
         run: |
-          set -euo pipefail
-          export SOURCE_ROOT="$GITHUB_WORKSPACE/source"
-          export PROOF_ROOT="$RUNNER_TEMP/legacy-pane"
-          timeout --signal=TERM --kill-after=10s 180s node controller/diagnostics/legacy-pane-controls.mjs
+          set -o pipefail
+          npm --workspace @openrig/daemon test -- test/reconcile-session.test.ts test/seat-delivery-guard-correction.test.ts --reporter=verbose 2>&1 | tee proof/daemon.log
+      - name: Focused CLI compatibility cases
+        if: ${{ !cancelled() && steps.build.outcome != 'failure' }}
+        run: |
+          set -o pipefail
+          npm --workspace @openrig/cli test -- test/reconcile-session.test.ts --reporter=verbose 2>&1 | tee proof/cli.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: legacy-pane-controls
-          path: ${{ runner.temp }}/legacy-pane/
+          name: missing-pane-focused
+          path: proof/
           if-no-files-found: error
