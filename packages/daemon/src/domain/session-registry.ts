@@ -133,23 +133,43 @@ export function resolveCurrentSessionAddress(db: Database.Database, address: str
     .all(address, address) as Array<CurrentSessionAddress & { name: string; archived_at?: string | null; status: string }>;
   const active = rows.filter(row => row.archived_at == null && !['superseded', 'detached', 'exited'].includes(row.status));
   const exact = active.filter(row => row.sessionName === address);
-  // A derived address must not redirect an exact saved address to another node.
-  const saved = exact.length ? [] : db.prepare("SELECT DISTINCT node_id FROM sessions WHERE session_name=?")
-    .all(address) as Array<{ node_id: string }>;
-  const pool = exact.length ? exact : active.filter(row => saved.every(owner => owner.node_id === row.nodeId));
+  // A derived address cannot take another seat's saved spelling. The same seat
+  // can continue after the old rig generation stopped or was archived by replacement.
+  const pool = exact.length ? exact : active.filter(row => !hasOtherSeatHistory(db, address, row.nodeId));
   if (pool.length !== 1) return null;
   const row = pool[0]!;
   return { nodeId: row.nodeId, sessionId: row.sessionId, sessionName: row.sessionName,
     senderAddress: row.senderAddress, logicalId: row.logicalId, rigName: row.name };
 }
 
-/** Normalize only a positively current tmux address; all legacy/historical
- * exact-name consumers keep their existing lookup and mismatch protection. */
+/** Resolve live routing to the current physical tmux session. Historical readers
+ * use savedSessionName instead so reconnecting does not redirect saved context. */
 export function physicalSessionName(db: Database.Database, address: string): string {
   if (!address.includes("@")) return address;
   // A curated/legacy read model with no binding table has no aliases to resolve.
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bindings'").get()) return address;
   return resolveCurrentSessionAddress(db, address)?.sessionName ?? address;
+}
+
+/** Stopped/archived generations of the same rig/logical seat are its own history;
+ * every other saved owner still reserves the spelling, including archived ones. */
+export function hasOtherSeatHistory(db: Database.Database, address: string, nodeId: string): boolean {
+  const owners = db.prepare(`SELECT r.*, n.logical_id AS logicalId,
+      target.logical_id AS targetLogicalId, target_rig.name AS targetRigName,
+      (SELECT status FROM sessions WHERE node_id=n.id ORDER BY id DESC LIMIT 1) AS latestStatus
+    FROM sessions s JOIN nodes n ON n.id=s.node_id JOIN rigs r ON r.id=n.rig_id
+    JOIN nodes target ON target.id=? JOIN rigs target_rig ON target_rig.id=target.rig_id
+    WHERE s.session_name=? AND s.node_id<>?`)
+    .all(nodeId, address, nodeId) as Array<{ name: string; archived_at?: string | null; logicalId: string; targetLogicalId: string; targetRigName: string; latestStatus: string }>;
+  return owners.some(owner => !((owner.archived_at != null || ["exited", "detached", "superseded"].includes(owner.latestStatus))
+    && owner.name === owner.targetRigName && owner.logicalId === owner.targetLogicalId));
+}
+
+/** Saved transcript/native context keeps an exact session spelling, even when
+ * the same node now advertises that spelling from a different physical session. */
+export function savedSessionName(db: Database.Database, address: string): string {
+  if (db.prepare("SELECT 1 FROM sessions WHERE session_name=? LIMIT 1").get(address)) return address;
+  return physicalSessionName(db, address);
 }
 
 export class SessionAddressConflict extends Error {
@@ -191,20 +211,24 @@ export class SessionRegistry {
     const logical = `${node.logical_id.replace(/\./g, '-')}@${node.name}`;
     const continuing = this.db.prepare("SELECT 1 FROM sessions WHERE node_id=? LIMIT 1").get(nodeId) !== undefined;
     // An established exact/raw session can reconnect as before. A newly advertised
-    // logical name cannot take a different node's saved spelling, even after unbind/archive.
+    // logical name cannot take another seat's saved spelling, even after unbind/archive.
     if (tmux && !(continuing && sessionName === logical)
-      && this.db.prepare("SELECT 1 FROM sessions WHERE session_name=? AND node_id<>? LIMIT 1").get(logical, nodeId)) {
+      && hasOtherSeatHistory(this.db, logical, nodeId)) {
       throw new SessionAddressConflict(logical);
     }
     const proposed = tmux ? [sessionName, logical] : [sessionName];
-    const other = this.db.prepare(`SELECT r.*, n.id AS nodeId,
+    const other = this.db.prepare(`SELECT r.*, n.id AS nodeId, n.logical_id AS logicalId,
         replace(n.logical_id, '.', '-') || '@' || r.name AS logicalAddress,
         b.tmux_session, b.external_session_name,
-        (SELECT session_name FROM sessions WHERE node_id=n.id ORDER BY id DESC LIMIT 1) AS latestName
+        (SELECT session_name FROM sessions WHERE node_id=n.id ORDER BY id DESC LIMIT 1) AS latestName,
+        (SELECT status FROM sessions WHERE node_id=n.id ORDER BY id DESC LIMIT 1) AS latestStatus
       FROM nodes n JOIN rigs r ON r.id=n.rig_id LEFT JOIN bindings b ON b.node_id=n.id WHERE n.id<>?`)
-      .all(nodeId) as Array<{ nodeId: string; archived_at?: string | null; logicalAddress: string; tmux_session: string | null; external_session_name: string | null; latestName: string | null }>;
+      .all(nodeId) as Array<{ nodeId: string; name: string; logicalId: string; latestStatus: string | null; archived_at?: string | null; logicalAddress: string; tmux_session: string | null; external_session_name: string | null; latestName: string | null }>;
     for (const row of other) {
       if (row.archived_at != null) continue;
+      // The supported no-probe replacement also keeps a stopped same-seat generation.
+      if (row.name === node.name && row.logicalId === node.logical_id
+        && row.latestStatus && ["exited", "detached", "superseded"].includes(row.latestStatus)) continue;
       const physical = row.tmux_session ?? row.external_session_name;
       for (const address of proposed) {
         const currentOther = physical && (!row.latestName || row.latestName === physical);
@@ -636,7 +660,7 @@ export class SessionRegistry {
     runtime: string | null;
     currentProvenance: string | null;
   } | null {
-    sessionName = physicalSessionName(this.db, sessionName);
+    sessionName = savedSessionName(this.db, sessionName);
     const row = this.db.prepare(
       `SELECT s.id as session_id, s.node_id, n.rig_id, n.runtime, s.resume_provenance
        FROM sessions s

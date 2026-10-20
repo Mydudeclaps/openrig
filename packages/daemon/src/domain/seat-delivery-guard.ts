@@ -1,3 +1,4 @@
+import { hasOtherSeatHistory } from "./session-registry.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -449,19 +450,21 @@ export function resolveGuardTarget(db: Database.Database, name: string): GuardTa
       coalesce(b.tmux_session, replace(n.logical_id,'.','-') || '@' || r.name) AS session,
       b.tmux_pane AS pane,
       (SELECT generation_uuid FROM occupant_tenures t WHERE t.node_id=n.id ORDER BY generation_ordinal DESC LIMIT 1) AS occupant,
-      b.tmux_session AS physicalName,
+      b.tmux_session AS physicalName, n.logical_id AS logicalId,
       r.archived_at AS archivedAt
     FROM nodes n JOIN rigs r ON r.id=n.rig_id LEFT JOIN bindings b ON b.node_id=n.id
     WHERE n.id=? OR b.tmux_session=? OR b.tmux_pane=? OR n.logical_id=?
       OR (replace(n.logical_id,'.','-') || '@' || r.name=?
         AND (b.tmux_session IS NULL OR b.tmux_session=(SELECT session_name FROM sessions WHERE node_id=n.id ORDER BY id DESC LIMIT 1))
-        AND NOT EXISTS (SELECT 1 FROM sessions saved WHERE saved.session_name=? AND saved.node_id<>n.id))`)
-    .all(name, name, name, name, name, name) as Array<GuardTarget & { archivedAt: string | null; physicalName: string | null }>;
-  const unarchived = rows.filter((row) => row.archivedAt === null);
-  const active = unarchived.length > 0 ? unarchived : rows;
+      )`)
+    .all(name, name, name, name, name) as Array<GuardTarget & { archivedAt: string | null; physicalName: string | null; logicalId: string }>;
+  const eligible = rows.filter(row => row.nodeId === name || row.physicalName === name || row.pane === name || row.logicalId === name
+    || !hasOtherSeatHistory(db, name, row.nodeId));
+  const unarchived = eligible.filter((row) => row.archivedAt === null);
+  const active = unarchived.length > 0 ? unarchived : eligible;
   const exact = active.filter(row => row.physicalName === name);
   const pool = exact.length ? exact : active;
   if (pool.length !== 1) return null;
-  const { archivedAt: _archivedAt, physicalName: _physicalName, ...target } = pool[0]!;
+  const { archivedAt: _archivedAt, physicalName: _physicalName, logicalId: _logicalId, ...target } = pool[0]!;
   return target;
 }

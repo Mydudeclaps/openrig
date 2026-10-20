@@ -84,6 +84,18 @@ describe("attached team address preserves physical custody", () => {
     expect(sessions.getBindingForNode(first.id)?.tmuxSession).toBe("0"); expect(sessions.getBindingForNode(second.id)).toBeNull();
   });
 
+  it("refuses a new join sharing another current member's raw physical name", async () => {
+    const rig = rigs.createRig("team"), first = rigs.addNode(rig.id, "first.agent", { runtime: "terminal" });
+    expect((await attach.attachToNode({ rigId: rig.id, logicalId: first.logicalId, context: context("0") })).ok).toBe(true);
+    const other = rigs.addNode(rig.id, "other.agent", { runtime: "terminal" });
+    const before = db.prepare("SELECT * FROM sessions ORDER BY id").all();
+    expect(await attach.attachToNode({ rigId: rig.id, logicalId: other.logicalId, context: context("0") }))
+      .toMatchObject({ ok: false, code: "address_conflict" });
+    expect(sessions.getBindingForNode(other.id)).toBeNull();
+    expect(db.prepare("SELECT * FROM sessions ORDER BY id").all()).toEqual(before);
+    expect(writes).toHaveLength(0); expect(tmux.createSession).not.toHaveBeenCalled();
+  });
+
   it("later launch refuses the same address before creating any tmux session", async () => {
     const rig = rigs.createRig("team"), first = rigs.addNode(rig.id, "person.agent", { runtime: "terminal" });
     await attach.attachToNode({ rigId: rig.id, logicalId: first.logicalId, context: context("0") });

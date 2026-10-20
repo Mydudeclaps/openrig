@@ -1,4 +1,4 @@
-import { physicalSessionName } from "../domain/session-registry.js";
+import { savedSessionName } from "../domain/session-registry.js";
 import { Hono } from "hono";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "../domain/rig-repository.js";
@@ -171,7 +171,7 @@ export function transcriptRoutes(): Hono {
       );
     }
 
-    sessionName = physicalSessionName(db, sessionName);
+    sessionName = savedSessionName(db, sessionName);
     const resolution = resolveSessionToRig(db, rigRepo, sessionName);
     if ("error" in resolution) {
       return c.json({ error: resolution.error }, resolution.status as 404);
@@ -233,7 +233,7 @@ export function transcriptRoutes(): Hono {
       );
     }
 
-    sessionName = physicalSessionName(db, sessionName);
+    sessionName = savedSessionName(db, sessionName);
     const resolution = resolveSessionToRig(db, rigRepo, sessionName);
     if ("error" in resolution) {
       return c.json({ error: resolution.error }, resolution.status as 404);
@@ -285,7 +285,7 @@ export function transcriptRoutes(): Hono {
       );
     }
 
-    sessionName = physicalSessionName(db, sessionName);
+    sessionName = savedSessionName(db, sessionName);
     const resolution = resolveSessionToRig(db, rigRepo, sessionName);
     if ("error" in resolution) {
       return c.json({ error: resolution.error }, resolution.status as 404);
