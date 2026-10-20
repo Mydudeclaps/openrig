@@ -3,13 +3,13 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  slack-timing-r2-red:
+  slack-timing-r2-green:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 0925b04c45d1f64c4b9cdb325cf64e79d3ea28eb
+          ref: 5682e313b53d41994eaf44406d9fa8cfcb1bc189
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -17,20 +17,17 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Selected timing and unknown-receipt assertions before correction
+      - name: Affected timing assertions and direct/button/reaction preservation
         shell: bash
         run: |
-          set -uo pipefail
+          set -euo pipefail
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          npm --workspace @openrig/daemon test -- test/slack-answer-after-question.test.ts --reporter=verbose 2>&1 | tee proof/red.log
-          result=${PIPESTATUS[0]}
-          echo "$result" > proof/test-exit.txt
+          npm --workspace @openrig/daemon test -- test/slack-answer-after-question.test.ts test/slack-reply-to-thread.test.ts test/slack-structured-questions.test.ts test/slack-reactions.test.ts --reporter=verbose 2>&1 | tee proof/green.log
           git diff --exit-code > proof/source-unchanged.txt
-          exit "$result"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: slack-timing-r2-red
+          name: slack-timing-r2-green
           path: proof/
           if-no-files-found: error
