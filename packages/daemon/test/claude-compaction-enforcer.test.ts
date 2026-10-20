@@ -227,14 +227,6 @@ describe("ClaudeCompactionEnforcer", () => {
     expect(second).toEqual({ triggered: true });
     expect(send.mock.calls[1]![1]).toContain("/compact");
 
-    now += 61_000;
-    const third = await enforcer.maybeAutoCompact({
-      sessionName: "claude-seat@rig",
-      runtime: "claude-code",
-      usedPercentage: 95,
-    });
-    expect(third).toEqual({ triggered: false, reason: "already_triggered_above_threshold" });
-
     const belowBoundary = await enforcer.maybeAutoCompact({
       sessionName: "claude-seat@rig",
       runtime: "claude-code",
@@ -474,6 +466,17 @@ describe("ClaudeCompactionEnforcer", () => {
     else generation = "replacement";
     expect(await tick()).toEqual({ triggered: false, reason: kind === "disabled" ? "disabled" : "stale_generation" });
     expect(send).toHaveBeenCalledTimes(count);
+  });
+
+  it.each([true, false])("high-usage manual drain keeps the operator exemption actor-gated: %s", async operatorInitiated => {
+    const { transport, send } = makeSessionTransport();
+    const enforcer = new ClaudeCompactionEnforcer(makeSettingsStore(POLICY_DISABLED), transport);
+    expect(await enforcer.triggerManualCompact({ sessionName: "manual@rig", runtime: "claude-code", usedPercentage: 95 },
+      { operatorInitiated })).toEqual({ triggered: true, stage: "compact-sent" });
+    const before = send.mock.calls.length;
+    expect(await enforcer.maybeAutoCompact({ sessionName: "manual@rig", runtime: "claude-code", usedPercentage: 95 }))
+      .toEqual(operatorInitiated ? { triggered: true } : { triggered: false, reason: "disabled" });
+    expect(send).toHaveBeenCalledTimes(before + (operatorInitiated ? 1 : 0));
   });
 
   // A pending post-compact stage drains without a usage sample (ContextMonitor calls this when the
@@ -1387,7 +1390,7 @@ describe("ClaudeCompactionEnforcer", () => {
       expect(enforcer.getManualCompactionState("b@rig")).toBeNull();
     });
 
-    it("forward-fix B1: after a manual trigger, an above-threshold auto tick past the dedup window does NOT start a second prep (dedups); the manual back-half still drains", async () => {
+    it("after a manual trigger, a fresh high tick advances the owed stage without a second preparation", async () => {
       const settings = makeSettingsStore(POLICY_ENABLED_AT_80);
       const { transport, send } = makeSessionTransport();
       const enforcer = new ClaudeCompactionEnforcer(settings, transport, {
@@ -1405,18 +1408,12 @@ describe("ClaudeCompactionEnforcer", () => {
       })).toEqual({ triggered: true, stage: "compact-sent" });
       expect(send).toHaveBeenCalledTimes(2);
 
-      // Advance PAST the short dedup window, then an ABOVE-threshold auto tick.
-      // It must dedup on triggeredAboveThreshold — NOT start a second prep.
+      // Advancing a pending stage is not a new trigger, even past the short dedup window.
       now += 61_000;
       expect(await enforcer.maybeAutoCompact({
         sessionName: SEAT, runtime: "claude-code", usedPercentage: 95,
-      })).toEqual({ triggered: false, reason: "already_triggered_above_threshold" });
-      expect(send).toHaveBeenCalledTimes(2); // no third message
-
-      // The manual restore/audit back-half still drains normally once below threshold.
-      expect(await enforcer.maybeAutoCompact({
-        sessionName: SEAT, runtime: "claude-code", usedPercentage: 20, transcriptPath: "/tmp/claude.jsonl",
-      })).toEqual({ triggered: true }); // turn boundary
+      })).toEqual({ triggered: true }); // owed turn boundary, not another prep
+      expect(send).toHaveBeenCalledTimes(3);
       expect(send).toHaveBeenLastCalledWith(SEAT, expect.stringContaining("OpenRig post-compaction turn boundary"), { waitForIdleMs: expect.any(Number) });
       expect(await enforcer.maybeAutoCompact({
         sessionName: SEAT, runtime: "claude-code", usedPercentage: 20, transcriptPath: "/tmp/claude.jsonl",
