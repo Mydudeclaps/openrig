@@ -3,13 +3,13 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  partial-up-command-boundary:
+  partial-up-guidance-red:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 95d13031546b4da93563f349bc90b077bf34a7d9
+          ref: 2c5d1307ee1b79af7dff386786f347aed8d8bd84
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -17,28 +17,24 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Actual main command help and unknown-option boundary
+      - name: Six partial-result guidance assertions fail on unchanged main
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p proof "$RUNNER_TEMP/empty-home"
+          mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          export HOME="$RUNNER_TEMP/empty-home"
-          node packages/cli/dist/bin-wrapper.js launch --help | tee proof/launch-help.txt
-          node packages/cli/dist/bin-wrapper.js up --help | tee proof/up-help.txt
-          grep -q -- '--env <KEY=VALUE>' proof/up-help.txt
-          ! grep -q -- '--env' proof/launch-help.txt
           set +e
-          node packages/cli/dist/bin-wrapper.js launch retained-rig failed-seat --env CHECK=synthetic > proof/launch-env.txt 2>&1
-          rc=$?
+          npm --workspace @openrig/daemon test -- test/bootstrap-orchestrator.test.ts -t 'cleanup failure accounting' --reporter=verbose 2>&1 | tee proof/red.log
+          rc=${PIPESTATUS[0]}
           set -e
-          cat proof/launch-env.txt
           test "$rc" -ne 0
-          grep -q "unknown option '--env'" proof/launch-env.txt
+          grep -q '6 failed' proof/red.log
+          grep -q '6 passed' proof/red.log
+          ! grep -q 'Unhandled Errors' proof/red.log
           git diff --exit-code > proof/source-unchanged.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: partial-up-command-boundary
+          name: partial-up-guidance-red
           path: proof/
           if-no-files-found: error
