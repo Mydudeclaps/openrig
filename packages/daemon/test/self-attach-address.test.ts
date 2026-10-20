@@ -173,17 +173,48 @@ describe("attached team address preserves physical custody", () => {
     expect(physicalSessionName(db, "person-agent@team")).toBe("person-agent@team");
   });
 
-  it.each(["person-agent@team", "0"])("the same archived seat can continue on %s without taking another member's history", async physical => {
+  it.each([
+    ["archived", "person-agent@team"], ["archived", "0"],
+    ["detached", "0"], ["exited", "0"], ["superseded", "0"],
+  ])("the same seat's successor owns guarded replies after %s on %s", async (state, physical) => {
+    const address = "person-agent@team";
     const oldRig = rigs.createRig("team"), oldNode = rigs.addNode(oldRig.id, "person.agent", { runtime: "terminal" });
-    expect((await attach.attachToNode({ rigId: oldRig.id, logicalId: oldNode.logicalId, context: context("person-agent@team") })).ok).toBe(true);
-    sessions.updateStatus(sessions.getSessionsForRig(oldRig.id)[0]!.id, "exited"); rigs.archiveRig(oldRig.id);
+    expect((await attach.attachToNode({ rigId: oldRig.id, logicalId: oldNode.logicalId, context: { ...context(address), tmuxPane: "%41" } })).ok).toBe(true);
+    const oldSession = sessions.getSessionsForRig(oldRig.id)[0]!;
+    if (state === "archived") { sessions.updateStatus(oldSession.id, "exited"); rigs.archiveRig(oldRig.id); }
+    else db.prepare("UPDATE sessions SET status=? WHERE id=?").run(state, oldSession.id);
     const rig = rigs.createRig("team"), node = rigs.addNode(rig.id, "person.agent", { runtime: "terminal" });
     expect(await attach.attachToNode({ rigId: rig.id, logicalId: node.logicalId, context: context(physical) }))
-      .toMatchObject({ ok: true, sessionName: physical, senderAddress: "person-agent@team" });
-    expect(resolveGuardTarget(db, "person-agent@team")?.nodeId).toBe(node.id);
-    expect((await transport.send("person-agent@team", "replacement reply")).ok).toBe(true);
-    expect(writes.at(-1)).toEqual({ target: physical, text: "replacement reply" });
-    expect(sessions.getSessionsForRig(oldRig.id)[0]?.sessionName).toBe("person-agent@team");
+      .toMatchObject({ ok: true, sessionName: physical, senderAddress: address });
+    expect(physicalSessionName(db, address)).toBe(physical);
+    const guard = new SeatDeliveryGuard(db, name => resolveGuardTarget(db, name));
+    Object.defineProperty(tmux, "deliveryGuard", { value: guard });
+    const guarded = new SessionTransport({ db, rigRepo: rigs, sessionRegistry: sessions, tmuxAdapter: tmux, sleep: async () => {} });
+    const target = { nodeId: node.id, session: physical, pane: "%42", occupant: sessions.currentOccupantTenure(node.id)!.generationUuid };
+    expect(guard.target(address)).toEqual(target);
+    expect(guard.target(oldNode.id)).toEqual({ nodeId: oldNode.id, session: address, pane: "%41", occupant: sessions.currentOccupantTenure(oldNode.id)!.generationUuid });
+    if (physical === "0") expect(sessions.findResumeContextByName(address)?.sessionId).toBe(oldSession.id);
+    await guard.set(oldNode.id, true, "operator@team", "old preference");
+    await guard.set(node.id, false, "operator@team", "successor is off");
+    expect((await guarded.send(address, "replacement reply")).ok).toBe(true);
+    expect(writes).toEqual([{ target: physical, text: "replacement reply" }]);
+    await guard.set(oldNode.id, false, "operator@team", "old is off");
+    await guard.set(node.id, true, "operator@team", "successor holds");
+    expect(await guarded.send(address, "held reply", { deliveryId: "successor-held", actorSession: "operator@team" }))
+      .toMatchObject({ ok: true, sent: false, outcome: "retained" });
+    expect(new OutboxHandler(db).getById("successor-held")?.guardBinding).toEqual(target);
+    expect(writes).toHaveLength(1);
+    expect(sessions.getSessionsForRig(oldRig.id)[0]?.sessionName).toBe(address);
+  });
+
+  it.each(["running", "pending", "unknown"])("does not treat a %s same-seat predecessor as stopped", async status => {
+    const oldRig = rigs.createRig("team"), oldNode = rigs.addNode(oldRig.id, "person.agent", { runtime: "terminal" });
+    await attach.attachToNode({ rigId: oldRig.id, logicalId: oldNode.logicalId, context: context("person-agent@team") });
+    db.prepare("UPDATE sessions SET status=? WHERE node_id=?").run(status, oldNode.id);
+    const rig = rigs.createRig("team"), node = rigs.addNode(rig.id, "person.agent", { runtime: "terminal" });
+    expect(await attach.attachToNode({ rigId: rig.id, logicalId: node.logicalId, context: context("0") }))
+      .toMatchObject({ ok: false, code: "address_conflict" });
+    expect(sessions.getBindingForNode(node.id)).toBeNull(); expect(writes).toHaveLength(0);
   });
 
   it("retained legacy collisions keep exact history and do not select a different occupant", async () => {
