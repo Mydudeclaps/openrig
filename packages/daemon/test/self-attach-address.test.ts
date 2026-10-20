@@ -1,6 +1,11 @@
 // Real repositories/services/routes; tmux and runtime effects are inert recorders.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { transcriptRoutes } from "../src/routes/transcripts.js";
+import { discoverResumeToken } from "../src/domain/agent-images/resume-token-discovery.js";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
@@ -24,10 +29,12 @@ import { transportRoutes } from "../src/routes/transport.js";
 describe("attached team address preserves physical custody", () => {
   let db: ReturnType<typeof createDb>, rigs: RigRepository, pods: PodRepository, sessions: SessionRegistry, bus: EventBus;
   let attach: SelfAttachService, transport: SessionTransport, tmux: TmuxAdapter, app: Hono;
+  let transcriptRoot: string;
   let writes: Array<{ target: string; text: string }>;
   beforeEach(() => {
     db = createDb(); migrate(db, ALL_MIGRATIONS);
     rigs = new RigRepository(db); pods = new PodRepository(db); sessions = new SessionRegistry(db); bus = new EventBus(db);
+    transcriptRoot = mkdtempSync(join(tmpdir(), "attach-history-"));
     writes = [];
     tmux = { hasSession: async () => true, probeSession: async () => ({ state: "present" }),
       capturePaneContent: async () => "plain terminal", getPaneCommand: async () => "sh",
@@ -39,7 +46,7 @@ describe("attached team address preserves physical custody", () => {
     app = new Hono(); app.use("*", async (c, next) => { c.set("selfAttachService" as never, attach); c.set("sessionTransport" as never, transport); await next(); });
     app.route("/api/rigs", rigsRoutes); app.route("/api/transport", transportRoutes());
   });
-  afterEach(() => db.close());
+  afterEach(() => { db.close(); rmSync(transcriptRoot, { recursive: true, force: true }); });
   const context = (tmuxSession: string) => ({ attachmentType: "tmux" as const, tmuxSession, tmuxWindow: "@12", tmuxPane: "%42" });
 
   it.each(["0", "person-terminal"])("returns a routable sender and records the display label without renaming %s", async (physical) => {
@@ -177,6 +184,50 @@ describe("attached team address preserves physical custody", () => {
     sessions.clearBinding(node.id);sessions.markSuperseded(sessions.getSessionsForRig(rig.id)[0]!.id);
     expect(await attach.attachToNode({ rigId: rig.id, logicalId: node.logicalId, context: context("0") }))
       .toMatchObject({ ok: true, senderAddress: "person-agent@team", sessionName: "0" });
+  });
+
+  async function reconnect() {
+    const rig = rigs.createRig("team"), node = rigs.addNode(rig.id, "person.agent", { runtime: "terminal" });
+    expect((await attach.attachToNode({ rigId: rig.id, logicalId: node.logicalId, context: context("person-agent@team") })).ok).toBe(true);
+    const old = sessions.getSessionsForRig(rig.id)[0]!;
+    sessions.clearBinding(node.id); sessions.updateStatus(old.id, "exited");
+    expect(await attach.attachToNode({ rigId: rig.id, logicalId: node.logicalId, context: context("0") }))
+      .toMatchObject({ ok: true, senderAddress: "person-agent@team", sessionName: "0" });
+    const current = sessions.getSessionsForRig(rig.id).find(s => s.sessionName === "0")!;
+    expect((await transport.send("person-agent@team", "current reply")).ok).toBe(true);
+    expect(writes).toEqual([{ target: "0", text: "current reply" }]);
+    return { node, old, current };
+  }
+
+  it.each(["tail", "grep?pattern=output", "full"])("keeps exact saved transcript reads after same-node reconnect (%s)", async route => {
+    await reconnect();
+    const store = new TranscriptStore({ transcriptsRoot: transcriptRoot, enabled: true });
+    store.ensureTranscriptDir("team");
+    writeFileSync(store.getTranscriptPath("team", "person-agent@team"), "old output\n");
+    writeFileSync(store.getTranscriptPath("team", "0"), "new output\n");
+    const history = new Hono();
+    history.use("*", async (c, next) => {
+      c.set("db" as never, db); c.set("rigRepo" as never, rigs); c.set("transcriptStore" as never, store); await next();
+    });
+    history.route("/api/transcripts", transcriptRoutes());
+    for (const [name, expected, absent] of [["person-agent@team", "old output", "new output"], ["0", "new output", "old output"]]) {
+      const response = await history.request(`/api/transcripts/${name}/${route}`);
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.session).toBe(name);
+      expect(JSON.stringify(body)).toContain(expected); expect(JSON.stringify(body)).not.toContain(absent);
+    }
+  });
+
+  it.each(["claude-code", "codex"])("keeps exact saved native context after same-node reconnect (%s)", async runtime => {
+    const { node, old, current } = await reconnect();
+    db.prepare("UPDATE nodes SET runtime=? WHERE id=?").run(runtime, node.id);
+    db.prepare("UPDATE sessions SET resume_token=? WHERE id=?").run("old-native-id", old.id);
+    db.prepare("UPDATE sessions SET resume_token=? WHERE id=?").run("new-native-id", current.id);
+    expect(discoverResumeToken(db, "person-agent@team")).toMatchObject({ ok: true, result: { runtime, nativeId: "old-native-id" } });
+    expect(discoverResumeToken(db, "0")).toMatchObject({ ok: true, result: { runtime, nativeId: "new-native-id" } });
+    expect(sessions.findResumeContextByName("person-agent@team")?.sessionId).toBe(old.id);
+    expect(sessions.findResumeContextByName("0")?.sessionId).toBe(current.id);
   });
 
   it("a reused physical name does not newly transfer old raw queue ownership through the alias", async () => {
