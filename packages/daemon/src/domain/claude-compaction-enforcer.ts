@@ -576,11 +576,11 @@ export class ClaudeCompactionEnforcer {
     input: EnforcerInput,
     policy: ClaudeCompactionPolicy,
   ): Promise<EnforcerOutcome | null> {
-    // Without a usage sample nothing shows compaction has finished, and the newest hook can be the
-    // Stop from before /compact. Then only a live pane read may count as idle.
+    // A missing or still-high sample need not show that /compact has finished. The newest idle
+    // hook can predate it, so these drains require a live pane read to establish idle.
     const sendOpts = {
       waitForIdleMs: this.postCompactSendWaitMs,
-      ...(input.usedPercentage == null ? { readinessFromPaneOnly: true } : {}),
+      ...(input.usedPercentage == null || input.usedPercentage >= policy.thresholdPercent ? { readinessFromPaneOnly: true } : {}),
     };
     // GHOST-STAGE FIX (a) — gate the DRAIN by `enabled`. A disabled system drains NOTHING: the
     // legacy compaction-stage defect (operator-confirmed ruling 05c174e0) proved that draining a

@@ -1,4 +1,4 @@
-// A post-compact stage that drains without a usage sample must not trust the hook that came before
+// A post-compact stage without a completion-indicating sample must not trust the hook that came before
 // /compact. Managed /compact relays no hook of its own, so until compaction ends the newest hook
 // is the preparation turn's Stop (idle). These tests compose the real monitor, usage store,
 // enforcer, activity store and SessionTransport over an inert tmux adapter.
@@ -46,7 +46,7 @@ const COMPACTED_PANE = [
   "  ⏵⏵ accept edits on (shift+tab to cycle)",
 ].join("\n");
 
-describe("post-compact drain readiness without a usage sample", () => {
+describe("post-compact drain readiness", () => {
   let db: Database.Database;
   let home: string;
   let monitor: ContextMonitor;

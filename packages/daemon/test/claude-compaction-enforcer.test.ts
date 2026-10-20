@@ -444,7 +444,7 @@ describe("ClaudeCompactionEnforcer", () => {
     send.mockResolvedValueOnce(held);
     expect(await highTick()).toEqual({ triggered: false, reason: "send_failed" });
     expect(send.mock.calls.at(-1)?.[1]).toContain("restoring this Claude session after compaction");
-    expect(send.mock.calls.at(-1)?.[2]).toEqual({ waitForIdleMs: expect.any(Number) });
+    expect(send.mock.calls.at(-1)?.[2]).toEqual({ waitForIdleMs: expect.any(Number), readinessFromPaneOnly: true });
     expect(await highTick()).toEqual({ triggered: true });
     expect(send.mock.calls.at(-1)?.[1]).toContain("restoring this Claude session after compaction");
     expect(await highTick()).toEqual({ triggered: true });
@@ -1414,7 +1414,7 @@ describe("ClaudeCompactionEnforcer", () => {
         sessionName: SEAT, runtime: "claude-code", usedPercentage: 95,
       })).toEqual({ triggered: true }); // owed turn boundary, not another prep
       expect(send).toHaveBeenCalledTimes(3);
-      expect(send).toHaveBeenLastCalledWith(SEAT, expect.stringContaining("OpenRig post-compaction turn boundary"), { waitForIdleMs: expect.any(Number) });
+      expect(send).toHaveBeenLastCalledWith(SEAT, expect.stringContaining("OpenRig post-compaction turn boundary"), { waitForIdleMs: expect.any(Number), readinessFromPaneOnly: true });
       expect(await enforcer.maybeAutoCompact({
         sessionName: SEAT, runtime: "claude-code", usedPercentage: 20, transcriptPath: "/tmp/claude.jsonl",
       })).toEqual({ triggered: true }); // restore
