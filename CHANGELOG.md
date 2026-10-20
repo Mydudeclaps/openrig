@@ -16,9 +16,10 @@ send for a missing tmux pane can now be repaired without losing its session, a
 manual compaction keeps waiting while its preparation sits at an approval, `rig
 ask --wake` refuses runtimes it can't wake, refocus finds notes without starting
 the CLI once per ancestor, the docs open with a getting-started page for people,
-and an optional Mac check, off by default, can stop one account's `rig` commands
-from reaching another account's daemon. It is built from the commit tagged
-`v0.6.14`. The changes since 0.6.13:
+an optional Mac check, off by default, can stop one account's `rig` commands
+from reaching another account's daemon, and the inventory read behind `rig ps`
+and TUI refreshes avoids a full event-log scan. It is built from the commit
+tagged `v0.6.14`. The changes since 0.6.13:
 
 ### Before you upgrade
 
@@ -57,6 +58,11 @@ from reaching another account's daemon. It is built from the commit tagged
   `rig scope resolve-notes` once per ancestor, which could use up the trace's
   time on a loaded machine
   ([#1563](https://github.com/mvschwarz/openrig/pull/1563)).
+- Read fresh-launch fences through the existing node and type index in the
+  fleet inventory read behind `rig ps` and each `rig tui` refresh. The query
+  added in 0.6.13 scanned the whole event log, which on a long-lived install
+  was slow whenever the database's pages weren't cached; it returns the same
+  rows ([#1617](https://github.com/mvschwarz/openrig/pull/1617)).
 
 ### Off by default
 
