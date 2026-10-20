@@ -3,13 +3,13 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  attach-address-core:
+  attach-address-integration:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: c528b2a889ca5d5a16ad156be15fe7106fcead31
+          ref: 5831d30dd5595bb1b1fb77a1932cb8c138c7a3ab
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -17,18 +17,22 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Core address correction and existing attach/registry checks
+      - name: Address integration and affected identity consumers
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          npm --workspace @openrig/daemon test -- test/self-attach-address.test.ts test/self-attach-service.test.ts test/session-registry.test.ts --reporter=verbose 2>&1 | tee proof/green.log
+          npm --workspace @openrig/daemon test -- test/self-attach-address.test.ts test/self-attach-service.test.ts test/session-registry.test.ts test/seat-delivery-guard.test.ts test/seat-delivery-guard-correction.test.ts test/session-transport.test.ts test/queue-repository.test.ts test/whoami-service.test.ts test/agent-activity-store.test.ts test/context-usage-store.test.ts test/transcript-routes.test.ts test/claim-service.test.ts test/seat-handover-service.test.ts test/node-launcher.test.ts test/restore-orchestrator.test.ts test/node-inventory.test.ts test/attach-terminal-activity-and-work.test.ts --reporter=verbose 2>&1 | tee proof/green.log
+          daemon_result=${PIPESTATUS[0]}
           git diff --exit-code > proof/source-unchanged.txt
-          npm --workspace @openrig/cli test -- test/attach.test.ts test/whoami.test.ts --reporter=verbose 2>&1 | tee proof/cli.log
+          npm --workspace @openrig/cli test -- test/attach-reply-address.test.ts test/attach.test.ts test/whoami.test.ts test/whoami-bounded-peers.test.ts --reporter=verbose 2>&1 | tee proof/cli.log
+          cli_result=${PIPESTATUS[0]}
+          printf 'daemon=%s cli=%s\n' "$daemon_result" "$cli_result" > proof/exits.txt
+          if [ "$daemon_result" -ne 0 ] || [ "$cli_result" -ne 0 ]; then exit 1; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: attach-address-core
+          name: attach-address-integration
           path: proof/
           if-no-files-found: error
