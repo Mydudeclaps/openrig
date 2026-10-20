@@ -3,13 +3,13 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  recorded-wake-runtime-red:
+  recorded-wake-runtime-green:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: b9b7f372d749287fd116659aa2bb8467eea3fc69
+          ref: 239cacbcb7428c0efb2de88fffa0c241f25ed510
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -17,28 +17,19 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Reproduce the recorded-session compatibility failure
+      - name: Verify recorded runtime and wake preservation
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/recorded-wake"
           git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/recorded-wake/checkout.txt"
-          sha256sum packages/daemon/src/startup.ts packages/daemon/src/domain/wake-resolve-service.ts packages/daemon/src/domain/wake-resolver.ts packages/daemon/test/wake-resolve-recorded-runtime.test.ts > "$RUNNER_TEMP/recorded-wake/bindings.txt"
-          set +e
-          npm exec -w packages/daemon -- vitest run test/wake-resolve-recorded-runtime.test.ts --reporter=json --outputFile="$RUNNER_TEMP/recorded-wake/red.json"
-          code=$?
-          set -e
-          printf '%s\n' "$code" > "$RUNNER_TEMP/recorded-wake/red.exit"
-          test "$code" -ne 0
-          python3 - "$RUNNER_TEMP/recorded-wake/red.json" <<'PYTHON'
-          import json,sys
-          d=json.load(open(sys.argv[1]))
-          assert d['numFailedTests']==3 and d['numPassedTests']==8, d
-          failures=[a for f in d['testResults'] for a in f['assertionResults'] if a['status']=='failed']
-          assert len(failures)==3 and all('AssertionError' in '\n'.join(a['failureMessages']) for a in failures)
-          PYTHON
+          sha256sum packages/daemon/src/startup.ts packages/daemon/src/domain/wake-resolve-service.ts packages/daemon/src/domain/wake-resolver.ts packages/daemon/test/wake-resolve-recorded-runtime.test.ts > "$RUNNER_TEMP/recorded-wake/bindings-before.txt"
+          npm exec -w packages/daemon -- vitest run test/wake-resolve-recorded-runtime.test.ts test/wake-resolve-service.test.ts test/wake-resolver.test.ts --reporter=json --outputFile="$RUNNER_TEMP/recorded-wake/daemon.json"
+          npm exec -w packages/cli -- vitest run test/ask-wake-cli.test.ts test/ask-wake.test.ts --reporter=json --outputFile="$RUNNER_TEMP/recorded-wake/cli.json"
+          sha256sum packages/daemon/src/startup.ts packages/daemon/src/domain/wake-resolve-service.ts packages/daemon/src/domain/wake-resolver.ts packages/daemon/test/wake-resolve-recorded-runtime.test.ts > "$RUNNER_TEMP/recorded-wake/bindings-after.txt"
+          cmp "$RUNNER_TEMP/recorded-wake/bindings-before.txt" "$RUNNER_TEMP/recorded-wake/bindings-after.txt"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: recorded-wake-runtime-red
+          name: recorded-wake-runtime-green
           path: ${{ runner.temp }}/recorded-wake/
           if-no-files-found: error
