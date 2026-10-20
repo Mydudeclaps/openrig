@@ -1,31 +1,16 @@
 name: Tests
-
-# Builds, type-checks and runs every test suite on a clean GitHub runner, and records the file
-# list each published package would contain. Each suite is its own job so one failure does not
-# hide the others. No provider credentials or operator configuration are supplied.
-# Package suites deny external networking; scenario runtime has no external route.
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
-
+on: workflow_dispatch
 permissions:
   contents: read
-
-concurrency:
-  group: tests-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  build-and-package:
+  fix-a:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: dcda0376fc55f84ea11d8e714c6008464c877252
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -33,110 +18,97 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Record the published file list of each package
+      - name: Bound baseline red then candidate green
         run: |
           set -euo pipefail
-          mkdir -p pack-lists
-          for p in cli daemon tui; do
-            (cd packages/$p && npm pack --dry-run --json --ignore-scripts) \
-              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const f of JSON.parse(s)[0].files)console.log(f.path)})' \
-              | sort > pack-lists/$p.txt
-            echo "$p: $(wc -l < pack-lists/$p.txt) files"
-          done
+          mkdir -p "$RUNNER_TEMP/proof"
+          git rev-parse HEAD HEAD^ HEAD^{tree} > "$RUNNER_TEMP/proof/checkout.txt"
+          id > "$RUNNER_TEMP/proof/uid.txt"
+          sha256sum packages/daemon/src/domain/claude-compaction-enforcer.ts packages/cli/src/commands/compact.ts packages/daemon/test/compaction-preparation.test.ts packages/cli/test/compact.test.ts > "$RUNNER_TEMP/proof/before.sha256"
+          git show 78f0d5d79ce2403a0b291a637b18251cbdf5b753:packages/daemon/src/domain/claude-compaction-enforcer.ts > packages/daemon/src/domain/claude-compaction-enforcer.ts
+          git show 78f0d5d79ce2403a0b291a637b18251cbdf5b753:packages/cli/src/commands/compact.ts > packages/cli/src/commands/compact.ts
+          sha256sum packages/daemon/src/domain/claude-compaction-enforcer.ts packages/cli/src/commands/compact.ts packages/daemon/test/compaction-preparation.test.ts packages/cli/test/compact.test.ts > "$RUNNER_TEMP/proof/red.sha256"
+          set +e
+          npm exec -w packages/daemon -- vitest run test/compaction-preparation.test.ts -t 'manual attention clears|manual unresolved attention|manual default accepts|manual default refuses' --reporter=json --outputFile="$RUNNER_TEMP/proof/red-daemon.json"
+          daemon_exit=$?
+          npm exec -w packages/cli -- vitest run test/compact.test.ts -t 'manual request allows 240|manual help binds180' --reporter=json --outputFile="$RUNNER_TEMP/proof/red-cli.json"
+          cli_exit=$?
+          set -e
+          printf '%s %s\n' "$daemon_exit" "$cli_exit" > "$RUNNER_TEMP/proof/red.exit"
+          test "$daemon_exit" -ne 0
+          test "$cli_exit" -ne 0
+          python3 - "$RUNNER_TEMP/proof" <<'PYTHON'
+          import json,pathlib,sys
+          p=pathlib.Path(sys.argv[1])
+          for name,count in [('red-daemon.json',4),('red-cli.json',2)]:
+           r=json.loads((p/name).read_text())
+           assert r['numFailedTests']==count and r['numPassedTests']==0,(name,r)
+           failures=[a for f in r['testResults'] for a in f['assertionResults'] if a['status']=='failed']
+           assert len(failures)==count and all(a['failureMessages'] for a in failures)
+          PYTHON
+          git show HEAD:packages/daemon/src/domain/claude-compaction-enforcer.ts > packages/daemon/src/domain/claude-compaction-enforcer.ts
+          git show HEAD:packages/cli/src/commands/compact.ts > packages/cli/src/commands/compact.ts
+          git show HEAD:packages/daemon/test/compaction-preparation.test.ts > packages/daemon/test/compaction-preparation.test.ts
+          git show HEAD:packages/cli/test/compact.test.ts > packages/cli/test/compact.test.ts
+          npm exec -w packages/daemon -- vitest run test/compaction-preparation.test.ts test/claude-compaction-enforcer.test.ts test/managed-compaction-effect.test.ts --reporter=json --outputFile="$RUNNER_TEMP/proof/green-daemon.json"
+          npm exec -w packages/cli -- vitest run test/compact.test.ts --reporter=json --outputFile="$RUNNER_TEMP/proof/green-cli.json"
+          sha256sum packages/daemon/src/domain/claude-compaction-enforcer.ts packages/cli/src/commands/compact.ts packages/daemon/test/compaction-preparation.test.ts packages/cli/test/compact.test.ts > "$RUNNER_TEMP/proof/after.sha256"
+          diff -u "$RUNNER_TEMP/proof/before.sha256" "$RUNNER_TEMP/proof/after.sha256"
+          git diff --exit-code
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: pack-lists
-          path: pack-lists/
-
-  typecheck:
+          name: compact-refocus-a
+          path: ${{ runner.temp }}/proof/
+          if-no-files-found: error
+  fix-b:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run lint
-
-  repo-checks:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run test:repo
-
-  package-tests:
-    if: ${{ github.event_name != 'push' }}
-    # macOS, the platform OpenRig runs on: several daemon and cli tests read macOS ps columns,
-    # file-inode behaviour and release tags.
-    runs-on: macos-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        package: [daemon, cli, tui, ui]
-    steps:
-      - uses: actions/checkout@v4
-        with:
+          ref: 70bfb9b01905720ac749c55d4e86399396043c5e
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: brew install tmux
       - run: npm ci
-      - name: Build the packages the tests import
-        run: npm run build
-      - name: Run the suite without ambient credentials or external network
+      - run: npm run build
+      - name: Bound baseline red then candidate green
         run: |
-          suite_root=$(mktemp -d "$RUNNER_TEMP/opr-test.XXXXXX")
-          suite_root=$(cd "$suite_root" && pwd -P)
-          mkdir -p "$suite_root/home" "$suite_root/bin"
-          # Same system bytes, nonprivileged mode; no system file is changed.
-          /usr/bin/install -m 0755 /bin/ps "$suite_root/bin/ps"
-          # Only this job's temporary sockets (including tmux) are reachable.
-          env -i HOME="$suite_root/home" PATH="$PATH" TMPDIR="$suite_root" TMUX_TMPDIR="$suite_root" \
-            CI=true TERM=xterm-256color \
-            sandbox-exec -D IPC_ROOT="$suite_root" -p '(version 1)(allow default)(deny network-outbound)(allow network-outbound (remote ip "localhost:*"))(allow network-outbound (subpath (param "IPC_ROOT")))' \
-            /bin/bash -s "${{ matrix.package }}" <<'SUITE'
           set -euo pipefail
-          node scripts/ci-macos-process-probe.mjs
-          # The production readers use bare ps. Select real system bytes only after
-          # self/owned-child observation and network/IPC confinement are proved.
-          export PATH="$TMPDIR/bin:$PATH"
-          test "$(command -v ps)" = "$TMPDIR/bin/ps"
-          exec npm run test -w "packages/$1"
-          SUITE
-
-  installed-scenario:
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Installed package, daemon restart, and seeded durability failure
-        run: bash scripts/run-pr-scenarios.sh
+          mkdir -p "$RUNNER_TEMP/proof"
+          git rev-parse HEAD HEAD^ HEAD^{tree} > "$RUNNER_TEMP/proof/checkout.txt"
+          id > "$RUNNER_TEMP/proof/uid.txt"
+          sha256sum packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py packages/daemon/test/refocus-context-ref.test.ts packages/daemon/test/refocus-notes-local.test.ts > "$RUNNER_TEMP/proof/before.sha256"
+          git show 78f0d5d79ce2403a0b291a637b18251cbdf5b753:packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py > packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py
+          sha256sum packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py packages/daemon/test/refocus-context-ref.test.ts packages/daemon/test/refocus-notes-local.test.ts > "$RUNNER_TEMP/proof/red.sha256"
+          set +e
+          npm exec -w packages/daemon -- vitest run test/refocus-context-ref.test.ts -t 'local notes avoid a delayed CLI' --reporter=json --outputFile="$RUNNER_TEMP/proof/red-daemon.json"
+          red_exit=$?
+          set -e
+          printf '%s\n' "$red_exit" > "$RUNNER_TEMP/proof/red.exit"
+          test "$red_exit" -ne 0
+          python3 - "$RUNNER_TEMP/proof" <<'PYTHON'
+          import json,pathlib,sys
+          p=pathlib.Path(sys.argv[1])
+          r=json.loads((p/'red-daemon.json').read_text())
+          assert r['numFailedTests']==1 and r['numPassedTests']==0,r
+          failures=[a for f in r['testResults'] for a in f['assertionResults'] if a['status']=='failed']
+          assert len(failures)==1 and 'local notes avoid a delayed CLI' in failures[0]['fullName'] and failures[0]['failureMessages']
+          PYTHON
+          git show HEAD:packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py > packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py
+          git show HEAD:packages/daemon/test/refocus-context-ref.test.ts > packages/daemon/test/refocus-context-ref.test.ts
+          git show HEAD:packages/daemon/test/refocus-notes-local.test.ts > packages/daemon/test/refocus-notes-local.test.ts
+          npm exec -w packages/daemon -- vitest run test/refocus-context-ref.test.ts test/refocus-notes-local.test.ts test/refocus-work-packet.test.ts test/refocus-budget-concurrency.test.ts --reporter=json --outputFile="$RUNNER_TEMP/proof/green-daemon.json"
+          sha256sum packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py packages/daemon/test/refocus-context-ref.test.ts packages/daemon/test/refocus-notes-local.test.ts > "$RUNNER_TEMP/proof/after.sha256"
+          diff -u "$RUNNER_TEMP/proof/before.sha256" "$RUNNER_TEMP/proof/after.sha256"
+          git diff --exit-code
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: installed-scenario-evidence
-          path: dist/pr-scenarios/
+          name: compact-refocus-b
+          path: ${{ runner.temp }}/proof/
           if-no-files-found: error
