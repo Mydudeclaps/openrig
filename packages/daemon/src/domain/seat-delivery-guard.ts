@@ -471,7 +471,8 @@ export function resolveGuardTarget(db: Database.Database, name: string): GuardTa
   const active = unarchived.length > 0 ? unarchived : named;
   const exact = active.filter(row => row.physicalName === name);
   const pool = exact.length ? exact : active;
-  if (pool.length !== 1) return null;
+  // An exact physical spelling cannot displace the routed logical recipient.
+  if (pool.length !== 1 || (current && pool[0]!.nodeId !== current.nodeId)) return null;
   const { archivedAt: _archivedAt, physicalName: _physicalName, logicalId: _logicalId, rigName: _rigName, latestStatus: _latestStatus, ...target } = pool[0]!;
   return target;
 }
