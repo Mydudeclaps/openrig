@@ -3,13 +3,13 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  slack-answer-after-question-red:
+  slack-answer-after-question-green:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 73263a97740ffb7bbe817ed40b138676625d3a51
+          ref: 53d1edd84708b7fe8b6117cb69c4c7a681db4784
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -17,24 +17,17 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Three early-reply REDs and the later-reply control
+      - name: Episode timing and gateway preservation
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          set +e
-          npm --workspace @openrig/daemon test -- test/slack-answer-after-question.test.ts --reporter=verbose 2>&1 | tee proof/red.log
-          rc=${PIPESTATUS[0]}
-          set -e
-          test "$rc" -ne 0
-          grep -q '3 failed' proof/red.log
-          grep -q '1 passed' proof/red.log
-          ! grep -q 'Unhandled Errors' proof/red.log
+          npm --workspace @openrig/daemon test -- test/slack-answer-after-question.test.ts test/slack-thread-return.test.ts test/slack-reply-to-thread.test.ts test/slack-structured-questions.test.ts test/slack-reactions.test.ts test/complete-human-notifications.test.ts test/slack-message.test.ts test/slack-thread-recovery.test.ts test/slack-inbound-gate.test.ts --reporter=verbose 2>&1 | tee proof/green.log
           git diff --exit-code > proof/source-unchanged.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: slack-answer-after-question-red
+          name: slack-answer-after-question-green
           path: proof/
           if-no-files-found: error
