@@ -14,6 +14,26 @@ const waitFile = async (file: string) => {
   for (let i=0; i<100 && !existsSync(file); i++) await new Promise(r=>setTimeout(r,25));
   return readFileSync(file,"utf8").trim().split("|");
 };
+describe("environment result completion", () => {
+  it("waits through an empty and partially written file", async () => {
+    const home = mkdtempSync(path.join(tmpdir(), "tmux-result-"));
+    const file = path.join(home, "result");
+    vi.useFakeTimers();
+    try {
+      writeFileSync(file, "");
+      let settled = false;
+      const result = waitFile(file).then(value => { settled = true; return value; });
+      await vi.advanceTimersByTimeAsync(25);
+      expect(settled).toBe(false);
+      writeFileSync(file, "first|");
+      await vi.advanceTimersByTimeAsync(25);
+      expect(settled).toBe(false);
+      writeFileSync(file, "first|second\n");
+      await vi.advanceTimersByTimeAsync(25);
+      expect(await result).toEqual(["first", "second"]);
+    } finally { vi.useRealTimers(); rmSync(home, { recursive: true, force: true }); }
+  });
+});
 describe.skipIf(process.platform === "win32")("#1178 initial-shell environment policy (actual adapter)", () => {
   for (const clean of [false,true]) for (const successor of [false,true]) {
     it(`${clean ? "daemon baseline" : "stock inherited"}, ${successor ? "successor" : "fresh"}: shell startup and classic function remain usable`, async () => {
