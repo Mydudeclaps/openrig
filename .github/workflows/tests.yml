@@ -3,30 +3,29 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  tmux-environment-macos:
-    runs-on: macos-latest
+  attach-r2:
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: dff2a218c06e48622990b9b5f272086729f17107
+          ref: 1ccb086168fa4271f75f1cdfb75cd8d1df3e89e0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: brew install tmux
+      - run: sudo apt-get update && sudo apt-get install -y tmux
       - run: npm ci
       - run: npm run build
-      - name: Corrected fixture and argv preservation on macOS
+      - name: Reconnect history and project inference
         shell: bash
         run: |
           set +e
           set -uo pipefail
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          tmux -V > proof/tmux-version.txt
-          npm --workspace @openrig/daemon test -- test/tmux-agent-environment.test.ts test/tmux-argv-legacy-equivalence.test.ts --reporter=verbose 2>&1 | tee proof/macos.log
+          npm --workspace @openrig/daemon test -- test/self-attach-address.test.ts test/operating-posture.test.ts --reporter=verbose 2>&1 | tee proof/daemon.log
           result=${PIPESTATUS[0]}
           git diff --exit-code > proof/source-unchanged.txt
           printf 'daemon=%s\n' "$result" > proof/exits.txt
@@ -34,6 +33,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: tmux-environment-r3-macos
+          name: attach-r2-red
           path: proof/
           if-no-files-found: error
