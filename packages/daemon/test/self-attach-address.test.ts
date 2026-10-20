@@ -154,6 +154,15 @@ describe("attached team address preserves physical custody", () => {
     expect(physicalSessionName(db, "person-agent@team")).toBe("person-agent@team");
   });
 
+  it("the historical owner can reconnect under its own logical address", async () => {
+    const rig = rigs.createRig("team"), node = rigs.addNode(rig.id, "person.agent", { runtime: "terminal" });
+    const original = await attach.attachToNode({ rigId: rig.id, logicalId: node.logicalId, context: context("person-agent@team") });
+    expect(original.ok).toBe(true);
+    sessions.clearBinding(node.id);sessions.markSuperseded(sessions.getSessionsForRig(rig.id)[0]!.id);
+    expect(await attach.attachToNode({ rigId: rig.id, logicalId: node.logicalId, context: context("0") }))
+      .toMatchObject({ ok: true, senderAddress: "person-agent@team", sessionName: "0" });
+  });
+
   it("a reused physical name does not newly transfer old raw queue ownership through the alias", async () => {
     const rig = rigs.createRig("team"), former = rigs.addNode(rig.id, "former.agent", { runtime: "terminal" });
     await attach.attachToNode({ rigId: rig.id, logicalId: former.logicalId, context: context("0") });

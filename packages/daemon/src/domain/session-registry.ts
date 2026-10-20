@@ -133,7 +133,10 @@ export function resolveCurrentSessionAddress(db: Database.Database, address: str
     .all(address, address) as Array<CurrentSessionAddress & { name: string; archived_at?: string | null; status: string }>;
   const active = rows.filter(row => row.archived_at == null && !['superseded', 'detached', 'exited'].includes(row.status));
   const exact = active.filter(row => row.sessionName === address);
-  const pool = exact.length ? exact : active;
+  // A derived address must not redirect an exact saved address to another node.
+  const saved = exact.length ? [] : db.prepare("SELECT DISTINCT node_id FROM sessions WHERE session_name=?")
+    .all(address) as Array<{ node_id: string }>;
+  const pool = exact.length ? exact : active.filter(row => saved.every(owner => owner.node_id === row.nodeId));
   if (pool.length !== 1) return null;
   const row = pool[0]!;
   return { nodeId: row.nodeId, sessionId: row.sessionId, sessionName: row.sessionName,
@@ -187,6 +190,12 @@ export class SessionRegistry {
     if (!node) return; // the existing FK/registration error owns an unknown node
     const logical = `${node.logical_id.replace(/\./g, '-')}@${node.name}`;
     const continuing = this.db.prepare("SELECT 1 FROM sessions WHERE node_id=? LIMIT 1").get(nodeId) !== undefined;
+    // An established exact/raw session can reconnect as before. A newly advertised
+    // logical name cannot take a different node's saved spelling, even after unbind/archive.
+    if (tmux && !(continuing && sessionName === logical)
+      && this.db.prepare("SELECT 1 FROM sessions WHERE session_name=? AND node_id<>? LIMIT 1").get(logical, nodeId)) {
+      throw new SessionAddressConflict(logical);
+    }
     const proposed = tmux ? [sessionName, logical] : [sessionName];
     const other = this.db.prepare(`SELECT r.*, n.id AS nodeId,
         replace(n.logical_id, '.', '-') || '@' || r.name AS logicalAddress,

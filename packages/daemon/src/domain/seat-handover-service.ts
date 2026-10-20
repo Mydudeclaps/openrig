@@ -360,10 +360,17 @@ export class SeatHandoverService {
       };
     }
 
-    try { this.sessionRegistry.assertAddressAvailable(node.id, latestSession.session_name); }
-    catch (error) {
-      if (!(error instanceof SessionAddressConflict)) throw error;
-      return { ok: false, code: "address_conflict", message: error.message, guidance: "Choose another member name; no successor was started." };
+    if (parsed.source.mode !== "discovered") {
+      // Preserve the existing exact-owner refusal before testing the new address.
+      const owner = this.lookupManagedOwner(latestSession.session_name, node.id, true);
+      if (owner) return { ok: false, code: "successor_already_managed",
+        message: `Successor tmux session "${latestSession.session_name}" is already managed by ${owner.logical_id}@${owner.rig_name}.`,
+        guidance: "Use an unclaimed discovered successor session." };
+      try { this.sessionRegistry.assertAddressAvailable(node.id, latestSession.session_name); }
+      catch (error) {
+        if (!(error instanceof SessionAddressConflict)) throw error;
+        return { ok: false, code: "address_conflict", message: error.message, guidance: "Choose another member name; no successor was started." };
+      }
     }
 
     const operator = input.operator?.trim() || null;
@@ -668,11 +675,6 @@ export class SeatHandoverService {
         guidance: "Run discovery and list active discovered sessions before retrying.",
       });
     }
-    try { this.sessionRegistry.assertAddressAvailable(input.node.id, discovered.tmuxSession); }
-    catch (error) {
-      if (!(error instanceof SessionAddressConflict)) throw error;
-      return fail({ ok: false, code: "address_conflict", message: error.message, guidance: "Choose another member name; this discovered session was not bound." });
-    }
     // #981: a composer-launched successor respawns into the seat's own pane, whose discovery row the
     // previous handover claimed for this same node, and a rescan keeps that claim (#237). That claim is
     // this seat's own, so commit re-claims it. A row claimed by any other node, or a discovered-source
@@ -718,6 +720,12 @@ export class SeatHandoverService {
         message: `Successor tmux session "${discovered.tmuxSession}" is already managed by ${managedOwner.logical_id}@${managedOwner.rig_name}.`,
         guidance: "Use an unclaimed discovered successor session.",
       });
+    }
+
+    try { this.sessionRegistry.assertAddressAvailable(input.node.id, discovered.tmuxSession); }
+    catch (error) {
+      if (!(error instanceof SessionAddressConflict)) throw error;
+      return fail({ ok: false, code: "address_conflict", message: error.message, guidance: "Choose another member name; this discovered session was not bound." });
     }
 
     let tmuxPresent: boolean;
