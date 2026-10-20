@@ -129,16 +129,28 @@ describe("attached team address preserves physical custody", () => {
     expect(writes.at(-1)?.target).toBe("0");
   });
 
-  it("preserves an unbound historical exact address when a different member gains that logical spelling", async () => {
+  it.each(["unbound", "archived", "older session"])("reserves an exact historical address before any join effect (%s)", async state => {
     const rig = rigs.createRig("team"), former = rigs.addNode(rig.id, "former.agent", { runtime: "terminal" });
     await attach.attachToNode({ rigId: rig.id, logicalId: former.logicalId, context: context("person-agent@team") });
     const oldSession = sessions.getSessionsForRig(rig.id)[0]!;
     sessions.clearBinding(former.id); sessions.markSuperseded(oldSession.id);
-    const current = rigs.addNode(rig.id, "person.agent", { runtime: "terminal" });
-    const result = await attach.attachToNode({ rigId: rig.id, logicalId: current.logicalId, context: context("0") });
-    expect(result).toMatchObject({ ok: true, senderAddress: "person-agent@team" });
-    // The transcript/context readers must keep the literal old physical record.
-    // This assertion distinguishes preservation from silently selecting current 0.
+    if (state === "older session") {
+      sessions.registerClaimedSession(former.id, "different-physical");
+      sessions.updateBinding(former.id, { tmuxSession: "different-physical", tmuxPane: "%77" });
+    }
+    let currentRig = rig;
+    if (state === "archived") {
+      db.prepare("UPDATE rigs SET archived_at='2026-10-01T00:00:00Z' WHERE id=?").run(rig.id);
+      currentRig = rigs.createRig("team");
+    }
+    const current = rigs.addNode(currentRig.id, "person.agent", { runtime: "terminal", label: "before" });
+    const stored = () => Object.fromEntries((db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as Array<{name:string}>)
+      .map(({name}) => [name, db.prepare(`SELECT * FROM "${name}"`).all()]));
+    const before = stored();
+    const result = await attach.attachToNode({ rigId: currentRig.id, logicalId: current.logicalId, displayName: "must not apply", context: context("0") });
+    expect(result).toMatchObject({ ok: false, code: "address_conflict", error: expect.stringContaining("Choose another member name") });
+    expect(stored()).toEqual(before);
+    expect(writes).toHaveLength(0);expect(tmux.createSession).not.toHaveBeenCalled();
     expect(physicalSessionName(db, "person-agent@team")).toBe("person-agent@team");
   });
 
