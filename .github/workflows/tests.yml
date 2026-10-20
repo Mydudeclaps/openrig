@@ -3,13 +3,13 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  fix-b:
+  manual-skip-map:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: fcd003491f0ee6fe847ee1c8496375990292a95a
+          ref: e26cd8aa32838f9cd3ebf5d975477ceea109a04c
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -18,44 +18,37 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Verify generated skill digests
-        run: |
-          node scripts/regen-edge-digests.mjs
-          git diff --exit-code -- scripts/skill-edge-digests.generated.json
-          npm run mirror-skills:check
-      - name: Bound baseline red then candidate green
+      - name: Reproduce stale assertion then verify corrected manual budget
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/proof"
           git rev-parse HEAD HEAD^ HEAD^{tree} > "$RUNNER_TEMP/proof/checkout.txt"
           id > "$RUNNER_TEMP/proof/uid.txt"
-          sha256sum packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py packages/daemon/test/refocus-context-ref.test.ts packages/daemon/test/refocus-notes-local.test.ts > "$RUNNER_TEMP/proof/before.sha256"
-          git show a30fd61b3e46fe71e1d63dac3b6d0b9141552d54:packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py > packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py
-          sha256sum packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py packages/daemon/test/refocus-context-ref.test.ts packages/daemon/test/refocus-notes-local.test.ts > "$RUNNER_TEMP/proof/red.sha256"
+          sha256sum packages/daemon/src/domain/claude-compaction-enforcer.ts packages/daemon/test/compaction-generation.test.ts > "$RUNNER_TEMP/proof/before.sha256"
+          git show dcda0376fc55f84ea11d8e714c6008464c877252:packages/daemon/test/compaction-generation.test.ts > packages/daemon/test/compaction-generation.test.ts
+          sha256sum packages/daemon/src/domain/claude-compaction-enforcer.ts packages/daemon/test/compaction-generation.test.ts > "$RUNNER_TEMP/proof/red.sha256"
           set +e
-          npm exec -w packages/daemon -- vitest run test/refocus-context-ref.test.ts -t 'local notes avoid a delayed CLI' --reporter=json --outputFile="$RUNNER_TEMP/proof/red-daemon.json"
+          npm exec -w packages/daemon -- vitest run test/compaction-generation.test.ts -t 'explicit skip-map still works' --reporter=json --outputFile="$RUNNER_TEMP/proof/red-daemon.json"
           red_exit=$?
           set -e
           printf '%s\n' "$red_exit" > "$RUNNER_TEMP/proof/red.exit"
           test "$red_exit" -ne 0
           python3 - "$RUNNER_TEMP/proof" <<'PYTHON'
           import json,pathlib,sys
-          p=pathlib.Path(sys.argv[1])
-          r=json.loads((p/'red-daemon.json').read_text())
+          r=json.loads((pathlib.Path(sys.argv[1])/'red-daemon.json').read_text())
           assert r['numFailedTests']==1 and r['numPassedTests']==0,r
           failures=[a for f in r['testResults'] for a in f['assertionResults'] if a['status']=='failed']
-          assert len(failures)==1 and 'local notes avoid a delayed CLI' in failures[0]['fullName'] and failures[0]['failureMessages']
+          assert len(failures)==1 and '120-second budget' in failures[0]['fullName'] and 'deadlineAt' in str(failures[0]['failureMessages'])
           PYTHON
-          git show HEAD:packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py > packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py
-          git show HEAD:packages/daemon/test/refocus-context-ref.test.ts > packages/daemon/test/refocus-context-ref.test.ts
-          git show HEAD:packages/daemon/test/refocus-notes-local.test.ts > packages/daemon/test/refocus-notes-local.test.ts
-          npm exec -w packages/daemon -- vitest run test/refocus-context-ref.test.ts test/refocus-notes-local.test.ts test/refocus-work-packet.test.ts test/refocus-budget-concurrency.test.ts --reporter=json --outputFile="$RUNNER_TEMP/proof/green-daemon.json"
-          sha256sum packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py packages/daemon/test/refocus-context-ref.test.ts packages/daemon/test/refocus-notes-local.test.ts > "$RUNNER_TEMP/proof/after.sha256"
+          git show HEAD:packages/daemon/test/compaction-generation.test.ts > packages/daemon/test/compaction-generation.test.ts
+          npm exec -w packages/daemon -- vitest run test/compaction-generation.test.ts test/compaction-preparation.test.ts test/claude-compaction-enforcer.test.ts test/managed-compaction-effect.test.ts --reporter=json --outputFile="$RUNNER_TEMP/proof/green-daemon.json"
+          npm exec -w packages/cli -- vitest run test/compact.test.ts --reporter=json --outputFile="$RUNNER_TEMP/proof/green-cli.json"
+          sha256sum packages/daemon/src/domain/claude-compaction-enforcer.ts packages/daemon/test/compaction-generation.test.ts > "$RUNNER_TEMP/proof/after.sha256"
           diff -u "$RUNNER_TEMP/proof/before.sha256" "$RUNNER_TEMP/proof/after.sha256"
           git diff --exit-code
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: compact-refocus-b
+          name: manual-skip-map
           path: ${{ runner.temp }}/proof/
           if-no-files-found: error
