@@ -3,13 +3,13 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  tmux-environment-premise:
+  attach-historical-address:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: c15e2ce0df710367f9ffc1f0802ef38bdff6a9cb
+          ref: b530b8f4d1c1464c8364b6faefb99a8216ec40b2
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -17,7 +17,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Qualify stock inheritance and clean prototype before product changes
+      - name: Check historical address reservation before product change
         shell: bash
         run: |
           set +e
@@ -25,7 +25,7 @@ jobs:
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
           tmux -V > proof/tmux-version.txt
-          npm --workspace @openrig/daemon test -- test/tmux-agent-environment.test.ts test/tmux-argv-legacy-equivalence.test.ts --reporter=verbose 2>&1 | tee proof/premise.log
+          npm --workspace @openrig/daemon test -- test/self-attach-address.test.ts --reporter=verbose 2>&1 | tee proof/premise.log
           result=${PIPESTATUS[0]}
           git diff --exit-code > proof/source-unchanged.txt
           printf 'daemon=%s\n' "$result" > proof/exits.txt
@@ -33,6 +33,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: tmux-environment-final-command
+          name: attach-historical-address-red
           path: proof/
           if-no-files-found: error
