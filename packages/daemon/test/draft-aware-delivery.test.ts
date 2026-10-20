@@ -306,8 +306,9 @@ describe("supported seat and queue integration", () => {
     expect(f.submissions).toEqual(["sibling message"]);
   });
 
+  // Queue wakes go to an agent seat: a wake to a terminal seat types nothing before any draft check (gateway-destination-routing covers it).
   it("a held queue wake remains on the existing queue recovery path without a second scheduler", async () => {
-    const f = fixture(); await f.enable(); f.bodies.a = "draft";
+    const f = fixture(undefined, { runtime: "claude-code" }); await f.enable(); f.bodies.a = "draft";
     const item = await f.repo.create({ sourceSession: "sender@test", destinationSession: "worker@test", body: "queued work" });
     await vi.waitFor(() => expect(f.repo.getById(item.qitemId)!.lastNudgeResult).toBe("retained:draft_aware"));
     const id = "wake-intent-" + item.qitemId;
@@ -318,7 +319,7 @@ describe("supported seat and queue integration", () => {
   });
 
   it("rechecks queue applicability before paste", async () => {
-    const f = fixture(); await f.enable();
+    const f = fixture(undefined, { runtime: "claude-code" }); await f.enable();
     const item = await f.repo.create({ sourceSession: "sender@test", destinationSession: "worker@test", body: "queued work", nudge: false });
     const id = "wake-intent-" + item.qitemId; f.repo.stageWakeIntent(item.qitemId, "sender@test", "worker@test", null, true);
     f.hooks.load = () => { f.db.prepare("UPDATE queue_items SET state='done' WHERE qitem_id=?").run(item.qitemId); };
@@ -328,7 +329,7 @@ describe("supported seat and queue integration", () => {
   });
 
   it.each([false, true])("coalesced wakes preserve every original ID and body (held: %s)", async held => {
-    const f = fixture(); await f.enable(); if (held) f.bodies.a = "draft"; const ids: string[] = [];
+    const f = fixture(undefined, { runtime: "claude-code" }); await f.enable(); if (held) f.bodies.a = "draft"; const ids: string[] = [];
     for (let i = 0; i < 2; i++) {
       const item = await f.repo.create({ sourceSession: "sender@test", destinationSession: "worker@test", body: "work " + i, nudge: false });
       f.repo.stageWakeIntent(item.qitemId, "sender@test", "worker@test", null, true);
