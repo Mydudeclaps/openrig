@@ -9,7 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 6d7533a768fc7f54051aee968e4bd3588111a3dd
+          ref: fcd003491f0ee6fe847ee1c8496375990292a95a
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
@@ -30,7 +30,7 @@ jobs:
           git rev-parse HEAD HEAD^ HEAD^{tree} > "$RUNNER_TEMP/proof/checkout.txt"
           id > "$RUNNER_TEMP/proof/uid.txt"
           sha256sum packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py packages/daemon/test/refocus-context-ref.test.ts packages/daemon/test/refocus-notes-local.test.ts > "$RUNNER_TEMP/proof/before.sha256"
-          git show 78f0d5d79ce2403a0b291a637b18251cbdf5b753:packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py > packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py
+          git show a30fd61b3e46fe71e1d63dac3b6d0b9141552d54:packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py > packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py
           sha256sum packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py packages/daemon/test/refocus-context-ref.test.ts packages/daemon/test/refocus-notes-local.test.ts > "$RUNNER_TEMP/proof/red.sha256"
           set +e
           npm exec -w packages/daemon -- vitest run test/refocus-context-ref.test.ts -t 'local notes avoid a delayed CLI' --reporter=json --outputFile="$RUNNER_TEMP/proof/red-daemon.json"
