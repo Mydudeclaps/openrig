@@ -1256,14 +1256,16 @@ export async function waitForKernelReady(
   timeoutMs: number,
   pollIntervalMs = 500,
 ): Promise<KernelReadyResult> {
-  const deadline = Date.now() + timeoutMs;
   const ownerClient = new DaemonClient(baseUrl);
+  // Resolve the opt-in before starting the wait. Disabled polls retain main's request/deadline flow.
+  const checkOwner = ownerClient.localOwnerCheckEnabled();
+  const deadline = Date.now() + timeoutMs;
   let last: KernelReadyResult = { ok: false, kernelState: null, variant: null, detail: null };
   while (Date.now() < deadline) {
     try {
-      await ownerClient.assertLocalOwner(Math.min(1000, Math.max(1, deadline - Date.now())));
-      const remainingMs = deadline - Date.now();
-      if (remainingMs <= 0) return last;
+      if (checkOwner) await ownerClient.assertLocalOwner(Math.min(1000, Math.max(1, deadline - Date.now())));
+      // Once admitted, keep the final request even if an unknown owner check consumed the remainder.
+      const remainingMs = Math.max(1, deadline - Date.now());
       const res = await fetch(`${baseUrl}/api/kernel/status`, {
         signal: AbortSignal.timeout(remainingMs),
       });

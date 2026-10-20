@@ -222,14 +222,18 @@ export class DaemonClient {
   }
 
   /** Shared with raw CLI data readers. Constructor URLs alone do not establish explicit intent. */
-  async assertLocalOwner(timeoutMs = 1000): Promise<void> {
-    if (this.remoteTarget) return;
+  localOwnerCheckEnabled(): boolean {
+    if (this.remoteTarget) return false;
     const explicit = readOpenRigEnv("OPENRIG_URL", "RIGGED_URL");
-    if (explicit && explicit.replace(/\/+$/, "") === this.baseUrl.replace(/\/+$/, "")) return;
+    if (explicit && explicit.replace(/\/+$/, "") === this.baseUrl.replace(/\/+$/, "")) return false;
     let enabled = false;
     try { enabled = new ConfigStore().resolveWithSource("transport.local_user_guard").value === true; }
     catch { /* Unreadable owner evidence/config is not a new default-on refusal. */ }
-    if (!enabled) return;
+    return enabled;
+  }
+
+  async assertLocalOwner(timeoutMs = 1000): Promise<void> {
+    if (!this.localOwnerCheckEnabled()) return;
     const owner = await this.ownerProbe(this.baseUrl, timeoutMs);
     if (owner.state === "foreign") throw new ForeignLocalDaemonError(this.baseUrl, owner);
   }
