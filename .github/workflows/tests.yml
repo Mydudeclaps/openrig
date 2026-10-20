@@ -3,33 +3,54 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  recorded-wake-runtime-green:
+  legacy-pane-remedy:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 239cacbcb7428c0efb2de88fffa0c241f25ed510
+          ref: ${{ github.sha }}
+          path: controller
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: f5185f8341f041b12f61c2171a9934723a2ae8ea
+          path: source
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: source/package-lock.json
+      - name: Existing hosted tool availability
+        run: |
+          command -v tmux
+          command -v cc
+          mkdir -p "$RUNNER_TEMP/legacy-pane"
+          git -C source rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/legacy-pane/source.txt"
+          git -C controller rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/legacy-pane/controller.txt"
+          sha256sum controller/diagnostics/legacy-pane-qual.mjs > "$RUNNER_TEMP/legacy-pane/controller.sha256"
       - run: npm ci
+        working-directory: source
       - run: npm run build
-      - name: Verify recorded runtime and wake preservation
+        working-directory: source
+      - name: One isolated source-built CLI and daemon qualification
+        env:
+          SOURCE_PIN: f5185f8341f041b12f61c2171a9934723a2ae8ea
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/recorded-wake"
-          git rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/recorded-wake/checkout.txt"
-          sha256sum packages/daemon/src/startup.ts packages/daemon/src/domain/wake-resolve-service.ts packages/daemon/src/domain/wake-resolver.ts packages/daemon/test/wake-resolve-recorded-runtime.test.ts > "$RUNNER_TEMP/recorded-wake/bindings-before.txt"
-          npm exec -w packages/daemon -- vitest run test/wake-resolve-recorded-runtime.test.ts test/wake-resolve-service.test.ts test/wake-resolver.test.ts --reporter=json --outputFile="$RUNNER_TEMP/recorded-wake/daemon.json"
-          npm exec -w packages/cli -- vitest run test/ask-wake-cli.test.ts test/ask-wake.test.ts --reporter=json --outputFile="$RUNNER_TEMP/recorded-wake/cli.json"
-          sha256sum packages/daemon/src/startup.ts packages/daemon/src/domain/wake-resolve-service.ts packages/daemon/src/domain/wake-resolver.ts packages/daemon/test/wake-resolve-recorded-runtime.test.ts > "$RUNNER_TEMP/recorded-wake/bindings-after.txt"
-          cmp "$RUNNER_TEMP/recorded-wake/bindings-before.txt" "$RUNNER_TEMP/recorded-wake/bindings-after.txt"
+          export SOURCE_ROOT="$GITHUB_WORKSPACE/source"
+          export PROOF_ROOT="$RUNNER_TEMP/legacy-pane"
+          timeout --signal=TERM --kill-after=10s 180s node controller/diagnostics/legacy-pane-qual.mjs
+      - name: Existing protection and operation controls
+        if: success()
+        working-directory: source
+        run: |
+          npm exec -w packages/daemon -- vitest run test/reconcile-session.test.ts test/seat-delivery-guard-correction.test.ts test/seat-identity-reconciler.test.ts --reporter=json --outputFile="$RUNNER_TEMP/legacy-pane/focused-controls.json"
+          git diff --exit-code
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: recorded-wake-runtime-green
-          path: ${{ runner.temp }}/recorded-wake/
+          name: legacy-pane-remedy
+          path: ${{ runner.temp }}/legacy-pane/
           if-no-files-found: error
