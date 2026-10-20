@@ -9,7 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 685612f302aa1f5f5298f0837b178dc2ed589374
+          ref: 20d2ca7c55585aba6c328e1fbca1b01e03d5318e
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -25,7 +25,7 @@ jobs:
           set -uo pipefail
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          npm --workspace @openrig/daemon test -- test/stopped-fresh-up.test.ts --reporter=verbose 2>&1 | tee proof/daemon.log
+          npm --workspace @openrig/daemon test -- test/stopped-fresh-up.test.ts -t "apply without a plan" --reporter=verbose 2>&1 | tee proof/daemon.log
           result=${PIPESTATUS[0]}
           git diff --exit-code > proof/source-unchanged.txt
           printf 'daemon=%s\n' "$result" > proof/exits.txt
@@ -33,6 +33,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: stopped-fresh-red-seatref
+          name: stopped-fresh-apply-red
           path: proof/
           if-no-files-found: error
