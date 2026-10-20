@@ -3,32 +3,34 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  manual-skip-map:
-    runs-on: ubuntu-latest
+  refocus-test-corrections:
+    runs-on: macos-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: e26cd8aa32838f9cd3ebf5d975477ceea109a04c
+          ref: 01f97300a2e210920efb1aa59fca75cf929d6573
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - run: brew install tmux
       - run: npm ci
       - run: npm run build
-      - name: Reproduce stale assertion then verify corrected manual budget
+      - name: Reproduce stale tests then verify preserved contracts
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/proof"
           git rev-parse HEAD HEAD^ HEAD^{tree} > "$RUNNER_TEMP/proof/checkout.txt"
           id > "$RUNNER_TEMP/proof/uid.txt"
-          sha256sum packages/daemon/src/domain/claude-compaction-enforcer.ts packages/daemon/test/compaction-generation.test.ts > "$RUNNER_TEMP/proof/before.sha256"
-          git show dcda0376fc55f84ea11d8e714c6008464c877252:packages/daemon/test/compaction-generation.test.ts > packages/daemon/test/compaction-generation.test.ts
-          sha256sum packages/daemon/src/domain/claude-compaction-enforcer.ts packages/daemon/test/compaction-generation.test.ts > "$RUNNER_TEMP/proof/red.sha256"
+          shasum -a 256 packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py packages/daemon/test/refocus-managed-result.test.ts packages/daemon/test/scope-audit-parity.test.ts packages/daemon/test/tmux-control.test.ts > "$RUNNER_TEMP/proof/before.sha256"
+          git show fcd003491f0ee6fe847ee1c8496375990292a95a:packages/daemon/test/refocus-managed-result.test.ts > packages/daemon/test/refocus-managed-result.test.ts
+          git show fcd003491f0ee6fe847ee1c8496375990292a95a:packages/daemon/test/scope-audit-parity.test.ts > packages/daemon/test/scope-audit-parity.test.ts
+          shasum -a 256 packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py packages/daemon/test/refocus-managed-result.test.ts packages/daemon/test/scope-audit-parity.test.ts packages/daemon/test/tmux-control.test.ts > "$RUNNER_TEMP/proof/red.sha256"
           set +e
-          npm exec -w packages/daemon -- vitest run test/compaction-generation.test.ts -t 'explicit skip-map still works' --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/proof/red-daemon.json"
+          npm exec -w packages/daemon -- vitest run test/refocus-managed-result.test.ts test/scope-audit-parity.test.ts -t 'retains real resolver failures|check mode reports actual resolution failure|confirms a slow stream receipt|uses the real CLI resolver for every locked outcome' --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/proof/red-daemon.json"
           red_exit=$?
           set -e
           printf '%s\n' "$red_exit" > "$RUNNER_TEMP/proof/red.exit"
@@ -36,19 +38,32 @@ jobs:
           python3 - "$RUNNER_TEMP/proof" <<'PYTHON'
           import json,pathlib,sys
           r=json.loads((pathlib.Path(sys.argv[1])/'red-daemon.json').read_text())
-          assert r['numFailedTests']==1 and r['numPassedTests']==0,r
+          assert r['numFailedTests']==4 and r['numPassedTests']==0,r
           failures=[a for f in r['testResults'] for a in f['assertionResults'] if a['status']=='failed']
-          assert len(failures)==1 and '120-second budget' in failures[0]['fullName'] and any(m.startswith('AssertionError:') and 'compaction-generation.test.ts:167:48' in m for m in failures[0]['failureMessages'])
+          assert len(failures)==4 and all(a['failureMessages'] for a in failures)
+          for expected in ['retains real resolver failures','check mode reports actual resolution failure','confirms a slow stream receipt','uses the real CLI resolver for every locked outcome']:
+           assert sum(expected in a['fullName'] for a in failures)==1,expected
           PYTHON
-          git show HEAD:packages/daemon/test/compaction-generation.test.ts > packages/daemon/test/compaction-generation.test.ts
-          npm exec -w packages/daemon -- vitest run test/compaction-generation.test.ts test/compaction-preparation.test.ts test/claude-compaction-enforcer.test.ts test/managed-compaction-effect.test.ts --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/proof/green-daemon.json"
-          npm exec -w packages/cli -- vitest run test/compact.test.ts --reporter=default --reporter=json --outputFile="$RUNNER_TEMP/proof/green-cli.json"
-          sha256sum packages/daemon/src/domain/claude-compaction-enforcer.ts packages/daemon/test/compaction-generation.test.ts > "$RUNNER_TEMP/proof/after.sha256"
+          git show HEAD:packages/daemon/test/refocus-managed-result.test.ts > packages/daemon/test/refocus-managed-result.test.ts
+          git show HEAD:packages/daemon/test/scope-audit-parity.test.ts > packages/daemon/test/scope-audit-parity.test.ts
+          suite_root=$(mktemp -d "$RUNNER_TEMP/opr-test.XXXXXX")
+          suite_root=$(cd "$suite_root" && pwd -P)
+          mkdir -p "$suite_root/home" "$suite_root/bin"
+          /usr/bin/install -m 0755 /bin/ps "$suite_root/bin/ps"
+          env -i HOME="$suite_root/home" PATH="$PATH" TMPDIR="$suite_root" TMUX_TMPDIR="$suite_root" PROOF_OUT="$RUNNER_TEMP/proof" CI=true TERM=xterm-256color \
+            sandbox-exec -D IPC_ROOT="$suite_root" -p '(version 1)(allow default)(deny network-outbound)(allow network-outbound (remote ip "localhost:*"))(allow network-outbound (subpath (param "IPC_ROOT")))' \
+            /bin/bash -s <<'SUITE'
+          set -euo pipefail
+          node scripts/ci-macos-process-probe.mjs
+          export PATH="$TMPDIR/bin:$PATH"
+          npm exec -w packages/daemon -- vitest run test/refocus-context-ref.test.ts test/refocus-notes-local.test.ts test/refocus-work-packet.test.ts test/refocus-budget-concurrency.test.ts test/refocus-managed-result.test.ts test/scope-audit-parity.test.ts test/tmux-control.test.ts --reporter=default --reporter=json --outputFile="$PROOF_OUT/green-daemon.json"
+          SUITE
+          shasum -a 256 packages/daemon/assets/plugins/openrig-core/skills/refocusing/scripts/trace-to-root.py packages/daemon/test/refocus-managed-result.test.ts packages/daemon/test/scope-audit-parity.test.ts packages/daemon/test/tmux-control.test.ts > "$RUNNER_TEMP/proof/after.sha256"
           diff -u "$RUNNER_TEMP/proof/before.sha256" "$RUNNER_TEMP/proof/after.sha256"
           git diff --exit-code
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: manual-skip-map
+          name: refocus-test-corrections
           path: ${{ runner.temp }}/proof/
           if-no-files-found: error
