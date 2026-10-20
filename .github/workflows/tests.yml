@@ -3,36 +3,74 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  tmux-environment-premise:
+  legacy-repair-qualification:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 606933386147adbb89fd8a149941c3a67c7a4f66
+          ref: ${{ github.sha }}
+          path: controller
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 69b08a17e73916cbdabbf3d01b3aad77a06c48b5
+          path: source
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 8250d702a27aa24bb9acf0b4bef12f58fd83df12
+          path: old046
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 20991e3cc12166a64fe74ea24a515c3666014844
+          path: old050
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: source/package-lock.json
+      - name: Bind inputs and existing hosted tools
+        run: |
+          command -v tmux
+          command -v cc
+          mkdir -p "$RUNNER_TEMP/legacy-repair"
+          for tree in source old046 old050 controller; do git -C "$tree" rev-parse HEAD HEAD^{tree} > "$RUNNER_TEMP/legacy-repair/$tree.txt"; done
+          test "$(git -C source rev-parse HEAD^{tree})" = ea41955f560a1244bb4e3b740248320478f5f8a1
+          sha256sum controller/diagnostics/*0614.mjs controller/diagnostics/prepare-legacy-schema.mjs > "$RUNNER_TEMP/legacy-repair/controller.sha256"
+          tmux -V > "$RUNNER_TEMP/legacy-repair/tmux-version.txt"
       - run: npm ci
+        working-directory: source
       - run: npm run build
-      - name: Qualify stock inheritance and clean prototype before product changes
+        working-directory: source
+      - name: Two historical schema and writer preimages through actual repair CLI
         shell: bash
+        env:
+          SOURCE_PIN: 69b08a17e73916cbdabbf3d01b3aad77a06c48b5
         run: |
           set +e
           set -uo pipefail
-          mkdir -p proof
-          git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          tmux -V > proof/tmux-version.txt
-          npm --workspace @openrig/daemon test -- test/tmux-agent-environment.test.ts test/tmux-argv-legacy-equivalence.test.ts --reporter=verbose 2>&1 | tee proof/premise.log
-          result=${PIPESTATUS[0]}
-          git diff --exit-code > proof/source-unchanged.txt
-          printf 'daemon=%s\n' "$result" > proof/exits.txt
-          exit "$result"
+          export SOURCE_ROOT="$GITHUB_WORKSPACE/source"
+          status=0
+          for version in 046 050; do
+            export LEGACY_VERSION="$version" OLD_ROOT="$GITHUB_WORKSPACE/old$version" PROOF_ROOT="$RUNNER_TEMP/legacy-repair/$version"
+            mkdir -p "$PROOF_ROOT"
+            node controller/diagnostics/prepare-legacy-schema.mjs > "$PROOF_ROOT/prepare.stdout" 2> "$PROOF_ROOT/prepare.stderr"
+            prepare=$?
+            if [ "$prepare" = 0 ]; then
+              timeout --signal=TERM --kill-after=10s 180s node controller/diagnostics/legacy-repair-0614.mjs > "$PROOF_ROOT/stdout" 2> "$PROOF_ROOT/stderr"
+              result=$?
+            else result=99; fi
+            printf 'prepare=%s\nfixture=%s\n' "$prepare" "$result" > "$PROOF_ROOT/exits.txt"
+            if [ "$prepare" != 0 ] || [ "$result" != 0 ]; then status=1; fi
+          done
+          git -C source diff --exit-code > "$RUNNER_TEMP/legacy-repair/source-unchanged.txt"
+          exit "$status"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: tmux-environment-final-command
-          path: proof/
+          name: legacy-repair-0614
+          path: ${{ runner.temp }}/legacy-repair/
           if-no-files-found: error
