@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type { SessionTransport, TargetSpec } from "../domain/session-transport.js";
+import { CAPTURE_INPUT_BOX_DEADLINE_MS, type SessionTransport, type TargetSpec } from "../domain/session-transport.js";
 import { authBearerTokenMiddleware } from "../middleware/auth-bearer-token.js";
 import { requireSenderIdentity, transportSenderSession } from "./require-sender-identity.js";
 import type { OutboxHandler } from "../domain/outbox-handler.js";
@@ -108,12 +108,15 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       dangerouslyInteract: body.dangerouslyInteract,
       reason: body.reason,
       actorSession: derivedActor, // transport-derived, never the body claim
+      ...(derivedActor ? { identityProvenance: "transport:v1" } : {}),
       // Mechanics-gate fix (d9b3989a): the walk retry's bare-Enter mode, guarded in the
       // transport by the expected-staged-text precheck.
       submitOnly: body.submitOnly,
       expectedStagedText: body.expectedStagedText,
       expectedStagedLineCount: body.expectedStagedLineCount,
       exactText,
+      // The caller's request: if it goes away while the send still waits, nothing is typed later.
+      signal: c.req.raw.signal,
     });
 
     if (result.outcome === "retained") return c.json(result);
@@ -121,10 +124,19 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
     if (!result.ok) {
       const statusMap: Record<string, number> = {
         typing_guard_enabled: 409,
+        caller_cancelled: 409,
         guard_target_unknown: 409,
         guard_target_changed: 409,
         delivery_identity_conflict: 409,
         retained_quota_full: 409,
+        delivery_already_attempted: 409,
+        delivery_in_progress: 409,
+        delivery_indeterminate: 409,
+        draft_input_busy: 409,
+        draft_input_unknown: 409,
+        draft_input_changed: 409,
+        draft_hold_expired: 409,
+        draft_wake_superseded: 409,
         session_missing: 404,
         tmux_unavailable: 503,
         transport_unavailable: 409,
@@ -155,7 +167,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
     // never the relay). A null-actor send has no derived sender to attribute (no fabricated row). The
     // send is already committed, so a rare audit-write failure is LOGGED, never a false-negative on a
     // delivered send.
-    if (derivedActor && !body.submitOnly) { // submitOnly types no text — nothing to outbox-record
+    if (derivedActor && !body.submitOnly && !result.outboxIds?.length) { // Deferred sends already own their original outbox rows.
       const outbox = c.get("outboxHandler" as never) as OutboxHandler | undefined;
       if (outbox) {
         try {
@@ -188,7 +200,11 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       rig?: string;
       pod?: string;
       lines?: number;
+      inputBox?: boolean;
     }>();
+    // Read an agent seat's input box only when the request asks: `rig capture` and the MCP tool do; send --verify and
+    // walk read only the pane text.
+    const inputBox = body.inputBox === true;
 
     // Multi-target: rig or pod
     if (body.rig || body.pod) {
@@ -201,9 +217,11 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
         return c.json({ ok: false, error: resolved.error }, 404);
       }
 
+      // One budget for the whole fan-out's input-box reads, so slow tmux adds at most that to the request.
+      const inputBoxBudget = { remainingMs: CAPTURE_INPUT_BOX_DEADLINE_MS };
       const results = [];
       for (const session of resolved.sessions) {
-        const result = await transport.capture(session.sessionName, { lines: body.lines });
+        const result = await transport.capture(session.sessionName, { lines: body.lines, inputBox, inputBoxBudget });
         results.push(result);
       }
       return c.json({ results });
@@ -214,7 +232,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       return c.json({ error: "Provide session, rig, or pod to capture" }, 400);
     }
 
-    const result = await transport.capture(body.session, { lines: body.lines });
+    const result = await transport.capture(body.session, { lines: body.lines, inputBox });
     if (!result.ok) {
       const statusMap: Record<string, number> = {
         session_missing: 404,
@@ -290,6 +308,9 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       reason: body.reason,
       actorSession: derivedActor, // transport-derived, never the body claim
       envelopeSender, // the From: is the DERIVED identity (never the body value) — orch ruling (a)
+      ...(derivedActor ? { identityProvenance: "transport:v1" } : {}),
+      // Recipients not yet started when the caller goes away are not written; started ones keep their results.
+      signal: c.req.raw.signal,
     });
 
     // A3b (P22 follow-on, planner-ruled IN scope): auto-record the fan-out — N rows, ONE per RESOLVED
@@ -303,7 +324,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       const outbox = c.get("outboxHandler" as never) as OutboxHandler | undefined;
       if (outbox) {
         for (const r of result.results) {
-          if (!r.sessionName || r.outcome === "retained") continue;
+          if (!r.sessionName || r.outcome === "retained" || r.outboxIds?.length) continue;
           try {
             const entry = outbox.record({
               senderSession: derivedActor,

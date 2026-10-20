@@ -7,11 +7,13 @@ import type {
   ActivityValue,
   AdapterRungInventory,
   ArbitratedSeatState,
+  EvidenceRoute,
   EvidenceRungId,
   RungHealthEvent,
   RungTrust,
 } from "./activity-taxonomy.js";
-import { EVIDENCE_RUNG_RANK, runtimeRungInventory } from "./activity-taxonomy.js";
+import { COMMUNITY_HARNESS_RUNG_INVENTORY, EVIDENCE_RUNG_RANK, runtimeRungInventory } from "./activity-taxonomy.js";
+import { sessionCommunityHarnessSelect } from "./session-registry.js";
 
 /** Default polling cadence: 1Hz. The default silence window is 3s, so
  *  1Hz polling gives at-most ~1s freshness lag on the cached observation. */
@@ -235,14 +237,14 @@ export class SeatActivityService {
     try {
       const rows = db.prepare(`
         SELECT s.session_name as session_name, n.id as node_id, n.runtime as runtime,
-          COALESCE(b.attachment_type, 'tmux') as attachment_type
+          COALESCE(b.attachment_type, 'tmux') as attachment_type, ${sessionCommunityHarnessSelect(db)} as community_harness
         FROM nodes n
         JOIN sessions s ON s.node_id = n.id
           AND s.id = (SELECT s2.id FROM sessions s2 WHERE s2.node_id = n.id ORDER BY s2.id DESC LIMIT 1)
         LEFT JOIN bindings b ON b.node_id = n.id
         WHERE s.status = 'running'
           AND s.session_name IS NOT NULL
-      `).all() as Array<{ session_name: string; node_id: string; runtime: string | null; attachment_type: string }>;
+      `).all() as Array<{ session_name: string; node_id: string; runtime: string | null; attachment_type: string; community_harness: string | null }>;
       const tmuxRows = rows.filter((r) => r.attachment_type === "tmux");
       const liveTmux = new Set(tmuxRows.map((r) => r.session_name));
       for (const pane of this.latestByPaneId.keys()) {
@@ -264,11 +266,11 @@ export class SeatActivityService {
       // touching the launch machinery.
       for (const r of tmuxRows) {
         const known = this.ladder.get(r.node_id);
-        if (!known || known.inventory === null || known.sessionName !== r.session_name) {
-          this.declareRungInventory(
-            { seatNodeId: r.node_id, sessionName: r.session_name },
-            runtimeRungInventory(r.runtime),
-          );
+        const inventory = runtimeRungInventory(r.runtime, r.community_harness);
+        // A replacement occupant can keep the seat's session name; its own recorded app selection (or none) decides.
+        const communityHarnessChanged = !!known && (known.inventory === COMMUNITY_HARNESS_RUNG_INVENTORY) !== (inventory === COMMUNITY_HARNESS_RUNG_INVENTORY);
+        if (!known || known.inventory === null || known.sessionName !== r.session_name || communityHarnessChanged) {
+          this.declareRungInventory({ seatNodeId: r.node_id, sessionName: r.session_name }, inventory);
         }
       }
 
@@ -522,29 +524,34 @@ export class SeatActivityService {
   /** AM-2: a TRIAL rung's evidence is measured against the current authoritative
    *  CANDIDATE value (raw ladder decision, pre-debounce) — evidence against evidence,
    *  never against the debounced display. Enough agreements over at least the minimum
-   *  window promote the rung to authoritative, visibly. */
+   *  window promote the rung to authoritative, visibly.
+   *
+   *  Agreements are counted per relay route, because one event can be posted by more than one route; one route must
+   *  reach the bar on its own, over its own window. A disagreement from any route resets every route's run. */
   private measureTrialAgreement(seat: SeatLadderState, evidence: ActivityEvidence): void {
     if (evidence.activity === undefined) return;
     if (this.rungTrust(seat, evidence.rung) !== "trial") return;
     const authority = this.rawCandidate(seat, { excludeRung: evidence.rung });
     if (!authority || authority.activity === undefined) return;
-    const entry = seat.promotion.get(evidence.rung) ?? { agreements: 0, firstAgreementAtMs: null };
-    if (authority.activity === evidence.activity) {
-      entry.agreements += 1;
-      if (entry.firstAgreementAtMs === null) entry.firstAgreementAtMs = this.now().getTime();
-      const spanMs = this.now().getTime() - (entry.firstAgreementAtMs ?? 0);
-      if (entry.agreements >= RUNG_PROMOTION_AGREEMENT_COUNT && spanMs >= RUNG_PROMOTION_MIN_WINDOW_MS) {
-        seat.trust.set(evidence.rung, "authoritative");
-        this.emitRungHealth(seat, evidence.rung, evidence.sourceId, "trial", "authoritative",
-          `promoted: ${entry.agreements} agreeing observations over ${Math.round(spanMs / 60000)}min (threshold ${RUNG_PROMOTION_AGREEMENT_COUNT} over ${Math.round(RUNG_PROMOTION_MIN_WINDOW_MS / 60000)}min)`);
-        seat.promotion.delete(evidence.rung);
-        return;
-      }
-    } else {
-      entry.agreements = 0; // agreement must be consecutive within the measured window
-      entry.firstAgreementAtMs = null;
+    const routes = seat.promotion.get(evidence.rung) ?? new Map<EvidenceRoute | "untagged", PromotionRun>();
+    if (authority.activity !== evidence.activity) {
+      seat.promotion.delete(evidence.rung); // agreement must be consecutive within the measured window, on every route
+      return;
     }
-    seat.promotion.set(evidence.rung, entry);
+    const route = evidence.route ?? "untagged";
+    const entry = routes.get(route) ?? { agreements: 0, firstAgreementAtMs: null };
+    entry.agreements += 1;
+    if (entry.firstAgreementAtMs === null) entry.firstAgreementAtMs = this.now().getTime();
+    const spanMs = this.now().getTime() - entry.firstAgreementAtMs;
+    if (entry.agreements >= RUNG_PROMOTION_AGREEMENT_COUNT && spanMs >= RUNG_PROMOTION_MIN_WINDOW_MS) {
+      seat.trust.set(evidence.rung, "authoritative");
+      this.emitRungHealth(seat, evidence.rung, evidence.sourceId, "trial", "authoritative",
+        `promoted: ${entry.agreements} agreeing observations over ${Math.round(spanMs / 60000)}min (threshold ${RUNG_PROMOTION_AGREEMENT_COUNT} over ${Math.round(RUNG_PROMOTION_MIN_WINDOW_MS / 60000)}min)`);
+      seat.promotion.delete(evidence.rung);
+      return;
+    }
+    routes.set(route, entry);
+    seat.promotion.set(evidence.rung, routes);
   }
 
   /** The raw ladder decision for working/idle: highest authoritative rung with usable,
@@ -554,9 +561,12 @@ export class SeatActivityService {
     const nowMs = this.now().getTime();
     for (const rung of EVIDENCE_RUNG_RANK) {
       if (rung === opts.excludeRung) continue;
-      if (this.rungTrust(seat, rung) !== "authoritative") continue;
+      const trust = this.rungTrust(seat, rung);
+      if (trust !== "authoritative" && trust !== "positive-only") continue;
       const evd = this.latestByRung(seat, rung, "activity");
       if (!evd || evd.activity === undefined) continue;
+      // A positive-only rung answers only "working"; its silence leaves the state to the rungs below, or unknown.
+      if (trust === "positive-only" && evd.activity !== "working") continue;
       if (rung === "lifecycle-hooks" && nowMs - Date.parse(evd.observedAt) > HOOK_AUTHORITY_WINDOW_MS) continue;
       return evd;
     }
@@ -750,6 +760,12 @@ interface NeedsInputShape {
   reason: string | null;
 }
 
+/** One relay route's consecutive agreements toward promoting a trial rung. */
+interface PromotionRun {
+  agreements: number;
+  firstAgreementAtMs: number | null;
+}
+
 interface SeatLadderState {
   permissions: Map<string, { sinceMs: number; confirmed: boolean; nextCheckMs: number }>;
   permissionRevision: number;
@@ -759,7 +775,7 @@ interface SeatLadderState {
   inventory: AdapterRungInventory | null;
   sources: Map<string, { latest: ActivityEvidence; latestActivity: ActivityEvidence | null }>;
   trust: Map<EvidenceRungId, RungTrust>;
-  promotion: Map<EvidenceRungId, { agreements: number; firstAgreementAtMs: number | null }>;
+  promotion: Map<EvidenceRungId, Map<EvidenceRoute | "untagged", PromotionRun>>;
   contradictionSinceMs: number | null;
   pendingIdle: { sinceMs: number; ticks: number; lastSeq: number } | null;
   waiters: SeatWaiter[];
