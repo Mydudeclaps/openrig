@@ -154,6 +154,22 @@ describe("attached team address preserves physical custody", () => {
     expect(physicalSessionName(db, "person-agent@team")).toBe("person-agent@team");
   });
 
+  it("retained legacy collisions keep exact history and do not select a different occupant", async () => {
+    const rig = rigs.createRig("team"), former = rigs.addNode(rig.id, "former.agent", { runtime: "terminal" });
+    await attach.attachToNode({ rigId: rig.id, logicalId: former.logicalId, context: context("person-agent@team") });
+    sessions.clearBinding(former.id);sessions.markSuperseded(sessions.getSessionsForRig(rig.id)[0]!.id);
+    const current = rigs.addNode(rig.id, "person.agent", { runtime: "terminal" });
+    // Pre-existing data is not a new join permitted by the admission check.
+    db.prepare("INSERT INTO sessions(id,node_id,session_name,status,origin) VALUES ('legacy-current',?,'0','running','claimed')").run(current.id);
+    sessions.updateBinding(current.id, { tmuxSession: "0", tmuxPane: "%99" });
+    expect(physicalSessionName(db, "person-agent@team")).toBe("person-agent@team");
+    expect(resolveGuardTarget(db, "person-agent@team")).toBeNull();
+    expect(resolveGuardTarget(db, "0")?.nodeId).toBe(current.id);
+    const whoami = new WhoamiService({ db, rigRepo: rigs, sessionRegistry: sessions, transcriptStore: new TranscriptStore({ enabled: false }) });
+    expect(whoami.resolve({ sessionName: "person-agent@team" })?.identity.nodeId).toBe(former.id);
+    expect(whoami.resolve({ nodeId: current.id })?.identity.senderAddress).toBe("0");
+  });
+
   it("the historical owner can reconnect under its own logical address", async () => {
     const rig = rigs.createRig("team"), node = rigs.addNode(rig.id, "person.agent", { runtime: "terminal" });
     const original = await attach.attachToNode({ rigId: rig.id, logicalId: node.logicalId, context: context("person-agent@team") });

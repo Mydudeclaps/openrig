@@ -454,8 +454,9 @@ export function resolveGuardTarget(db: Database.Database, name: string): GuardTa
     FROM nodes n JOIN rigs r ON r.id=n.rig_id LEFT JOIN bindings b ON b.node_id=n.id
     WHERE n.id=? OR b.tmux_session=? OR b.tmux_pane=? OR n.logical_id=?
       OR (replace(n.logical_id,'.','-') || '@' || r.name=?
-        AND (b.tmux_session IS NULL OR b.tmux_session=(SELECT session_name FROM sessions WHERE node_id=n.id ORDER BY id DESC LIMIT 1)))`)
-    .all(name, name, name, name, name) as Array<GuardTarget & { archivedAt: string | null; physicalName: string | null }>;
+        AND (b.tmux_session IS NULL OR b.tmux_session=(SELECT session_name FROM sessions WHERE node_id=n.id ORDER BY id DESC LIMIT 1))
+        AND NOT EXISTS (SELECT 1 FROM sessions saved WHERE saved.session_name=? AND saved.node_id<>n.id))`)
+    .all(name, name, name, name, name, name) as Array<GuardTarget & { archivedAt: string | null; physicalName: string | null }>;
   const unarchived = rows.filter((row) => row.archivedAt === null);
   const active = unarchived.length > 0 ? unarchived : rows;
   const exact = active.filter(row => row.physicalName === name);
