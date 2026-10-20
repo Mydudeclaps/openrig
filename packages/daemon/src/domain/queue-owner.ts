@@ -6,12 +6,10 @@ import type Database from "better-sqlite3";
  *  logical ids (dotted form, `review.r2`) are INDEPENDENT identities — the live fleet has
  *  zero cases where they match — so resolution NEVER string-converts between them. */
 export function resolveSessionNodeId(db: Database.Database, session: string): string | null {
-  const current = resolveCurrentSessionAddress(db, session);
-  if (current) return current.nodeId;
   const row = db
     .prepare("SELECT node_id FROM sessions WHERE session_name = ? ORDER BY id DESC LIMIT 1")
     .get(session) as { node_id: string } | undefined;
-  return row?.node_id ?? null;
+  return row?.node_id ?? resolveCurrentSessionAddress(db, session)?.nodeId ?? null;
 }
 
 /** Default orchestrator derivation: the destination's BOUND node → the source of its

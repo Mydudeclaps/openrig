@@ -1,3 +1,4 @@
+import { physicalSessionName } from "../domain/session-registry.js";
 import { existsSync } from "node:fs";
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
@@ -168,6 +169,8 @@ activityRoutes.post("/hooks", async (c) => {
   } catch {
     return c.json({ ok: false, code: "invalid_json", error: "Request body must be JSON." }, 400);
   }
+
+  if (typeof body.sessionName === "string") body = { ...body, sessionName: physicalSessionName(store.db, body.sessionName) };
 
   if (body.eventFamily === "session_identity") {
     const sessionId = typeof body.sessionId === "string" ? body.sessionId : null;
@@ -551,7 +554,7 @@ activityRoutes.get("/parked", (c) => {
   `).all(scope.rig) as Array<{ node_id: string; session_name: string }>;
 
   if (seatParam) {
-    const match = seats.find((s) => s.node_id === seatParam || s.session_name === seatParam);
+    const match = seats.find((s) => s.node_id === seatParam || s.session_name === physicalSessionName(db, seatParam));
     if (!match) {
       return c.json({
         ok: false,

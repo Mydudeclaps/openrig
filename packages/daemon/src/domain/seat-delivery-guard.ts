@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { resolveCurrentSessionAddress } from "./session-registry.js";
 import { composerContainsOwnedText, ownCollapsedPaste, type ComposerInput, type ComposerOwnership } from "./composer-prompts.js";
 
 /** A binding is captured before waiting. Never rebind an old operation to a new occupant. */
@@ -446,19 +445,22 @@ export class SeatDeliveryGuard {
  * seat, so unarchived matches win; archived ones count only when nothing else
  * matches. Exactly one match is still required. */
 export function resolveGuardTarget(db: Database.Database, name: string): GuardTarget | null {
-  name = resolveCurrentSessionAddress(db, name)?.nodeId ?? name;
   const rows = db.prepare(`SELECT n.id AS nodeId,
       coalesce(b.tmux_session, replace(n.logical_id,'.','-') || '@' || r.name) AS session,
       b.tmux_pane AS pane,
       (SELECT generation_uuid FROM occupant_tenures t WHERE t.node_id=n.id ORDER BY generation_ordinal DESC LIMIT 1) AS occupant,
+      b.tmux_session AS physicalName,
       r.archived_at AS archivedAt
     FROM nodes n JOIN rigs r ON r.id=n.rig_id LEFT JOIN bindings b ON b.node_id=n.id
     WHERE n.id=? OR b.tmux_session=? OR b.tmux_pane=? OR n.logical_id=?
-      OR (b.tmux_session IS NULL AND replace(n.logical_id,'.','-') || '@' || r.name=?)`)
-    .all(name, name, name, name, name) as Array<GuardTarget & { archivedAt: string | null }>;
+      OR (replace(n.logical_id,'.','-') || '@' || r.name=?
+        AND (b.tmux_session IS NULL OR b.tmux_session=(SELECT session_name FROM sessions WHERE node_id=n.id ORDER BY id DESC LIMIT 1)))`)
+    .all(name, name, name, name, name) as Array<GuardTarget & { archivedAt: string | null; physicalName: string | null }>;
   const unarchived = rows.filter((row) => row.archivedAt === null);
-  const pool = unarchived.length > 0 ? unarchived : rows;
+  const active = unarchived.length > 0 ? unarchived : rows;
+  const exact = active.filter(row => row.physicalName === name);
+  const pool = exact.length ? exact : active;
   if (pool.length !== 1) return null;
-  const { archivedAt: _archivedAt, ...target } = pool[0]!;
+  const { archivedAt: _archivedAt, physicalName: _physicalName, ...target } = pool[0]!;
   return target;
 }

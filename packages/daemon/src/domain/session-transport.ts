@@ -2298,7 +2298,6 @@ export class SessionTransport {
     | { ok: false; failure: SendResult }
     | null
   > {
-    sessionName = physicalSessionName(this.db, sessionName);
     const timeoutMs = opts.waitForIdleMs;
     if (timeoutMs === undefined) return null;
     let meta: {
@@ -2316,6 +2315,7 @@ export class SessionTransport {
       if (prePref.effective || prePref.desired || prePref.desiredMode === "draft-aware" || prePref.effectiveMode === "draft-aware") return null;
       meta = this.getSessionMeta(sessionName);
       bound = guard.target(sessionName);
+      sessionName = bound.session;
     } catch {
       return null;
     }

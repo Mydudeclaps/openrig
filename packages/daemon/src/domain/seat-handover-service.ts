@@ -3,7 +3,7 @@ import { readSeatEffort } from "./seat-effort.js";
 import { NativePermissionStore } from "./native-permission-store.js";
 import { ulid } from "ulid";
 import type { RigRepository } from "./rig-repository.js";
-import type { SessionRegistry } from "./session-registry.js";
+import { SessionAddressConflict, type SessionRegistry } from "./session-registry.js";
 import type { DiscoveryRepository } from "./discovery-repository.js";
 import type { EventBus } from "./event-bus.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
@@ -88,7 +88,7 @@ export type SeatHandoverResult =
   | { ok: true; plan: SeatHandoverPlan }
   | { ok: true; result: SeatHandoverMutationResult }
   | { ok: false; code: "missing_reason" | "invalid_source" | "successor_creation_not_implemented" | "source_not_supported" | "resume_token_unavailable" | "fork_source_not_found"; message: string; guidance: string }
-  | { ok: false; code: "current_occupant_required" | "discovered_not_active" | "successor_tmux_absent" | "successor_already_managed" | "successor_is_current" | "runtime_mismatch"; message: string; guidance: string }
+  | { ok: false; code: "address_conflict" | "current_occupant_required" | "discovered_not_active" | "successor_tmux_absent" | "successor_already_managed" | "successor_is_current" | "runtime_mismatch"; message: string; guidance: string }
   | { ok: false; code: "discovered_not_found"; message: string; guidance: string }
   | { ok: false; code: "tmux_probe_failed" | "handover_commit_failed" | "successor_create_failed" | "context_delivery_failed"; message: string; guidance: string }
   | Extract<SeatStatusResult, { ok: false }>;
@@ -358,6 +358,12 @@ export class SeatHandoverService {
         message: `Seat "${input.seatRef}" has no session row to supersede.`,
         guidance: "Inspect the seat with: rig seat status <seat>",
       };
+    }
+
+    try { this.sessionRegistry.assertAddressAvailable(node.id, latestSession.session_name); }
+    catch (error) {
+      if (!(error instanceof SessionAddressConflict)) throw error;
+      return { ok: false, code: "address_conflict", message: error.message, guidance: "Choose another member name; no successor was started." };
     }
 
     const operator = input.operator?.trim() || null;
@@ -661,6 +667,11 @@ export class SeatHandoverService {
         message: `Discovery record "${input.discoveredRef}" not found.`,
         guidance: "Run discovery and list active discovered sessions before retrying.",
       });
+    }
+    try { this.sessionRegistry.assertAddressAvailable(input.node.id, discovered.tmuxSession); }
+    catch (error) {
+      if (!(error instanceof SessionAddressConflict)) throw error;
+      return fail({ ok: false, code: "address_conflict", message: error.message, guidance: "Choose another member name; this discovered session was not bound." });
     }
     // #981: a composer-launched successor respawns into the seat's own pane, whose discovery row the
     // previous handover claimed for this same node, and a rescan keeps that claim (#237). That claim is

@@ -143,6 +143,10 @@ export function resolveCurrentSessionAddress(db: Database.Database, address: str
 /** Normalize only a positively current tmux address; all legacy/historical
  * exact-name consumers keep their existing lookup and mismatch protection. */
 export function physicalSessionName(db: Database.Database, address: string): string {
+  if (!address.includes("@")) return address;
+  // Existing physical/historical names retain their exact interpretation.
+  if (db.prepare("SELECT 1 FROM sessions WHERE session_name=? LIMIT 1").get(address)) return address;
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bindings'").get()) return address;
   return resolveCurrentSessionAddress(db, address)?.sessionName ?? address;
 }
 
@@ -183,6 +187,7 @@ export class SessionRegistry {
       .get(nodeId) as { logical_id: string; name: string } | undefined;
     if (!node) return; // the existing FK/registration error owns an unknown node
     const logical = `${node.logical_id.replace(/\./g, '-')}@${node.name}`;
+    const continuing = this.db.prepare("SELECT 1 FROM sessions WHERE node_id=? LIMIT 1").get(nodeId) !== undefined;
     const proposed = tmux ? [sessionName, logical] : [sessionName];
     const other = this.db.prepare(`SELECT r.*, n.id AS nodeId,
         replace(n.logical_id, '.', '-') || '@' || r.name AS logicalAddress,
@@ -194,7 +199,9 @@ export class SessionRegistry {
       if (row.archived_at != null) continue;
       const physical = row.tmux_session ?? row.external_session_name;
       for (const address of proposed) {
-        if (address === row.logicalAddress || (physical && address === physical && (!row.latestName || row.latestName === physical))) {
+        const currentOther = physical && (!row.latestName || row.latestName === physical);
+        if ((address === row.logicalAddress && !(continuing && address === logical && !currentOther))
+          || (currentOther && address === physical)) {
           throw new SessionAddressConflict(address);
         }
       }
