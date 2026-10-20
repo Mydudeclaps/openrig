@@ -10,7 +10,9 @@ function deps(outputs = [processRow(), processRow()]) {
   return {
     platform: "darwin", callerUid: 501,
     fetchImpl: vi.fn(async () => new Response(JSON.stringify({ pid: 42, euid: 502 }))) as unknown as typeof fetch,
-    run: vi.fn(async () => {
+    run: vi.fn(async (file: string) => {
+      // Model unavailable foreign descriptors for the previous assessor, not ps output fed to lsof.
+      if (file === "/usr/sbin/lsof") return "";
       const next = outputs.shift();
       if (next === undefined) throw new Error("fixture exhausted");
       return next;
@@ -58,9 +60,10 @@ describe("bounded Mac reported/process effective-UID agreement", () => {
     expect(await assessLocalDaemonOwner("http://127.0.0.1:7433", d)).toMatchObject({ state: "unknown" });
     expect(d.run).not.toHaveBeenCalled();
   });
-  it("effective UID zero is valid evidence, including sudo-style caller/daemon differences", async () => {
-    const d = deps(); d.callerUid = 0;
-    expect(await assessLocalDaemonOwner("http://127.0.0.1:7433", d)).toMatchObject({ state: "foreign", callerUid: 0 });
+  it.each([{ caller: 0, daemon: 502 }, { caller: 501, daemon: 0 }])("effective UID zero is valid on either side: %j", async ({ caller, daemon }) => {
+    const d = deps([processRow(daemon), processRow(daemon)]); d.callerUid = caller;
+    d.fetchImpl = vi.fn(async () => new Response(JSON.stringify({ pid: 42, euid: daemon }))) as unknown as typeof fetch;
+    expect(await assessLocalDaemonOwner("http://127.0.0.1:7433", d)).toMatchObject({ state: "foreign", callerUid: caller, uid: daemon });
   });
   it("unavailable tools/permissions remain unknown without a privileged fallback", async () => {
     const d = deps(); d.run.mockRejectedValue(new Error("EPERM"));
