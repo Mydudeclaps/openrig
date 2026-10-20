@@ -9,7 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: f82a868743bd60b506a80d0473f72b399ff545bb
+          ref: 606933386147adbb89fd8a149941c3a67c7a4f66
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -33,6 +33,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: tmux-environment-final
+          name: tmux-environment-final-command
           path: proof/
           if-no-files-found: error
