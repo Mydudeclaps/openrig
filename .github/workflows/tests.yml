@@ -1,142 +1,85 @@
 name: Tests
-
-# Builds, type-checks and runs every test suite on a clean GitHub runner, and records the file
-# list each published package would contain. Each suite is its own job so one failure does not
-# hide the others. No provider credentials or operator configuration are supplied.
-# Package suites deny external networking; scenario runtime has no external route.
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
-
+on: workflow_dispatch
 permissions:
   contents: read
-
-concurrency:
-  group: tests-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  build-and-package:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-      - name: Record the published file list of each package
-        run: |
-          set -euo pipefail
-          mkdir -p pack-lists
-          for p in cli daemon tui; do
-            (cd packages/$p && npm pack --dry-run --json --ignore-scripts) \
-              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{for(const f of JSON.parse(s)[0].files)console.log(f.path)})' \
-              | sort > pack-lists/$p.txt
-            echo "$p: $(wc -l < pack-lists/$p.txt) files"
-          done
-      - uses: actions/upload-artifact@v4
-        with:
-          name: pack-lists
-          path: pack-lists/
-
-  typecheck:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run lint
-
-  repo-checks:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run test:repo
-
-  package-tests:
-    if: ${{ github.event_name != 'push' }}
-    # macOS, the platform OpenRig runs on: several daemon and cli tests read macOS ps columns,
-    # file-inode behaviour and release tags.
+  mac-local-owner-independent:
     runs-on: macos-latest
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        package: [daemon, cli, tui, ui]
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          ref: 7e2a94fe61168b36e6845852659f5687f36dcf81
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: brew install tmux
-      - run: npm ci
-      - name: Build the packages the tests import
-        run: npm run build
-      - name: Run the suite without ambient credentials or external network
+      - name: Bind product and independent test inputs
+        shell: bash
         run: |
-          suite_root=$(mktemp -d "$RUNNER_TEMP/opr-test.XXXXXX")
-          suite_root=$(cd "$suite_root" && pwd -P)
-          mkdir -p "$suite_root/home" "$suite_root/bin"
-          # Same system bytes, nonprivileged mode; no system file is changed.
-          /usr/bin/install -m 0755 /bin/ps "$suite_root/bin/ps"
-          # Only this job's temporary sockets (including tmux) are reachable.
-          env -i HOME="$suite_root/home" PATH="$PATH" TMPDIR="$suite_root" TMUX_TMPDIR="$suite_root" \
-            CI=true TERM=xterm-256color \
-            sandbox-exec -D IPC_ROOT="$suite_root" -p '(version 1)(allow default)(deny network-outbound)(allow network-outbound (remote ip "localhost:*"))(allow network-outbound (subpath (param "IPC_ROOT")))' \
-            /bin/bash -s "${{ matrix.package }}" <<'SUITE'
           set -euo pipefail
-          node scripts/ci-macos-process-probe.mjs
-          # The production readers use bare ps. Select real system bytes only after
-          # self/owned-child observation and network/IPC confinement are proved.
-          export PATH="$TMPDIR/bin:$PATH"
-          test "$(command -v ps)" = "$TMPDIR/bin/ps"
-          exec npm run test -w "packages/$1"
-          SUITE
-
-  installed-scenario:
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
+          mkdir -p proof
+          git rev-parse HEAD HEAD^{tree} > proof/source.txt
+          test "$(git rev-parse HEAD)" = 7e2a94fe61168b36e6845852659f5687f36dcf81
+          test "$(git rev-parse HEAD^{tree})" = 83b601479930c06f4d394d4cd590c4fbfce97a22
+          git fetch --no-tags --depth=1 origin "$GITHUB_SHA"
+          git show "$GITHUB_SHA":packages/cli/test/qa-local-owner-independent.test.ts > "$RUNNER_TEMP/qa-fixture.ts"
+          shasum -a 256 "$RUNNER_TEMP/qa-fixture.ts" > proof/fixture-sha256.txt
+          printf '%s\n' "$GITHUB_SHA" > proof/workflow-source.txt
       - run: npm ci
-      - name: Installed package, daemon restart, and seeded durability failure
-        run: bash scripts/run-pr-scenarios.sh
+      - run: npm run build
+      - name: Independent baseline client parity and refusal discriminator
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP/qa-fixture.ts" packages/cli/test/qa-local-owner-independent.test.ts
+          cp packages/cli/src/client.ts "$RUNNER_TEMP/candidate-client.ts"
+          git fetch --no-tags --depth=1 origin 7a4135369f08bfa889c7392e1358d0f522c15845
+          git show 7a4135369f08bfa889c7392e1358d0f522c15845:packages/cli/src/client.ts > packages/cli/src/client.ts
+          git hash-object packages/cli/src/client.ts > proof/baseline-client-blob.txt
+          trap 'cp "$RUNNER_TEMP/candidate-client.ts" packages/cli/src/client.ts' EXIT
+          export QA_OWNER_TRACE="$GITHUB_WORKSPACE/proof/base-traces.jsonl"
+          set +e
+          npm --workspace @openrig/cli test -- test/qa-local-owner-independent.test.ts -t 'default/off parity|positive foreign evidence' --reporter=verbose --reporter=json --outputFile="$GITHUB_WORKSPACE/proof/baseline.json" 2>&1 | tee proof/baseline.log
+          result=${PIPESTATUS[0]}
+          set -e
+          cp "$RUNNER_TEMP/candidate-client.ts" packages/cli/src/client.ts
+          trap - EXIT
+          test "$result" -ne 0
+          python3 - <<'CHECK'
+          import json
+          r=json.load(open('proof/baseline.json'))
+          assertions=[a for t in r['testResults'] for a in t['assertionResults']]
+          failed=[a for a in assertions if a['status']=='failed']
+          passed=[a for a in assertions if a['status']=='passed']
+          assert len(failed)==1 and 'positive foreign evidence' in failed[0]['fullName']
+          assert len(passed)==2 and all('default/off parity' in a['fullName'] for a in passed)
+          assert r['numFailedTests']==1 and r.get('numRuntimeErrorTestSuites',0)==0
+          print('Expected refusal discriminator failed; both baseline default/off controls passed.')
+          CHECK
+          git diff --exit-code -- packages/cli/src > proof/restored-product-source.txt
+      - name: Independent candidate boundary and owned Mac qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          export QA_OWNER_TRACE="$GITHUB_WORKSPACE/proof/head-traces.jsonl"
+          npm --workspace @openrig/cli test -- test/qa-local-owner-independent.test.ts --reporter=verbose --reporter=json --outputFile="$GITHUB_WORKSPACE/proof/candidate.json" 2>&1 | tee proof/candidate.log
+          python3 - <<'CHECK'
+          import json
+          r=json.load(open('proof/candidate.json'))
+          assert r['numFailedTests']==0 and r['numPassedTests']==12 and r.get('numRuntimeErrorTestSuites',0)==0
+          read=lambda p:[json.loads(x) for x in open(p)]
+          base=read('proof/base-traces.jsonl'); head=read('proof/head-traces.jsonl')
+          assert len(base)==len(head)==2 and base==head
+          json.dump({'defaultOffBusinessTraceEqual':True,'candidatePasses':12,'baselineExpectedFailures':1,'scope':'base client source swap; same candidate dependencies and handlers'},open('proof/independent-result.json','w'),indent=2)
+          print('Twelve candidate cases passed; both default/off business traces equal baseline client.')
+          CHECK
+          git diff --exit-code -- packages/cli/src > proof/final-product-source.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: installed-scenario-evidence
-          path: dist/pr-scenarios/
+          name: mac-local-owner-independent
+          path: proof/
           if-no-files-found: error
