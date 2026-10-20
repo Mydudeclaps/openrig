@@ -66,11 +66,11 @@ it.each(["0", "person-terminal"])("real attach -> returned env -> actual From ->
   const deps = { lifecycleDeps, clientFactory: () => new DaemonClient(url) };
   const previousExit = process.exitCode;
   const run = async (command: Command, args: string[]) => {
-    const logs: string[] = [], capture = vi.spyOn(console, "log").mockImplementation((...parts) => { logs.push(parts.join(" ")); });
-    const errors = vi.spyOn(console, "error").mockImplementation((...parts) => { logs.push(parts.join(" ")); });
+    const logs: string[] = [], diagnostics: string[] = [], capture = vi.spyOn(console, "log").mockImplementation((...parts) => { logs.push(parts.join(" ")); });
+    const errors = vi.spyOn(console, "error").mockImplementation((...parts) => { diagnostics.push(parts.join(" ")); });
     process.exitCode = undefined;
     try { await new Command().addCommand(command).parseAsync(["node", "rig", ...args]); expect(process.exitCode).toBeUndefined(); return logs.join("\n"); }
-    finally { capture.mockRestore(); errors.mockRestore(); }
+    finally { capture.mockRestore(); errors.mockRestore(); if (diagnostics.length) console.error(diagnostics.join("\n")); }
   };
   try {
     vi.stubEnv("OPENRIG_HOME", home); vi.stubEnv("OPENRIG_URL", url); vi.stubEnv("TMUX_PANE", "%42"); vi.stubEnv("TEST_PHYSICAL_SESSION", physical);
