@@ -3,64 +3,45 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  missing-pane-focused:
+  missing-pane-message:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 42dca41c64d7b722ebc50dd2ec3add47ebec10d8
+          ref: 9c379977c976ef3969e13ed33a4f57c3999f7227
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - name: Record exact source
-        run: |
+      - run: |
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
       - run: npm ci
-      - id: build
-        run: npm run build
-      - name: Corrected baseline guard and CLI fixtures only
+      - run: npm run build
+      - name: Unsupported-route guidance RED then GREEN
         run: |
           set -euo pipefail
-          git fetch --no-tags --depth=1 origin 6d43323070f56d86b9f8ff50a4faa5523a7d8f7f
-          files=(packages/daemon/src/domain/claim-service.ts packages/daemon/src/domain/topology-converge.ts packages/daemon/src/routes/sessions.ts packages/cli/src/commands/reconcile-session.ts)
-          mkdir -p "$RUNNER_TEMP/repair-source"
-          for file in "${files[@]}"; do
-            cp --parents "$file" "$RUNNER_TEMP/repair-source/"
-            git show 6d43323070f56d86b9f8ff50a4faa5523a7d8f7f:"$file" > "$file"
-          done
-          restore_candidate() { for file in "${files[@]}"; do cp "$RUNNER_TEMP/repair-source/$file" "$file"; done; }
-          trap restore_candidate EXIT
+          file=packages/cli/src/commands/reconcile-session.ts
+          cp "$file" "$RUNNER_TEMP/reconcile-candidate.ts"
+          git fetch --no-tags --depth=1 origin 37af3727cbf53cebc5427fc17f251b5e1f564e53
+          git show 37af3727cbf53cebc5427fc17f251b5e1f564e53:"$file" > "$file"
+          trap 'cp "$RUNNER_TEMP/reconcile-candidate.ts" "$file"' EXIT
           set +e
-          npm --workspace @openrig/daemon test -- test/reconcile-session.test.ts -t 'does not change active|does not commit during' --reporter=verbose 2>&1 | tee proof/corrected-red-daemon.log
-          daemon_rc=${PIPESTATUS[0]}
-          npm --workspace @openrig/cli test -- test/reconcile-session.test.ts -t 'distinct repair endpoint|requires explicit|gets 404' --reporter=verbose 2>&1 | tee proof/corrected-red-cli.log
-          cli_rc=${PIPESTATUS[0]}
+          npm --workspace @openrig/cli test -- test/reconcile-session.test.ts -t "explains an old daemon" --reporter=verbose 2>&1 | tee proof/red.log
+          red_rc=${PIPESTATUS[0]}
           set -e
-          test "$daemon_rc" -ne 0
-          test "$cli_rc" -ne 0
-          grep -q 'reconcile_error' proof/corrected-red-daemon.log
-          grep -q "unknown option '--repair-missing-pane'" proof/corrected-red-cli.log
-          ! grep -q 'Unhandled Errors' proof/corrected-red-daemon.log
-          ! grep -q 'Unhandled Errors' proof/corrected-red-cli.log
-          restore_candidate
+          test "$red_rc" -ne 0
+          grep -q '2 failed' proof/red.log
+          ! grep -q 'Unhandled Errors' proof/red.log
+          cp "$RUNNER_TEMP/reconcile-candidate.ts" "$file"
           trap - EXIT
           git diff --exit-code > proof/restored-source.txt
-      - name: Focused daemon repair and guard cases
-        run: |
-          set -o pipefail
-          npm --workspace @openrig/daemon test -- test/reconcile-session.test.ts test/seat-delivery-guard-correction.test.ts --reporter=verbose 2>&1 | tee proof/daemon.log
-      - name: Focused CLI compatibility cases
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: |
-          set -o pipefail
-          npm --workspace @openrig/cli test -- test/reconcile-session.test.ts --reporter=verbose 2>&1 | tee proof/cli.log
+          npm --workspace @openrig/cli test -- test/reconcile-session.test.ts --reporter=verbose 2>&1 | tee proof/green.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: missing-pane-focused
+          name: missing-pane-message
           path: proof/
           if-no-files-found: error
