@@ -9,7 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: db04d7dbd83b08804d52f763bb3239614837314e
+          ref: 9d6cfbf5d23a025b478fa660e27cfd1068613f2e
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -18,23 +18,21 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y tmux
       - run: npm ci
       - run: npm run build
-      - name: F4 correction and required-CI/address preservation
+      - name: CLI worker-entry fixture compatibility
         shell: bash
         run: |
           set +e
           set -uo pipefail
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          npm --workspace @openrig/daemon test -- test/self-attach-address.test.ts test/operating-posture.test.ts test/yaml-import-replaces-stopped-generation.test.ts test/archived-generation-pod-shrink.test.ts test/seat-handover-service.test.ts test/self-attach-service.test.ts test/session-registry.test.ts test/seat-delivery-guard.test.ts test/seat-delivery-guard-correction.test.ts test/session-transport.test.ts test/transcript-routes.test.ts test/resume-token-route.test.ts test/whoami-service.test.ts test/archived-same-name-rig-lookups.test.ts test/archived-duplicate-rig-seat.test.ts test/capture-input-suggestion.test.ts test/compaction-command-submission.test.ts test/compaction-preparation.test.ts test/lifecycle-scenario-matrix.test.ts test/reconcile-session.test.ts test/schema-agentspec-runtime.test.ts test/startup.test.ts test/tmux-control.test.ts test/tmux-shell-command-identity.test.ts test/transcript-capture-session-end.test.ts --reporter=verbose 2>&1 | tee proof/daemon.log
-          result=${PIPESTATUS[0]}
-          npm --workspace @openrig/cli test -- test/attach.test.ts test/attach-reply-address.test.ts test/whoami.test.ts test/whoami-bounded-peers.test.ts test/whoami-host-hint.test.ts --reporter=verbose 2>&1 | tee proof/cli.log
+          npm --workspace @openrig/cli test -- test/project-worker-entry.test.ts --reporter=verbose 2>&1 | tee proof/cli.log
           cli=${PIPESTATUS[0]}
           git diff --exit-code > proof/source-unchanged.txt
-          printf 'daemon=%s\ncli=%s\n' "$result" "$cli" > proof/exits.txt
-          test "$result" -eq 0 && test "$cli" -eq 0
+          printf 'cli=%s\n' "$cli" > proof/exits.txt
+          test "$cli" -eq 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: attach-r5-green
+          name: attach-r5-cli-fixture
           path: proof/
           if-no-files-found: error
