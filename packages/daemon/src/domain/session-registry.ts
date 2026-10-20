@@ -151,6 +151,16 @@ export function physicalSessionName(db: Database.Database, address: string): str
   return resolveCurrentSessionAddress(db, address)?.sessionName ?? address;
 }
 
+/** Only this predecessor may be omitted when selecting a same-seat successor.
+ * Unknown state and another logical seat remain competing owners. */
+export function isStoppedSeatPredecessor(
+  previous: { rigName: string; logicalId: string; archivedAt?: string | null; latestStatus?: string | null },
+  current: { rigName: string; logicalId: string },
+): boolean {
+  return previous.rigName === current.rigName && previous.logicalId === current.logicalId
+    && (previous.archivedAt != null || ["exited", "detached", "superseded"].includes(previous.latestStatus ?? ""));
+}
+
 /** Stopped/archived generations of the same rig/logical seat are its own history;
  * every other saved owner still reserves the spelling, including archived ones. */
 export function hasOtherSeatHistory(db: Database.Database, address: string, nodeId: string): boolean {
@@ -161,8 +171,9 @@ export function hasOtherSeatHistory(db: Database.Database, address: string, node
     JOIN nodes target ON target.id=? JOIN rigs target_rig ON target_rig.id=target.rig_id
     WHERE s.session_name=? AND s.node_id<>?`)
     .all(nodeId, address, nodeId) as Array<{ name: string; archived_at?: string | null; logicalId: string; targetLogicalId: string; targetRigName: string; latestStatus: string }>;
-  return owners.some(owner => !((owner.archived_at != null || ["exited", "detached", "superseded"].includes(owner.latestStatus))
-    && owner.name === owner.targetRigName && owner.logicalId === owner.targetLogicalId));
+  return owners.some(owner => !isStoppedSeatPredecessor(
+    { rigName: owner.name, logicalId: owner.logicalId, archivedAt: owner.archived_at, latestStatus: owner.latestStatus },
+    { rigName: owner.targetRigName, logicalId: owner.targetLogicalId }));
 }
 
 /** Saved transcript/native context keeps an exact session spelling, even when
@@ -217,18 +228,20 @@ export class SessionRegistry {
       throw new SessionAddressConflict(logical);
     }
     const proposed = tmux ? [sessionName, logical] : [sessionName];
+    // b.* keeps registration valid before the optional external-CLI binding columns exist.
     const other = this.db.prepare(`SELECT r.*, n.id AS nodeId, n.logical_id AS logicalId,
         replace(n.logical_id, '.', '-') || '@' || r.name AS logicalAddress,
-        b.tmux_session, b.external_session_name,
+        b.*,
         (SELECT session_name FROM sessions WHERE node_id=n.id ORDER BY id DESC LIMIT 1) AS latestName,
         (SELECT status FROM sessions WHERE node_id=n.id ORDER BY id DESC LIMIT 1) AS latestStatus
       FROM nodes n JOIN rigs r ON r.id=n.rig_id LEFT JOIN bindings b ON b.node_id=n.id WHERE n.id<>?`)
-      .all(nodeId) as Array<{ nodeId: string; name: string; logicalId: string; latestStatus: string | null; archived_at?: string | null; logicalAddress: string; tmux_session: string | null; external_session_name: string | null; latestName: string | null }>;
+      .all(nodeId) as Array<{ nodeId: string; name: string; logicalId: string; latestStatus: string | null; archived_at?: string | null; logicalAddress: string; tmux_session: string | null; external_session_name?: string | null; latestName: string | null }>;
     for (const row of other) {
       if (row.archived_at != null) continue;
       // The supported no-probe replacement also keeps a stopped same-seat generation.
-      if (row.name === node.name && row.logicalId === node.logical_id
-        && row.latestStatus && ["exited", "detached", "superseded"].includes(row.latestStatus)) continue;
+      if (isStoppedSeatPredecessor(
+        { rigName: row.name, logicalId: row.logicalId, archivedAt: row.archived_at, latestStatus: row.latestStatus },
+        { rigName: node.name, logicalId: node.logical_id })) continue;
       const physical = row.tmux_session ?? row.external_session_name;
       for (const address of proposed) {
         const currentOther = physical && (!row.latestName || row.latestName === physical);
