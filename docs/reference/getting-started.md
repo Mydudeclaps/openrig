@@ -131,19 +131,20 @@ You can also read [`skills/rigs/SKILL.md`](../../skills/rigs/SKILL.md) directly.
 script will do and changes nothing:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.6.12/scripts/install.sh | sh -s -- --dry-run
+curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.6.13/scripts/install.sh | sh -s -- --dry-run
 ```
 
 The same command without `--dry-run`,
-`curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.6.12/scripts/install.sh | sh`, installs the
+`curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.6.13/scripts/install.sh | sh`, installs the
 latest published `@openrig/cli` with `npm install -g`,
 runs the Node.js and SQLite check, then `rig setup --dry-run` and `rig setup`. `rig setup` checks both Claude Code and
-Codex and may install a missing one, as described below. A failed step prints
-`FAILED [n/4] <command or check> (exit <code>)`. Where a provider isn't signed in yet, step 4 ends that way and
-`rig setup` lists each sign-in under "Some steps need attention". If the only remaining failures are provider
-sign-ins, the install steps finished: sign in to each selected provider as below, then continue at
-[Start the kernel](#start-the-kernel-and-check-its-state). To install only what the selected providers need, go step
-by step instead:
+Codex and may install a missing one, as described below. A failed step among the first three prints
+`FAILED [n/4] <command or check> (exit <code>)`. When `rig setup` (step 4) doesn't finish ready, for example because a
+provider isn't signed in yet, the script ends with `INSTALLED, SETUP NOT COMPLETE (exit <code>)`: the CLI is
+installed, and `rig setup` lists what's left under "Some steps need attention". If the only items left are provider
+sign-ins, sign in to each selected provider as below, then continue at
+[Start the kernel](#start-the-kernel-and-check-its-state); run `rig setup` again rather than reinstalling the CLI. To
+install only what the selected providers need, go step by step instead:
 
 ### Choose your providers
 
