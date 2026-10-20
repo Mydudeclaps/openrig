@@ -9,7 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: d79e41667725a5fd14cbecf8c9d3a105c1b06dc6
+          ref: cf810ead95c20bd9b47e48d33c04afc12cb3de77
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -25,14 +25,16 @@ jobs:
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
           tmux -V > proof/tmux-version.txt
-          npm --workspace @openrig/daemon test -- test/tmux-agent-environment.test.ts --reporter=verbose 2>&1 | tee proof/premise.log
+          npm --workspace @openrig/daemon test -- test/tmux-agent-environment.test.ts test/tmux-adapter.test.ts test/tmux-argv-exec.test.ts test/tmux-argv-legacy-equivalence.test.ts test/tmux-session-env-native.test.ts test/tmux-parent-env-hook-native.test.ts test/parent-session-env.test.ts test/seat-launch-environment.test.ts test/successor-session-launcher.test.ts test/user-settings-store.test.ts test/user-settings-routes.test.ts --reporter=verbose 2>&1 | tee proof/premise.log
           result=${PIPESTATUS[0]}
+          npm --workspace @openrig/cli test -- test/tmux-environment-config.test.ts test/config-store-extended.test.ts test/setup.test.ts --reporter=verbose 2>&1 | tee proof/cli.log
+          cli_result=${PIPESTATUS[0]}
           git diff --exit-code > proof/source-unchanged.txt
-          printf 'test=%s\n' "$result" > proof/exits.txt
-          exit "$result"
+          printf 'daemon=%s cli=%s\n' "$result" "$cli_result" > proof/exits.txt
+          if [ "$result" -ne 0 ] || [ "$cli_result" -ne 0 ]; then exit 1; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: tmux-environment-red
+          name: tmux-environment-green
           path: proof/
           if-no-files-found: error
