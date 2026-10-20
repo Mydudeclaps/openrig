@@ -3,13 +3,13 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  partial-up-pod-green:
+  slack-timing-r2-red:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: cbe373dc8684e692ef2bd2d5c0eec74e73d0301c
+          ref: 0925b04c45d1f64c4b9cdb325cf64e79d3ea28eb
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -17,20 +17,20 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Pod and flat guidance plus launch/bootstrap preservation
+      - name: Selected timing and unknown-receipt assertions before correction
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          npm --workspace @openrig/daemon test -- test/bootstrap-orchestrator.test.ts test/rigspec-instantiator.test.ts test/pod-rigspec-instantiator.test.ts test/node-launcher-one-off-env.test.ts --reporter=verbose 2>&1 | tee proof/green.log
-          npm --workspace @openrig/cli test -- test/up.test.ts test/launch.test.ts test/down.test.ts --reporter=verbose 2>&1 | tee proof/cli.log
-          node packages/cli/dist/bin-wrapper.js down --help | tee proof/down-help.txt
-          grep -q -- '--delete' proof/down-help.txt
+          npm --workspace @openrig/daemon test -- test/slack-answer-after-question.test.ts --reporter=verbose 2>&1 | tee proof/red.log
+          result=${PIPESTATUS[0]}
+          echo "$result" > proof/test-exit.txt
           git diff --exit-code > proof/source-unchanged.txt
+          exit "$result"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: partial-up-pod-green
+          name: slack-timing-r2-red
           path: proof/
           if-no-files-found: error
