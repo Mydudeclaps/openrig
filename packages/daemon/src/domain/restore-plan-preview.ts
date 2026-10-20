@@ -12,8 +12,9 @@ import { restoreRuntimeCompatibilityError } from "./restore-runtime-compatibilit
 // only reported as would-happen), no projection writes.
 
 import type Database from "better-sqlite3";
-import { resolveActiveOccupantRow, resolveActiveSnapshotSession, deriveRehydrateSessionIdByNode, activeOccupantAmbiguityError, absentSeatResumeHistory, absentSeatResumeHistoryError, type ActiveOccupantResolution } from "./active-occupant.js";
+import { resolveActiveSnapshotSession, deriveRehydrateOccupantsByNode, deriveRehydrateSessionIdByNode, activeOccupantAmbiguityError, absentSeatResumeHistory, absentSeatResumeHistoryError, type ActiveOccupantResolution } from "./active-occupant.js";
 import type { RigWithRelations, Snapshot } from "./types.js";
+import { readFreshOccupantRelations } from "./fresh-occupant-relation.js";
 import { parseSqliteUtcMs } from "./sqlite-time.js";
 import { effectiveRestorePolicy, isOrdinaryTerminalSeat, type RestoreSeatFacts } from "./restore-policy.js";
 import { assessSnapshotCurrentOccupants, stoppedSnapshotReason } from "./rehydrate-eligibility.js";
@@ -210,7 +211,7 @@ export function collectPreviewSessionRows(
   const rows = db.prepare(
     `SELECT id, node_id, restore_policy, resume_type, resume_token, resume_provenance, resume_last_verified, resume_last_probe_status, status FROM sessions WHERE node_id IN (${placeholders})`
   ).all(...nodeIds) as Array<{ id: string; node_id: string; restore_policy: string | null; resume_type: string | null; resume_token: string | null; resume_provenance: string | null; resume_last_verified: string | null; resume_last_probe_status: string | null; status: string | null }>;
-  return rows.map((r) => ({
+  const sessions = rows.map((r) => ({
     nodeId: r.node_id,
     restorePolicy: r.restore_policy,
     resumeType: r.resume_type,
@@ -221,6 +222,16 @@ export function collectPreviewSessionRows(
     id: r.id,
     status: r.status,
   }));
+  // Forecast the exact occupancy auto-rehydrate capture would write, without
+  // persisting a snapshot or changing any session/tenure state.
+  const recorded = readFreshOccupantRelations(db, rig.rig.id);
+  const data = {
+    sessions,
+    activeSessionIdByNode: deriveRehydrateSessionIdByNode(sessions, nodeIds, recorded),
+    activeOccupantsByNode: deriveRehydrateOccupantsByNode(sessions, nodeIds, recorded),
+  };
+  const { stoppedNodeIds } = assessSnapshotCurrentOccupants(db, rig, { data }, preserveStoppedInitial);
+  return sessions.map(session => ({ ...session, stoppedCurrent: stoppedNodeIds.has(session.nodeId) }));
 }
 
 /**
@@ -239,17 +250,16 @@ export function buildRestorePlanPreview(
   // when previewing a snapshot; for the live no-snapshot case, the SAME
   // would-capture derivation SnapshotCapture uses (shared helper — the
   // sibling paths cannot drift).
-  const relationMap = snapshot
-    ? snapshot.data.activeSessionIdByNode
-    : deriveRehydrateSessionIdByNode(sessionRows, rig.nodes.map((n) => n.id), recorded);
+  const nodeIds = rig.nodes.map(node => node.id);
+  const occupancy = snapshot?.data ?? {
+    sessions: sessionRows,
+    activeSessionIdByNode: deriveRehydrateSessionIdByNode(sessionRows, nodeIds, recorded),
+    activeOccupantsByNode: deriveRehydrateOccupantsByNode(sessionRows, nodeIds, recorded),
+  };
   const nodes: RestorePlanPreviewNode[] = rig.nodes.map((node) => {
     const freshRequested = freshLogicalIds?.includes(node.logicalId) ?? false;
     const savedNodeId = snapshot?.data.nodes?.find(saved => saved.logicalId === node.logicalId)?.id ?? node.id;
-    const resolution = snapshot
-      ? resolveActiveSnapshotSession(snapshot.data, savedNodeId)
-      : sessionRows.some((row) => row.nodeId === node.id)
-        ? resolveActiveOccupantRow(sessionRows, relationMap, node.id)
-        : { kind: "none" as const };
+    const resolution = resolveActiveSnapshotSession<PreviewSessionRow>(occupancy, savedNodeId);
     const runtimeError = resolution.kind !== "ambiguous"
       ? restoreRuntimeCompatibilityError(node.runtime, snapshot?.data.nodeStartupContext?.[savedNodeId]?.runtime)
       : null;

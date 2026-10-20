@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { resolveActiveOccupantRow, resolveActiveSnapshotSession } from "./active-occupant.js";
 import { readFreshOccupantRelations } from "./fresh-occupant-relation.js";
-import type { RigWithRelations, Snapshot } from "./types.js";
+import type { RigWithRelations, Session, Snapshot, SnapshotData } from "./types.js";
 
 export interface CurrentStateRehydrateEligibility {
   ok: boolean;
@@ -20,7 +20,9 @@ export interface CurrentStateRehydrateEligibility {
 export function assessSnapshotCurrentOccupants(
   db: Database.Database,
   rig: RigWithRelations,
-  snapshot: Snapshot,
+  snapshot: { data: Pick<SnapshotData, "activeOccupantsByNode" | "activeSessionIdByNode"> & {
+    sessions: Array<Pick<Session, "id" | "nodeId" | "resumeType" | "resumeToken"> & { status: string | null }>;
+  } },
   preserveStoppedInitial = false,
 ): { matches: boolean; stoppedNodeIds: Set<string> } {
   const stoppedNodeIds = new Set<string>();
@@ -31,7 +33,7 @@ export function assessSnapshotCurrentOccupants(
             s.resume_type AS resumeType, s.resume_token AS resumeToken
        FROM sessions s
        JOIN nodes n ON n.id = s.node_id
-       WHERE n.rig_id = ?`
+       WHERE n.rig_id = ? ORDER BY s.created_at DESC, s.id DESC`
   ).all(rig.rig.id) as Array<{
     id: string;
     nodeId: string;
@@ -60,13 +62,13 @@ export function assessSnapshotCurrentOccupants(
     };
     if (current.kind === "none") {
       // Only explicit existing-rig up extends the stop rule to the original
-      // occupant. A single session AND first initial tenure prove ownership;
-      // historical flags, missing tenures and handover/adopt generations do not.
-      const history = rows.filter(row => row.nodeId === node.id);
-      const tenure = preserveStoppedInitial && node.runtime && node.runtime !== "terminal" && history.length === 1
-        ? db.prepare("SELECT kind, generation_ordinal AS ordinal FROM occupant_tenures WHERE node_id=? ORDER BY generation_ordinal DESC LIMIT 1").get(node.id) as { kind: string; ordinal: number } | undefined
+      // occupant. The newest session and newest initial tenure own the stop,
+      // including after restore. An older row's flag cannot hold its successor.
+      const newest = rows.find(row => row.nodeId === node.id);
+      const tenure = preserveStoppedInitial && node.runtime && node.runtime !== "terminal" && newest
+        ? db.prepare("SELECT kind FROM occupant_tenures WHERE node_id=? ORDER BY generation_ordinal DESC LIMIT 1").get(node.id) as { kind: string } | undefined
         : undefined;
-      if (tenure?.kind === "initial" && tenure.ordinal === 1 && stoppedHistoryMatches(history[0]!)) {
+      if (tenure?.kind === "initial" && newest && stoppedHistoryMatches(newest)) {
         stoppedNodeIds.add(node.id);
       }
       continue;
