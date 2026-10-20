@@ -207,6 +207,32 @@ describe("attached team address preserves physical custody", () => {
     expect(sessions.getSessionsForRig(oldRig.id)[0]?.sessionName).toBe(address);
   });
 
+  it.each(["0", "person-terminal"].flatMap(physical => [
+    { physical, competitorHeld: true }, { physical, competitorHeld: false },
+  ]))("keeps an unrelated exact binding ambiguous for $physical (competitor held=$competitorHeld)", async ({ physical, competitorHeld }) => {
+    const address = "person-agent@team", rig = rigs.createRig("team");
+    const node = rigs.addNode(rig.id, "person.agent", { runtime: "terminal" });
+    expect((await attach.attachToNode({ rigId: rig.id, logicalId: node.logicalId, context: context(physical) })).ok).toBe(true);
+    const other = rigs.addNode(rig.id, "other.agent", { runtime: "terminal" });
+    // A later competing binding has no matching session; routing still selects
+    // the attached person, but the guard must not prefer the unrelated owner.
+    sessions.updateBinding(other.id, { tmuxSession: address, tmuxPane: "%77" });
+    expect(sessions.resolveAddress(address)?.nodeId).toBe(node.id);
+    expect(physicalSessionName(db, address)).toBe(physical);
+    const guard = new SeatDeliveryGuard(db, name => resolveGuardTarget(db, name));
+    Object.defineProperty(tmux, "deliveryGuard", { value: guard });
+    const guarded = new SessionTransport({ db, rigRepo: rigs, sessionRegistry: sessions, tmuxAdapter: tmux, sleep: async () => {} });
+    await guard.set(node.id, !competitorHeld, "operator@team", "person preference");
+    await guard.set(other.id, competitorHeld, "operator@team", "opposing preference");
+    expect(await guarded.send(address, "must not send or retain", { deliveryId: "ambiguous-reply", actorSession: "operator@team" }))
+      .toMatchObject({ ok: false, sent: false, reason: "guard_target_unknown" });
+    expect(resolveGuardTarget(db, address)).toBeNull();
+    expect(writes).toEqual([]);
+    expect(new OutboxHandler(db).getById("ambiguous-reply")).toBeNull();
+    expect(guard.target(node.id).nodeId).toBe(node.id);
+    expect(guard.target("%77").nodeId).toBe(other.id);
+  });
+
   it.each(["running", "pending", "unknown"])("does not treat a %s same-seat predecessor as stopped", async status => {
     const oldRig = rigs.createRig("team"), oldNode = rigs.addNode(oldRig.id, "person.agent", { runtime: "terminal" });
     await attach.attachToNode({ rigId: oldRig.id, logicalId: oldNode.logicalId, context: context("person-agent@team") });
