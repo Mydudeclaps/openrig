@@ -3,13 +3,13 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  partial-up-guidance-green:
+  slack-answer-after-question-red:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 0a403e9e3641954a4df0f653d65138986b9ee705
+          ref: 73263a97740ffb7bbe817ed40b138676625d3a51
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -17,18 +17,24 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Corrected guidance and launch/bootstrap preservation
+      - name: Three early-reply REDs and the later-reply control
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          npm --workspace @openrig/daemon test -- test/bootstrap-orchestrator.test.ts test/rigspec-instantiator.test.ts test/node-launcher-one-off-env.test.ts --reporter=verbose 2>&1 | tee proof/green.log
-          npm --workspace @openrig/cli test -- test/up.test.ts --reporter=verbose 2>&1 | tee proof/cli-up.log
+          set +e
+          npm --workspace @openrig/daemon test -- test/slack-answer-after-question.test.ts --reporter=verbose 2>&1 | tee proof/red.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          test "$rc" -ne 0
+          grep -q '3 failed' proof/red.log
+          grep -q '1 passed' proof/red.log
+          ! grep -q 'Unhandled Errors' proof/red.log
           git diff --exit-code > proof/source-unchanged.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: partial-up-guidance-green
+          name: slack-answer-after-question-red
           path: proof/
           if-no-files-found: error
