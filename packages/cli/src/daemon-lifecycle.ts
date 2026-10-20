@@ -1,7 +1,7 @@
 import path from "node:path";
 import { existsSync } from "node:fs";
 import type { ChildProcess } from "node:child_process";
-import { connectionErrorCode, formatDaemonHostForUrl } from "./client.js";
+import { DaemonClient, ForeignLocalDaemonError, connectionErrorCode, formatDaemonHostForUrl } from "./client.js";
 import { blockedConnectionGuidance, isBlockedConnectionCode } from "./daemon-reachability.js";
 import type { DaemonStartLock } from "./daemon-start-lock.js";
 import { DAEMON_STOP_WAIT_MS, DAEMON_SHUTDOWN_RECEIPT, type DaemonShutdownReceipt } from "@openrig/daemon/daemon-shutdown";
@@ -1257,10 +1257,13 @@ export async function waitForKernelReady(
   pollIntervalMs = 500,
 ): Promise<KernelReadyResult> {
   const deadline = Date.now() + timeoutMs;
+  const ownerClient = new DaemonClient(baseUrl);
   let last: KernelReadyResult = { ok: false, kernelState: null, variant: null, detail: null };
   while (Date.now() < deadline) {
-    const remainingMs = Math.max(1, deadline - Date.now());
     try {
+      await ownerClient.assertLocalOwner(Math.min(1000, Math.max(1, deadline - Date.now())));
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) return last;
       const res = await fetch(`${baseUrl}/api/kernel/status`, {
         signal: AbortSignal.timeout(remainingMs),
       });
@@ -1288,7 +1291,8 @@ export async function waitForKernelReady(
           return last;
         }
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof ForeignLocalDaemonError) return { ...last, detail: error.message };
       // Transient fetch failure; keep polling until the deadline.
     }
     const sleepMs = Math.min(pollIntervalMs, Math.max(0, deadline - Date.now()));

@@ -994,6 +994,30 @@ same-seat stop/resume path after checking its retained policy; do not erase the
 rig or start a duplicate to reset permissions. A resume can reapply the stored
 launch mode, so verify the native mode again before continuing work.
 
+## Optional Mac local-user check
+
+On a Mac shared by multiple OS accounts, `transport.local_user_guard` can reduce
+accidental CLI routing to another account's local daemon. It is **off by default**.
+Enable it with `rig config set transport.local_user_guard true`, or set
+`OPENRIG_TRANSPORT_LOCAL_USER_GUARD=true` in the CLI's environment. Set it to
+`false` to turn it off; no daemon restart is needed for the CLI check.
+
+When enabled, automatic local CLI data requests check the daemon's health PID
+against the listening process's numeric UID and start identity using `lsof` and
+`ps`, with at most one second of observation per request. Positively foreign
+ownership stops that request with an explanation; it does not stop the daemon,
+choose another port or retry. Diagnostic health/status checks remain available.
+Explicit `OPENRIG_URL`/`RIGGED_URL` targets and registered remote hosts retain
+their selected routing, including tunnels. An internally resolved local URL is
+still checked. Default UI and TUI openings are checked before launch; this does
+not police later browser or TUI connections.
+
+Missing, ambiguous, restricted or timed-out evidence **continues today's
+behavior**. This is a partial accidental-routing check, not authenticated user
+isolation: ownership can change between observation and connection, and equal
+UIDs do not distinguish separate instances belonging to one account. The check
+does not add authentication to the daemon or protect direct HTTP clients.
+
 ## Custom settings and precedence
 
 - **OpenRig:** member `permission_policy` overrides rig `permission_policy`.
