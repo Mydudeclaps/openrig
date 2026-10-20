@@ -3,45 +3,52 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  missing-pane-message:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+  mac-local-owner:
+    runs-on: macos-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 9c379977c976ef3969e13ed33a4f57c3999f7227
+          ref: 1cc8211cf71255b36fceb742c972c058d449ea1b
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: |
-          mkdir -p proof
-          git rev-parse HEAD HEAD^{tree} > proof/source.txt
+      - run: brew install tmux
+      - run: mkdir -p proof; git rev-parse HEAD HEAD^{tree} > proof/source.txt
       - run: npm ci
       - run: npm run build
-      - name: Unsupported-route guidance RED then GREEN
+      - name: Actual queue and send boundary RED on prior client
+        shell: bash
         run: |
           set -euo pipefail
-          file=packages/cli/src/commands/reconcile-session.ts
-          cp "$file" "$RUNNER_TEMP/reconcile-candidate.ts"
-          git fetch --no-tags --depth=1 origin 37af3727cbf53cebc5427fc17f251b5e1f564e53
-          git show 37af3727cbf53cebc5427fc17f251b5e1f564e53:"$file" > "$file"
-          trap 'cp "$RUNNER_TEMP/reconcile-candidate.ts" "$file"' EXIT
+          file=packages/cli/src/client.ts
+          cp "$file" "$RUNNER_TEMP/client-candidate.ts"
+          git fetch --no-tags --depth=1 origin 7a4135369f08bfa889c7392e1358d0f522c15845
+          git show 7a4135369f08bfa889c7392e1358d0f522c15845:"$file" > "$file"
+          trap 'cp "$RUNNER_TEMP/client-candidate.ts" "$file"' EXIT
           set +e
-          npm --workspace @openrig/cli test -- test/reconcile-session.test.ts -t "explains an old daemon" --reporter=verbose 2>&1 | tee proof/red.log
+          npm --workspace @openrig/cli test -- test/local-owner-routing.test.ts -t 'foreign owner blocks|real queue list|real send' --reporter=verbose 2>&1 | tee proof/red.log
           red_rc=${PIPESTATUS[0]}
           set -e
           test "$red_rc" -ne 0
-          grep -q '2 failed' proof/red.log
+          grep -q '3 failed' proof/red.log
           ! grep -q 'Unhandled Errors' proof/red.log
-          cp "$RUNNER_TEMP/reconcile-candidate.ts" "$file"
+          cp "$RUNNER_TEMP/client-candidate.ts" "$file"
           trap - EXIT
           git diff --exit-code > proof/restored-source.txt
-          npm --workspace @openrig/cli test -- test/reconcile-session.test.ts --reporter=verbose 2>&1 | tee proof/green.log
+      - name: Mac tools, guarded consumers, settings and preservation
+        shell: bash
+        env:
+          OPENRIG_TEST_MAC_OWNER_TOOLS: '1'
+        run: |
+          set -euo pipefail
+          npm --workspace @openrig/cli test -- test/local-daemon-owner.test.ts test/local-owner-routing.test.ts test/local-owner-direct.test.ts test/config-store-extended.test.ts test/client.test.ts test/send.test.ts test/queue.test.ts test/chatroom.test.ts test/doctor.test.ts test/ui.test.ts test/front-door.test.ts test/daemon-lifecycle.test.ts test/kernel-ready-deadline.test.ts test/start-kernel-evidence.test.ts --reporter=verbose 2>&1 | tee proof/green.log
+          npm --workspace @openrig/daemon test -- test/user-settings-store.test.ts test/user-settings-routes.test.ts --reporter=verbose 2>&1 | tee proof/settings.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: missing-pane-message
+          name: mac-local-owner
           path: proof/
           if-no-files-found: error
