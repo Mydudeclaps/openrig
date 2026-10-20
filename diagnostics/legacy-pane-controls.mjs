@@ -13,6 +13,7 @@ const {migrate}=await load('db/migrate'),{ALL_MIGRATIONS}=await load('db/all-mig
 const {RigRepository}=await load('domain/rig-repository'),{SessionRegistry}=await load('domain/session-registry');
 const {DiscoveryRepository}=await load('domain/discovery-repository'),{EventBus}=await load('domain/event-bus');
 const {ClaimService}=await load('domain/claim-service');
+const {SeatDeliveryGuard,resolveGuardTarget}=await load('domain/seat-delivery-guard');
 const records=[];
 for(const mode of ['nonsole','unobservable']){
  const db=new Database(':memory:');migrate(db,ALL_MIGRATIONS);
@@ -21,6 +22,7 @@ for(const mode of ['nonsole','unobservable']){
   const rig=rigRepo.createRig('private-controls'),node=rigRepo.addNode(rig.id,'worker',{runtime:'claude-code',podId:null});
   const seat='worker@private-controls';sessionRegistry.registerSession(node.id,seat);sessionRegistry.updateBinding(node.id,{tmuxSession:seat});
   const calls=[];const tmux={hasSession:async()=>true,listPanes:async()=>{if(mode==='unobservable')throw Error('fixture observation unavailable');return[{id:'%1'},{id:'%2'}];},getPaneCommand:async()=> 'claude',setSessionOption:async(...args)=>{calls.push(['metadata',args]);return{ok:true};},sendText:async()=>{throw Error('forbidden input');},sendKeys:async()=>{throw Error('forbidden input');},createSession:async()=>{throw Error('forbidden launch');}};
+  tmux.deliveryGuard=new SeatDeliveryGuard(db,name=>resolveGuardTarget(db,name));
   const svc=new ClaimService({db,rigRepo,sessionRegistry,eventBus,discoveryRepo:new DiscoveryRepository(db),tmuxAdapter:tmux,transcriptStore:{enabled:false}});
   const result=await svc.reconcileSession({sessionName:seat});
   const binding=sessionRegistry.getBindingForNode(node.id),sessions=db.prepare('SELECT * FROM sessions WHERE node_id=? ORDER BY id').all(node.id);
