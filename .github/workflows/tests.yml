@@ -9,7 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 7dfa5eeed4bf1e09045823091a41844519d240fe
+          ref: f9459cf665ebc11d9a4fddbc484e9453ea145c55
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -18,14 +18,14 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y tmux
       - run: npm ci
       - run: npm run build
-      - name: Tmux client-exit chain clock correction
+      - name: Chatroom HTTP error fixture correction
         shell: bash
         run: |
           set +e
           set -uo pipefail
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          npm --workspace @openrig/daemon test -- test/tmux-control.test.ts --reporter=verbose 2>&1 | tee proof/daemon.log
+          npm --workspace @openrig/cli test -- test/chatroom.test.ts --reporter=verbose 2>&1 | tee proof/daemon.log
           result=${PIPESTATUS[0]}
           npm run lint 2>&1 | tee proof/typecheck.log
           lint_result=${PIPESTATUS[0]}
@@ -35,6 +35,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: tmux-chain-clock
+          name: chatroom-error-deadline
           path: proof/
           if-no-files-found: error
