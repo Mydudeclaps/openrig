@@ -7,7 +7,7 @@ const databases: ReturnType<typeof createFullTestDb>[] = [];
 afterEach(() => { for (const db of databases.splice(0)) db.close(); });
 
 /** Build an isolated restore fixture with saved seat history and mocked terminal effects. */
-function fixture(opts: { status?: string; noRow?: boolean; token?: string | null; policy?: string; kind?: string } = {}) {
+function fixture(opts: { status?: string; noRow?: boolean; token?: string | null; policy?: string; kind?: string; intentional?: boolean; fresh?: boolean } = {}) {
   const db = createFullTestDb(); databases.push(db);
   const live = new Set<string>();
   const tmux = {
@@ -32,11 +32,21 @@ function fixture(opts: { status?: string; noRow?: boolean; token?: string | null
   const node = rigRepo.addNode(rig.id, "dev.worker", { runtime: "claude-code", podId: "pod", cwd: "/tmp" });
   db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, '[]', '[]', '[]', 'claude-code')").run(node.id);
   if (!opts.noRow) {
-    const row = sessionRegistry.registerSession(node.id, "dev-worker@stopped-review");
+    if (opts.fresh) {
+      const predecessor = sessionRegistry.registerSession(node.id, "dev-worker@stopped-review");
+      sessionRegistry.updateStatus(predecessor.id, "exited");
+    }
+    const row = sessionRegistry.registerSession(node.id, "dev-worker@stopped-review", opts.fresh ? "fresh" : undefined);
     sessionRegistry.updateStatus(row.id, opts.status ?? "exited");
     sessionRegistry.updateStartupStatus(row.id, "ready");
     if (opts.token !== null) sessionRegistry.updateResumeToken(row.id, "claude_id", opts.token ?? "00000000-0000-4000-8000-000000000005", "hook");
     if (opts.policy) db.prepare("UPDATE sessions SET restore_policy = ? WHERE id = ?").run(opts.policy, row.id);
+    if (opts.intentional) sessionRegistry.markIntentionallyStopped(row.id);
+    if (opts.fresh) {
+      const generation = sessionRegistry.currentOccupantTenure(node.id)!.generationUuid;
+      db.prepare("INSERT INTO events(rig_id,node_id,type,payload) VALUES (?,?,'seat.fresh_launched',?)")
+        .run(rig.id, node.id, JSON.stringify({ nodeId: node.id, sessionId: row.id, newGeneration: generation }));
+    }
   }
   const snapshot = snapshotCapture.captureSnapshot(rig.id, (opts.kind ?? "manual") as never);
   const post = (path: string, body: unknown = {}) => setup.app.request(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -212,4 +222,38 @@ describe("stopped-seat history and guidance", () => {
     const hint = check.checks.find((item: { check: string }) => item.check.endsWith(".resume-path")).remediation;
     expect(hint).toContain("rig up 'stopped review' --existing --plan");
   });
+});
+
+// Throwaway diagnosis only: preserve the existing exited controls above unchanged.
+const policies = ["resume_if_possible", "relaunch_fresh"] as const;
+const missingCells = [
+  ...[false, true].flatMap(token => policies.map(policy => ({ fresh: false, token, policy }))),
+  { fresh: true, token: false, policy: "relaunch_fresh" },
+];
+async function observeStop(opts: { fresh: boolean; token: boolean; policy: string }, explicitFresh: boolean) {
+  const h = fixture({ fresh: opts.fresh, intentional: true, token: opts.token ? undefined : null, policy: opts.policy });
+  const before = h.db.prepare("SELECT id,status,intentionally_stopped AS intent,restore_policy AS policy,resume_token AS token FROM sessions WHERE node_id=? ORDER BY id DESC LIMIT 1").get(h.node.id);
+  expect(before).toMatchObject({ status: "exited", intent: 1, policy: opts.policy });
+  const tenure = h.sessionRegistry.currentOccupantTenure(h.node.id);
+  expect(tenure?.kind).toBe(opts.fresh ? "fresh" : "initial");
+  const body = { sourceRef: h.rig.name, ...(explicitFresh ? { freshLogicalIds: [h.node.logicalId] } : {}) };
+  const changes = h.db.prepare("SELECT total_changes() AS n").get();
+  const planned = await h.post("/api/up", { ...body, plan: true });
+  const plan = await planned.json();
+  expect(h.db.prepare("SELECT total_changes() AS n").get()).toEqual(changes);
+  const applied = await h.post("/api/up", body);
+  const result = await applied.json();
+  const after = h.db.prepare("SELECT id,status,intentionally_stopped AS intent FROM sessions WHERE node_id=? ORDER BY id DESC LIMIT 1").get(h.node.id);
+  console.log("STOP_OBSERVATION " + JSON.stringify({ fresh: opts.fresh, token: opts.token, policy: opts.policy,
+    explicitFresh, route: "/api/up", before, tenure, planHttp: planned.status, plan: plan.nodes?.[0],
+    applyHttp: applied.status, result: result.nodes?.[0], creates: vi.mocked(h.tmux.createSession).mock.calls.length,
+    sends: vi.mocked(h.tmux.sendText).mock.calls, after, binding: h.sessionRegistry.getBindingForNode(h.node.id) }));
+  expect(planned.status).toBe(200); expect(applied.status).toBe(200);
+  expect(result.nodes?.[0]?.status).toBe(plan.nodes?.[0]?.intendedAction);
+  if (explicitFresh) expect(result.nodes?.[0]?.status).toBe("fresh-primed");
+}
+describe("bounded intended-stop diagnosis", () => {
+  it.each(missingCells)("missing cell fresh=$fresh token=$token policy=$policy", async opts => { await observeStop(opts, false); });
+  it.each([false, true].flatMap(fresh => [false, true].flatMap(token => policies.map(policy => ({ fresh, token, policy })))))
+    ("explicit fresh override fresh=$fresh token=$token policy=$policy", async opts => { await observeStop(opts, true); });
 });

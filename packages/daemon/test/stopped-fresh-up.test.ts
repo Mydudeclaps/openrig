@@ -125,6 +125,8 @@ describe("a deliberately stopped current fresh seat does not block its siblings"
   it.each(["cli", "explorer"].flatMap(entry => ["token", "no-token", "fresh-policy"].map(mode => ({ entry, mode: mode as "token" | "no-token" | "fresh-policy" }))))(
     "$entry up keeps the stopped seat stopped ($mode), using the newest accurate snapshot", async ({ entry, mode }) => {
       const f = await fixture(mode);
+      const beforeStop = f.db.prepare("SELECT status,intentionally_stopped AS intent FROM sessions WHERE id=?").get(f.current.id);
+      expect(beforeStop).toEqual({ status: "exited", intent: 1 });
       const up = (plan: boolean) => f.post(entry === "cli" ? "/api/up" : `/api/rigs/${f.rig.id}/up`, { sourceRef: f.rig.name, plan });
       const restore = vi.spyOn(f.restoreOrchestrator, "restore");
       const before = f.db.prepare("SELECT total_changes() AS n").get();
@@ -141,6 +143,15 @@ describe("a deliberately stopped current fresh seat does not block its siblings"
       expect(f.db.prepare("SELECT total_changes() AS n").get()).toEqual(before);
       const applied = await up(false); expect(applied.status).toBe(200);
       const result = await applied.json();
+      console.log("STOP_OBSERVATION " + JSON.stringify({ fresh: true, token: mode !== "no-token",
+        policy: mode === "fresh-policy" ? "relaunch_fresh" : "resume_if_possible", explicitFresh: false,
+        route: entry === "cli" ? "/api/up" : "/api/rigs/:id/up", before: beforeStop,
+        tenure: f.sessionRegistry.currentOccupantTenure(f.paused.id), planHttp: planned.status,
+        plan: plan.nodes.find((n: { logicalId: string }) => n.logicalId === "paused"), applyHttp: applied.status,
+        result: result.nodes.find((n: { logicalId: string }) => n.logicalId === "paused"),
+        creates: vi.mocked(f.tmuxAdapter.createSession).mock.calls.filter(([name]) => name.includes("paused")).length,
+        after: f.db.prepare("SELECT status,intentionally_stopped AS intent FROM sessions WHERE id=?").get(f.current.id),
+        binding: f.sessionRegistry.getBindingForNode(f.paused.id) }));
       expect(result.nodes.find((n: { logicalId: string }) => n.logicalId === "paused").status).toBe("awaiting-decision");
       expect(restore).toHaveBeenCalledExactlyOnceWith(f.snapshot.id, expect.any(Object));
       expect(f.snapshot.id).not.toBe(f.earlierRunning.id);
