@@ -177,11 +177,11 @@ You can also read [`skills/rigs/SKILL.md`](../../skills/rigs/SKILL.md) directly.
 script will do and changes nothing:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.6.13/scripts/install.sh | sh -s -- --dry-run
+curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.6.14/scripts/install.sh | sh -s -- --dry-run
 ```
 
 The same command without `--dry-run`,
-`curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.6.13/scripts/install.sh | sh`, installs the
+`curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.6.14/scripts/install.sh | sh`, installs the
 latest published `@openrig/cli` with `npm install -g`,
 runs the Node.js and SQLite check, then `rig setup --dry-run` and `rig setup`. `rig setup` checks both Claude Code and
 Codex and may install a missing one, as described below. A failed step among the first three prints

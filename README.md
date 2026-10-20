@@ -26,9 +26,9 @@ use:
 
 ```sh
 # Claude Code
-npx skills add https://github.com/mvschwarz/openrig/tree/v0.6.12/skills/rigs --skill rigs --agent claude-code
+npx skills add https://github.com/mvschwarz/openrig/tree/v0.6.14/skills/rigs --skill rigs --agent claude-code
 # Codex
-npx skills add https://github.com/mvschwarz/openrig/tree/v0.6.12/skills/rigs --skill rigs --agent codex
+npx skills add https://github.com/mvschwarz/openrig/tree/v0.6.14/skills/rigs --skill rigs --agent codex
 ```
 
 Then type `/rigs` in Claude Code, or `$rigs` in Codex, and say what you want built. The skill has your agent tell
@@ -68,11 +68,11 @@ Requires Node.js 22 or 24 and tmux, on macOS or Linux, and one working Claude Co
 
 ### Install it yourself
 
-This runs OpenRig's install script from the `v0.6.13` release. It checks Node.js and npm, installs the latest published `@openrig/cli` with `npm install -g`, runs the Node.js and SQLite check, then runs `rig setup --dry-run` and `rig setup`. The first line prints that plan and changes nothing:
+This runs OpenRig's install script from the `v0.6.14` release. It checks Node.js and npm, installs the latest published `@openrig/cli` with `npm install -g`, runs the Node.js and SQLite check, then runs `rig setup --dry-run` and `rig setup`. The first line prints that plan and changes nothing:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.6.13/scripts/install.sh | sh -s -- --dry-run
-curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.6.13/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.6.14/scripts/install.sh | sh -s -- --dry-run
+curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.6.14/scripts/install.sh | sh
 ```
 
 If `rig setup` doesn't finish ready, for example because a provider isn't signed in yet, the script ends with `INSTALLED, SETUP NOT COMPLETE`: the CLI is installed, and `rig setup` lists what's left under "Some steps need attention". If the only items left are provider sign-ins, sign in to each selected provider as below and continue; run `rig setup` again rather than reinstalling the CLI.
