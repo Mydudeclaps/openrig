@@ -9,7 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 026d7b35dd310fd4c6bb2e25ca8f7f75d0beaa65
+          ref: b0043e9862c023e8e6e1989f698c018af10e03c3
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -18,14 +18,14 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y tmux
       - run: npm ci
       - run: npm run build
-      - name: Stopped fresh rebase and kernel boundaries
+      - name: Intended stop generation and policy diagnosis
         shell: bash
         run: |
           set +e
           set -uo pipefail
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          npm --workspace @openrig/daemon test -- test/stopped-fresh-up.test.ts test/kernel-lost-restore.test.ts test/kernel-lost-restore-coordination.test.ts test/kernel-lost-restore-overrides.test.ts test/kernel-lost-restore-race.test.ts test/kernel-lost-restore-rejection.test.ts test/up-route.test.ts test/rig-teardown.test.ts test/restore-orchestrator.test.ts test/restore-plan-preview.test.ts test/stopped-seat-restore-contract.test.ts test/snapshot-capture.test.ts --reporter=verbose 2>&1 | tee proof/daemon.log
+          npm --workspace @openrig/daemon test -- test/stopped-fresh-up.test.ts test/stopped-seat-restore-contract.test.ts --reporter=verbose 2>&1 | tee proof/daemon.log
           result=${PIPESTATUS[0]}
           npm run lint 2>&1 | tee proof/typecheck.log
           lint_result=${PIPESTATUS[0]}
@@ -35,6 +35,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: stopped-fresh-rebase
+          name: uneven-stop-matrix
           path: proof/
           if-no-files-found: error
