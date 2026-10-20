@@ -9,7 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 870707e64f84738cd26538f600c5aba6fa0e4b4d
+          ref: c6dc2bfc195afa5355e8bef475f9f4da2e8bbcf2
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -18,21 +18,23 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y tmux
       - run: npm ci
       - run: npm run build
-      - name: Same-seat alias continuation
+      - name: Address and replacement integration
         shell: bash
         run: |
           set +e
           set -uo pipefail
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          npm --workspace @openrig/daemon test -- test/self-attach-address.test.ts -t "the same archived seat" --reporter=verbose 2>&1 | tee proof/daemon.log
+          npm --workspace @openrig/daemon test -- test/self-attach-address.test.ts test/operating-posture.test.ts test/yaml-import-replaces-stopped-generation.test.ts test/archived-generation-pod-shrink.test.ts test/seat-handover-service.test.ts test/self-attach-service.test.ts test/session-registry.test.ts test/seat-delivery-guard.test.ts test/seat-delivery-guard-correction.test.ts test/session-transport.test.ts test/transcript-routes.test.ts test/resume-token-route.test.ts --reporter=verbose 2>&1 | tee proof/daemon.log
           result=${PIPESTATUS[0]}
+          npm --workspace @openrig/cli test -- test/attach.test.ts test/attach-reply-address.test.ts test/whoami.test.ts test/whoami-bounded-peers.test.ts test/whoami-host-hint.test.ts --reporter=verbose 2>&1 | tee proof/cli.log
+          cli=${PIPESTATUS[0]}
           git diff --exit-code > proof/source-unchanged.txt
-          printf 'daemon=%s\n' "$result" > proof/exits.txt
-          exit "$result"
+          printf 'daemon=%s\ncli=%s\n' "$result" "$cli" > proof/exits.txt
+          test "$result" -eq 0 && test "$cli" -eq 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: attach-r2-alias-red
+          name: attach-r2-green
           path: proof/
           if-no-files-found: error
