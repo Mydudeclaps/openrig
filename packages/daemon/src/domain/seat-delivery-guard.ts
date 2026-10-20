@@ -1,4 +1,4 @@
-import { hasOtherSeatHistory } from "./session-registry.js";
+import { hasOtherSeatHistory, resolveCurrentSessionAddress } from "./session-registry.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -460,8 +460,13 @@ export function resolveGuardTarget(db: Database.Database, name: string): GuardTa
     .all(name, name, name, name, name) as Array<GuardTarget & { archivedAt: string | null; physicalName: string | null; logicalId: string }>;
   const eligible = rows.filter(row => row.nodeId === name || row.physicalName === name || row.pane === name || row.logicalId === name
     || !hasOtherSeatHistory(db, name, row.nodeId));
-  const unarchived = eligible.filter((row) => row.archivedAt === null);
-  const active = unarchived.length > 0 ? unarchived : eligible;
+  // A stopped same-seat predecessor may retain the exact physical spelling.
+  // Live named routing and its guard must select the same successor; explicit
+  // node/pane lookup and saved-history access keep their separate meanings.
+  const current = name.includes("@") ? resolveCurrentSessionAddress(db, name) : null;
+  const named = current ? eligible.filter(row => row.nodeId === current.nodeId) : eligible;
+  const unarchived = named.filter((row) => row.archivedAt === null);
+  const active = unarchived.length > 0 ? unarchived : named;
   const exact = active.filter(row => row.physicalName === name);
   const pool = exact.length ? exact : active;
   if (pool.length !== 1) return null;
