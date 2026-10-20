@@ -6,7 +6,7 @@ import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { PodRepository } from "../src/domain/pod-repository.js";
-import { SessionRegistry } from "../src/domain/session-registry.js";
+import { SessionRegistry, physicalSessionName } from "../src/domain/session-registry.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { SelfAttachService } from "../src/domain/self-attach-service.js";
 import { SessionTransport } from "../src/domain/session-transport.js";
@@ -120,13 +120,26 @@ describe("attached team address preserves physical custody", () => {
 
   it("archived namesakes do not own a new live member's address", async () => {
     const old = rigs.createRig("team"), former = rigs.addNode(old.id, "person.agent", { runtime: "terminal" });
-    await attach.attachToNode({ rigId: old.id, logicalId: former.logicalId, context: context("person-agent@team") });
+    await attach.attachToNode({ rigId: old.id, logicalId: former.logicalId, context: context("old") });
     db.prepare("UPDATE rigs SET archived_at='2026-10-01T00:00:00Z' WHERE id=?").run(old.id);
     const rig = rigs.createRig("team"), current = rigs.addNode(rig.id, "person.agent", { runtime: "terminal" });
     expect(await attach.attachToNode({ rigId: rig.id, logicalId: current.logicalId, context: context("0") })).toMatchObject({ ok: true, senderAddress: "person-agent@team" });
     expect(resolveGuardTarget(db, "person-agent@team")?.nodeId).toBe(current.id);
     expect((await transport.send("person-agent@team", "current reply")).ok).toBe(true);
     expect(writes.at(-1)?.target).toBe("0");
+  });
+
+  it("preserves an unbound historical exact address when a different member gains that logical spelling", async () => {
+    const rig = rigs.createRig("team"), former = rigs.addNode(rig.id, "former.agent", { runtime: "terminal" });
+    await attach.attachToNode({ rigId: rig.id, logicalId: former.logicalId, context: context("person-agent@team") });
+    const oldSession = sessions.getSessionsForRig(rig.id)[0]!;
+    sessions.clearBinding(former.id); sessions.markSuperseded(oldSession.id);
+    const current = rigs.addNode(rig.id, "person.agent", { runtime: "terminal" });
+    const result = await attach.attachToNode({ rigId: rig.id, logicalId: current.logicalId, context: context("0") });
+    expect(result).toMatchObject({ ok: true, senderAddress: "person-agent@team" });
+    // The transcript/context readers must keep the literal old physical record.
+    // This assertion distinguishes preservation from silently selecting current 0.
+    expect(physicalSessionName(db, "person-agent@team")).toBe("person-agent@team");
   });
 
   it("a reused physical name does not newly transfer old raw queue ownership through the alias", async () => {
