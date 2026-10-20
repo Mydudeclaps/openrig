@@ -3,13 +3,13 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  slack-timing-r2-final:
+  attach-address-red:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: d084179789c63435ce21a396fdd6bd1e7eb02aea
+          ref: 551d6171b925f227fd73844b7e8f12a62352551b
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -17,17 +17,19 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - name: Final affected timing and legacy receipt assertions
+      - name: Attach address and collision regression before implementation
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          npm --workspace @openrig/daemon test -- test/slack-answer-after-question.test.ts --reporter=verbose 2>&1 | tee proof/green.log
+          npm --workspace @openrig/daemon test -- test/self-attach-address.test.ts --reporter=verbose 2>&1 | tee proof/red.log
+          result=${PIPESTATUS[0]}
           git diff --exit-code > proof/source-unchanged.txt
+          exit "$result"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: slack-timing-r2-final
+          name: attach-address-red
           path: proof/
           if-no-files-found: error
