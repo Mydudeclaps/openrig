@@ -3,13 +3,13 @@ on: workflow_dispatch
 permissions:
   contents: read
 jobs:
-  proof-watch:
+  stopped-fresh:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 328fc17fa9cc83a1b296e5958aaf9bd5bab9e4ed
+          ref: 391cca6091ee0f44c1faeea9bbc760380673f17c
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
@@ -18,23 +18,21 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y tmux
       - run: npm ci
       - run: npm run build
-      - name: Proof source watch policy cost and freshness after correction
+      - name: Stopped fresh occupant down and up before correction
         shell: bash
         run: |
           set +e
           set -uo pipefail
           mkdir -p proof
           git rev-parse HEAD HEAD^{tree} > proof/source.txt
-          npm --workspace @openrig/daemon test -- test/proof-policy-reuse.test.ts test/proof-source-boundary.test.ts test/proof-source-root.test.ts test/proof-judgments.test.ts --reporter=verbose 2>&1 | tee proof/daemon.log
+          npm --workspace @openrig/daemon test -- test/stopped-fresh-up.test.ts --reporter=verbose 2>&1 | tee proof/daemon.log
           result=${PIPESTATUS[0]}
-          npm run lint 2>&1 | tee proof/typecheck.log
-          types=${PIPESTATUS[0]}
           git diff --exit-code > proof/source-unchanged.txt
-          printf 'daemon=%s\ntypecheck=%s\n' "$result" "$types" > proof/exits.txt
-          test "$result" -eq 0 && test "$types" -eq 0
+          printf 'daemon=%s\n' "$result" > proof/exits.txt
+          test "$result" -eq 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: proof-watch-green
+          name: stopped-fresh-red
           path: proof/
           if-no-files-found: error
