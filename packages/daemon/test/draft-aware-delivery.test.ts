@@ -259,6 +259,56 @@ describe("current draft-aware delivery through the real transport", () => {
 });
 
 describe("supported seat and queue integration", () => {
+  it.each(["draft_input_changed", "delivery_indeterminate", "submit_failed", "send_failed"])(
+    "keeps a committed wake's %s outcome indeterminate in the queue", async reason => {
+      const f = fixture(); await f.enable();
+      const item = await f.repo.create({ sourceSession: "sender@test", destinationSession: "worker@test", body: "queued work", nudge: false });
+      const id = "wake-intent-" + item.qitemId;
+      f.repo.stageWakeIntent(item.qitemId, "sender@test", "worker@test", null, true);
+      if (reason === "draft_input_changed") f.hooks.sleep = ms => { if (ms === 200) f.bodies.a += " plus a human draft"; };
+      if (reason === "delivery_indeterminate") f.hooks.sleep = () => { throw new Error("interrupted after the paste"); };
+      if (reason === "submit_failed") vi.spyOn(f.tmux, "sendKeys").mockResolvedValue({ ok: false, code: "tmux_error", message: "lost Enter result" });
+      if (reason === "send_failed") f.hooks.paste = () => { f.bodies.a = "possibly pasted"; throw new Error("lost native paste result"); };
+
+      await f.repo.drainPendingWakeIntents();
+      const receipt = JSON.parse((f.db.prepare("SELECT guard_delivery AS value FROM outbox_entries WHERE outbox_id=?").get(id) as { value: string }).value);
+      expect(receipt.result).toMatchObject({ ok: false, reason });
+      expect(receipt.result.delivery).toBeUndefined();
+      expect(f.repo.getById(item.qitemId)!.lastNudgeWireResult).toMatch(/^indeterminate:/);
+      expect(f.outbox.getById(id)!.deliveryState).toBe("indeterminate");
+      expect(f.submissions).toEqual([]);
+    },
+  );
+
+  it.each(["ladder", "legacy-boot"])("delivers a %s nudge without a precommitted outbox entry", async path => {
+    const f = fixture(); await f.enable();
+    const item = await f.repo.create({ sourceSession: "sender@test", destinationSession: "worker@test", body: "queued work", nudge: false });
+    if (path === "ladder") await f.repo.maybeNudge(item.qitemId, "worker@test", true, "sender@test");
+    else await f.repo.recoverLostNudge(item.qitemId, "worker@test", "sender@test");
+    expect(f.submissions).toHaveLength(1);
+    expect(f.submissions[0]).toContain(item.qitemId);
+    expect(f.bodies.b).toBe("");
+    expect(f.repo.getById(item.qitemId)!.lastNudgeWireResult).toBe("verified");
+  });
+
+  it.each(["current", "closed", "reassigned"])("checks the %s queue facts without saved delivery bookkeeping", async state => {
+    const f = fixture(); await f.enable();
+    const item = await f.repo.create({ sourceSession: "sender@test", destinationSession: "worker@test", body: "queued work", nudge: false });
+    f.db.exec("CREATE TRIGGER unavailable_nudge_receipt BEFORE UPDATE OF guard_delivery ON outbox_entries BEGIN SELECT RAISE(ABORT, 'fixture receipt unavailable'); END;");
+    f.hooks.load = () => {
+      if (state === "closed") f.db.prepare("UPDATE queue_items SET state='done' WHERE qitem_id=?").run(item.qitemId);
+      if (state === "reassigned") f.db.prepare("UPDATE queue_items SET destination_session='sibling@test' WHERE qitem_id=?").run(item.qitemId);
+    };
+    await f.repo.maybeNudge(item.qitemId, "worker@test", true, "sender@test");
+    expect(f.db.prepare("SELECT count(*) AS n FROM outbox_entries").get()).toEqual({ n: 0 });
+    if (state === "current") {
+      expect(f.submissions).toHaveLength(1);
+      expect(f.submissions[0]).toContain(item.qitemId);
+      expect(f.repo.getById(item.qitemId)!.lastNudgeWireResult).toBe("verified");
+    } else expect(f.writes).toEqual([]);
+    expect(f.bodies.b).toBe("");
+  });
+
   it("exposes exact held reasons, audit identity and retirement through HTTP", async () => {
     const f = fixture(); f.bodies.a = "draft";
     expect((await f.post("/api/seat/set-typing-guard/worker@test", { mode: "draft-aware", actor: "spoof", reason: "draft" })).status).toBe(200);

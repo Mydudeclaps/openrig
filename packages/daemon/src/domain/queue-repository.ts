@@ -286,7 +286,7 @@ export interface QueueNudgeTransport {
     // measure the wait for a handoff nudge too (the real impl is SessionTransport, which accepts it).
     text: string,
     opts?: { verify?: boolean; stampISO?: string; actorSession?: string; committedOutboxIds?: string[]; deliveryId?: string; auditPointer?: string; queueWake?: boolean }
-  ): Promise<{ ok: boolean; verified?: boolean; error?: string; reason?: string; outcome?: string; delivery?: { state: string }; inputBox?: InputBoxEvidence }>;
+  ): Promise<{ ok: boolean; verified?: boolean; sent?: boolean; inputPhase?: "not_reached" | "attempted" | "written"; error?: string; reason?: string; outcome?: string; delivery?: { state: string }; inputBox?: InputBoxEvidence }>;
 }
 
 /** #1278: the result of one wake attempt — its classification, its recorded result, and the
