@@ -124,7 +124,11 @@ export function compactionRoutes(opts?: { bearerToken?: string | null }): Hono {
     if (!body.session) return c.json({ ok: false, error: "Missing required field: session" }, 400);
     const resolved = await transport.resolveSessions({ session: body.session });
     if (!resolved.ok) return c.json({ ok: false, error: resolved.error }, resolved.code === "ambiguous" ? 409 : 404);
-    return c.json({ ok: true, session: body.session, preparation: enforcer.cancelPreparation(body.session) });
+    const preparation = enforcer.cancelPreparation(body.session);
+    return c.json({ ok: true, session: body.session, preparation,
+      ...(preparation ? { compact: compactResultText(preparation.compact) } : {}),
+      guidance: "Managed preparation and pending restore/audit are disarmed. Cancellation sent no input. It cannot undo a submitted /compact or confirm whether it ran. An explicit retry still requires the live pane to be idle.",
+    });
   });
 
   router.get("/state", (c) => {

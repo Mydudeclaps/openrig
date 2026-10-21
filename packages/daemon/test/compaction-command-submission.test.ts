@@ -635,3 +635,17 @@ it('cancel after a back-half send settles prevents its late receipt from rearmin
   await f.e.drainPendingPostCompactStage(input);
   expect(f.events).toEqual(after);
 });
+
+for (const completedStages of [1, 2]) {
+  it(`cancel disarms the remaining restore/audit after ${completedStages} completed back-half stages`, async () => {
+    const f = fixture();
+    await f.e.triggerManualCompact(input, {operatorInitiated: true, skipMap: true});
+    for (let i = 0; i < completedStages; i++) await f.e.drainPendingPostCompactStage(input);
+    const before = [...f.events];
+    f.e.cancelPreparation(seat);
+    expect(f.e.getPreparationState(seat)).toMatchObject({status: 'stopped', compact: 'submitted_unconfirmed'});
+    expect(f.e.getManualCompactionState(seat)?.stage).toBe('cancelled');
+    expect(await f.e.drainPendingPostCompactStage(input)).toEqual({triggered: false, reason: 'no_pending_stage'});
+    expect(f.events).toEqual(before);
+  });
+}
