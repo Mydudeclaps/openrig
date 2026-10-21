@@ -547,6 +547,8 @@ export interface AgentActivity {
   sampledAt: string;
   evidence: string | null;
   eventAt?: string | null;
+  /** The emitter's own order for its posts (OpenRig's pi/omp runner), when it sent one. */
+  sourceSequence?: number | null;
   rawEvent?: string | null;
   rawSubtype?: string | null;
   runtime?: string | null;
@@ -1348,7 +1350,7 @@ export type InstantiateOutcome =
   | { ok: true; result: InstantiateResult }
   | { ok: false; code: "validation_failed"; errors: string[] }
   | { ok: false; code: "preflight_failed"; errors: string[]; warnings: string[] }
-  | { ok: false; code: "instantiate_error"; message: string; envCleanupErrors?: string[] }
+  | { ok: false; code: "instantiate_error"; message: string }
   | { ok: false; code: "cycle_error"; message: string }
   | { ok: false; code: "service_boot_failed"; message: string }
   | { ok: false; code: "compose_project_conflict"; message: string }
@@ -1385,8 +1387,6 @@ export interface AttentionNode {
 }
 
 export interface InstantiateResult {
-  /** Value-free failures taking one-off launch env out of session state. */
-  envCleanupErrors?: string[];
   rigId: string;
   specName: string;
   specVersion: string;
