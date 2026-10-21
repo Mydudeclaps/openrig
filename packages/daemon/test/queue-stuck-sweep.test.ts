@@ -1407,6 +1407,7 @@ describe("#514 unclaimed sweep and a pending ask posted to a registered human", 
       .run(new Date(Date.now() - 5 * 60_000).toISOString(), episode.transitionId);
     expect(repo.findUndelivered().find((r) => r.qitemId === row.qitemId)?.deliveryOutcome).toBe(outcome);
     const before = repo.getById(row.qitemId)!;
+    const storedBefore = db.prepare("SELECT * FROM queue_items WHERE qitem_id = ?").get(row.qitemId);
     if (shape === "park") expect(before.lastNudgeResult).toBe("claimed");
     await sweepMod().then((mod) => mod.runStuckSweep({ db, queueRepo: repo,
       resolveOrchestrator: () => "advisor@r", unclaimedAgeMinutes: 60, log: () => {}, isRegisteredHost: () => false }));
@@ -1416,7 +1417,7 @@ describe("#514 unclaimed sweep and a pending ask posted to a registered human", 
     expect(finding!.body).toContain(`human notice ${outcome}`);
     expect(finding!.body).toContain(shape === "park" ? "human-owner@kernel" : "human-owner@external");
     expect(finding!.body).not.toContain("wake failed");
-    expect(repo.getById(row.qitemId)).toEqual(before); // reporting never re-parks or retries the wake
+    expect(db.prepare("SELECT * FROM queue_items WHERE qitem_id = ?").get(row.qitemId)).toEqual(storedBefore);
     await sweep();
     expect(await findingsFor(row.qitemId)).toHaveLength(1);
     receipt(row.qitemId, "posted");
