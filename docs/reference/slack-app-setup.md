@@ -307,6 +307,9 @@ decisions, and posts its own replies.
   it with `host.name`).
 - **The hub's own channels** are handled on the hub, as before. A channel can be relayed to one
   machine only, and never the hub's own default channel.
+  Events that match neither forwarding nor an existing thread or channel route fall back locally
+  to `inboundDestination`; `rig slack status` names that policy and destination. These lists do not
+  establish exclusive channel ownership: two machines can still both handle a channel.
 - **Missed messages:** each machine recovers the channels it owns: the hub its own channels, and
   every other machine its default channel and its channel map's (the hub never recovers a channel
   it relays). See [Reconnect recovery and status](#reconnect-recovery-and-status).
