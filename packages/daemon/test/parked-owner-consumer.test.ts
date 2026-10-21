@@ -190,7 +190,7 @@ describe("parked-owner-consumer policy — unit contract (OPR.0.5.6.24)", () => 
     expect(result.action).toBe("send");
     if (result.action !== "send") return;
     expect(result.message).toContain("wake-or-escalate");
-    expect(result.message).toContain("This check may remind you again while current work remains parked");
+    expect(result.message).toContain("After a recorded delivery to this occupant");
     expect(result.message).not.toContain("won't wake you again");
     expect(result.message).toContain("for a claimed in-progress row, the wake-or-escalate ladder also retries a failed wake");
     expect(result.message).not.toContain("handles a wake that failed to deliver");
@@ -513,7 +513,7 @@ describe("parked-owner-consumer — R2 integration hard checks (OPR.0.5.6.24)", 
     };
   }
 
-  it("at the real seam: an unchanged current park remains eligible after a prior attempt and resume", async () => {
+  it("at the real seam: a recorded delivery waits for change, then the owner note re-arms it", async () => {
     const qitemId = await mkClaimedRow();
     const items = [{ qitemId, state: "in-progress", summary: null }];
     const history: WatchdogHistoryEntry[] = [];
@@ -530,7 +530,8 @@ describe("parked-owner-consumer — R2 integration hard checks (OPR.0.5.6.24)", 
     expect((await run(true)).action).toBe("send");
     await run(false); // the delivery lands on the row, and the seat's turn closes the episode "(seat resumed)"
     const repeat = await run(true);
-    expect(repeat.action).toBe("send");
+    expect(repeat.action).toBe("skip");
+    expect(JSON.stringify(repeat.notes)).toContain("unchanged-since-last-wake");
     repo.update({ qitemId, actorSession: SEAT, transitionNote: "progress" }); // ordered by transition id, not its millisecond
     expect((await run(true)).action).toBe("send");
   });

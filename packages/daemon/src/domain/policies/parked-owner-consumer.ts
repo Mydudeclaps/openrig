@@ -8,7 +8,7 @@
 // retries/escalation; the watchdog engine owns scheduling.
 //
 // Row notes describe attempts and preserve positive prompt-refusal recovery. They
-// never decide whether a current reminder may input. The engine owns cadence;
+// do not veto an undelivered reminder. Recorded success and actual prompt holds still apply. The engine owns cadence;
 // recent attempts only rotate eligible owners, so one unchanged owner cannot starve the rest.
 //
 // One-oracle law (mini-req 2): the parked verdict, held-health classification,
@@ -86,7 +86,7 @@ export const RESERVE_PREFIX = "parked-owner wake reserved:";
 export const CLOSE_PREFIX = "parked-owner episode closed:";
 export const REFUSED_PREFIX = "parked-owner wake delivery refused:";
 export const FAILED_PREFIX = "parked-owner wake delivery failed:";
-/** Legacy delivered notes remain readable but never suppress a current reminder. */
+/** A recorded ok wake to the same known occupant waits for a change to its obligations. */
 export const DELIVERED_PREFIX = "parked-owner wake delivered:";
 export const NUDGE_FAIL_PREFIX = "failed: parked-owner wake delivery";
 export const PARKED_OWNER_COMPACTION_PENDING = "[managed-compaction-pending] Parked-owner reminder deferred until the existing post-compact stages clear.";
@@ -116,6 +116,25 @@ function keyOfNote(note: string): string | null {
     return m ? m[1]!.trim() : null;
   }
   return null;
+}
+
+/** Whether what the seat holds changed after `since`: on any of the rows, a transition by the seat
+ *  itself or a state change. Notes by other seats and system bookkeeping (this consumer's own
+ *  reserve and close notes) aren't changes. A transition the view can't attribute counts as one, and
+ *  so does a state with no baseline state to compare it with. */
+function changedSince(listTransitions: (qitemId: string) => RowTransitionView[], ids: string[], seat: string, since: { ts: string; transitionId?: number }): boolean {
+  for (const id of ids) {
+    let prior: string | undefined;
+    for (const t of listTransitions(id)) {
+      // The reserve and everything before it set the baseline state. Transition order decides when the
+      // view carries it, since two transitions can share a millisecond.
+      const atOrBefore = since.transitionId !== undefined && t.transitionId !== undefined ? t.transitionId <= since.transitionId : t.ts <= since.ts;
+      if (atOrBefore) { prior = t.state; continue; }
+      if (t.actorSession === undefined || t.state === undefined || t.actorSession === seat) return true;
+      if (prior !== t.state) return true;
+    }
+  }
+  return false;
 }
 
 /** Every open reserve key on a row, across all obligation-set hashes — the set a
@@ -165,7 +184,13 @@ export function makeParkedOwnerConsumerPolicy(deps: ParkedOwnerConsumerDeps): Po
         const primary = typeof n["primaryRow"] === "string" ? n["primaryRow"] : null;
         if (!key || !primary || latestRows.has(primary)) continue;
         latestRows.add(primary);
-        if (e.deliveryStatus === "ok") continue;
+        if (e.deliveryStatus === "ok") {
+          try {
+            if (!deps.rows.listTransitions(primary).some(t => t.transitionNote === `${DELIVERED_PREFIX} ${key}`))
+              deps.rows.appendNote(primary, `${DELIVERED_PREFIX} ${key}`);
+          } catch { /* absent bookkeeping cannot prove a delivered reminder */ }
+          continue;
+        }
         const reason = String(n["deliveryReason"] ?? e.deliveryStatus);
         // The parked policy retries after its own stage clears; the generic wake ladder must not interrupt restore.
         if (reason.includes(PARKED_OWNER_COMPACTION_PENDING)) continue;
@@ -185,12 +210,12 @@ export function makeParkedOwnerConsumerPolicy(deps: ParkedOwnerConsumerDeps): Po
 
       const closures: string[] = [];
       const skipped: Array<{ seat: string; why: string }> = [];
-      const lastAttempt = (session: string) => {
-        const index = recent.findIndex(e => e.outcome === "sent" && e.deliveryTargetSession === session);
-        return index < 0 ? recent.length : index;
-      };
-      const seats = [...d.seats].sort((a, b) => lastAttempt(b.sessionName) - lastAttempt(a.sessionName)
-        || a.sessionName.localeCompare(b.sessionName));
+      // Rotate after the latest physical delivery selection, including retained input. A single
+      // cursor from history cannot lose an owner's turn just because a bounded window filled.
+      const lastTarget = recent.find(e => e.deliveryStatus && e.deliveryTargetSession)?.deliveryTargetSession;
+      const ordered = [...d.seats].sort((a, b) => a.sessionName.localeCompare(b.sessionName));
+      const next = ordered.findIndex(seat => seat.sessionName === lastTarget) + 1;
+      const seats = [...ordered.slice(next), ...ordered.slice(0, next)];
 
       for (const seat of seats) {
         if (seat.parked === "indeterminate") {
@@ -253,6 +278,27 @@ export function makeParkedOwnerConsumerPolicy(deps: ParkedOwnerConsumerDeps): Po
         const idsHash = idsHashOf(namedIds);
         const primaryRow = namedIds[0]!;
         const generation = deps.occupantGeneration?.(seat.sessionName) ?? null;
+        let transitions: RowTransitionView[] = [];
+        try { transitions = deps.rows.listTransitions(primaryRow); } catch { /* missing history cannot prove success or refusal */ }
+        const matches = (key: string) => key.startsWith(`${seat.sessionName}|${idsHash}#`);
+        const generationOf = (t: RowTransitionView | undefined) => t?.transitionNote?.match(/; generation ([^;\s]+);/)?.[1] ?? null;
+        const reserve = [...transitions].reverse().find(t => t.transitionNote?.startsWith(RESERVE_PREFIX) && matches(keyOfNote(t.transitionNote) ?? ""));
+        const refused = openPromptRefusals(transitions).some(({ key }) => {
+          const prior = generationOf(transitions.find(t => t.transitionNote?.startsWith(RESERVE_PREFIX) && keyOfNote(t.transitionNote) === key));
+          return matches(key) && (generation === null || prior === null || prior === generation);
+        });
+        if (refused) {
+          skipped.push({ seat: seat.sessionName, why: "destination-refused-interactive-prompt" });
+          continue;
+        }
+        const lastKey = reserve && keyOfNote(reserve.transitionNote!);
+        const delivered = reserve && generation !== null && generationOf(reserve) === generation
+          && transitions.some(t => t.transitionNote === `${DELIVERED_PREFIX} ${lastKey}`)
+          && !transitions.some(t => (t.transitionNote?.startsWith(FAILED_PREFIX) || t.transitionNote?.startsWith(REFUSED_PREFIX)) && keyOfNote(t.transitionNote!) === lastKey);
+        if (delivered && !changedSince(deps.rows.listTransitions, namedIds, seat.sessionName, reserve)) {
+          skipped.push({ seat: seat.sessionName, why: "unchanged-since-last-wake" });
+          continue;
+        }
         const episodeKey = `${seat.sessionName}|${idsHash}#${randomUUID()}`;
         let noted = false;
         try {
@@ -268,7 +314,7 @@ export function makeParkedOwnerConsumerPolicy(deps: ParkedOwnerConsumerDeps): Po
           `You are parked (arbitrated: idle at prompt) while holding ${namedIds.length} open ` +
           `obligation${namedIds.length === 1 ? "" : "s"}: ${namedIds.join(", ")}. ` +
           `Resume the work or update each row honestly (close, park-with-wake, or hand off). ` +
-          `This check may remind you again while current work remains parked; delivery may repeat after an interrupted attempt. ` +
+          `After a recorded delivery to this occupant, this check waits for your rows to change. An interrupted or unconfirmed attempt may repeat; interactive-prompt recovery stays with the wake-or-escalate ladder. ` +
           `Held rows stay listed in rig view show held; for a claimed in-progress row, the wake-or-escalate ladder also retries a failed wake.`;
         return {
           action: "send",

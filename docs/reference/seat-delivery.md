@@ -158,8 +158,9 @@ The transport still protects approval/question prompts, human drafts and recipie
 current parked-row eligibility and stop checks still apply. This changes message retries, not the idempotence of
 structured continuity actions such as creating a cutover baton.
 
-The parked-owner supervisor also retries current obligations despite an earlier attempt note or delivery record.
-It rotates among eligible owners using recent attempt history, while retaining real prompt-refusal recovery.
+The parked-owner supervisor also retries current obligations despite an earlier failed, unknown or unrecorded attempt.
+A recorded success to the same known occupant waits for a change in its obligations. Rotation includes retained attempts,
+so a held input cannot starve another owner. Interactive prompts stay with the existing prompt-refusal recovery.
 Its own reminders wait while managed compaction owes the turn boundary, restore or audit, including a fresh check
 at the paste and Enter boundary. A stage that begins after paste leaves an honest partial-input result; OpenRig
 does not erase or replay that text. Peer messages and unrelated reminder policies keep their existing behavior.
