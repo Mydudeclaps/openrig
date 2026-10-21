@@ -80,11 +80,11 @@ export class DraftAwareDelivery {
       });
     } catch (error) {
       const guardError = error instanceof DeliveryGuardError;
-      const effect = error as { inputWritten?: boolean; inputAttempted?: boolean; enterAttempted?: boolean };
+      const effect = (error ?? {}) as { inputWritten?: boolean; inputAttempted?: boolean; enterAttempted?: boolean };
       inputWritten ||= effect.inputWritten === true;
       const inputPhase = inputWritten ? "written" : effect.inputAttempted ? "attempted" : guardError ? "not_reached" : undefined;
       const detail = inputWritten
-        ? `Text was written to '${session}' but ${effect.enterAttempted ? "the Enter outcome is unconfirmed" : "Enter was not sent"}: ${(error as Error).message}`
+        ? `Text was written to '${session}' but ${effect.enterAttempted ? "the Enter outcome is unconfirmed" : "Enter was not sent"}: ${error instanceof Error ? error.message : String(error)}`
         : guardError ? error.message : "The delivery attempt ended without a reliable write result. Repeating the request may duplicate input.";
       result = { ok: false, sessionName: session, outcome: "failed", inputPhase,
         ...(inputWritten || inputPhase === "not_reached" ? { sent: inputWritten } : {}),
