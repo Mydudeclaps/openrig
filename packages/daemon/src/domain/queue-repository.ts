@@ -1383,6 +1383,13 @@ export class QueueRepository {
     if (!this.outbox || !this.transport) return tally;
     const BATCH = 200;
     const horizon = (this.db.prepare("SELECT COALESCE(MAX(rowid),0) AS id FROM outbox_entries").get() as { id: number }).id;
+    // Retire never-attempted obsolete notifications without materializing historical intents.
+    tally.failed += this.db.prepare(`UPDATE outbox_entries AS o SET delivery_state = 'failed',
+      tags = json_insert(COALESCE(tags, '[]'), '$[#]', 'queue:wake-superseded')
+      WHERE delivery_state = 'pending' AND rowid <= ? AND substr(outbox_id, 1, ?) = ?
+        AND NOT EXISTS (SELECT 1 FROM queue_items q WHERE q.qitem_id = o.audit_pointer
+          AND q.state = 'pending' AND q.destination_session = o.destination_session)`)
+      .run(horizon, WAKE_INTENT_PREFIX.length, WAKE_INTENT_PREFIX).changes;
     const attempted = new Set<string>();
     let cursor = 0;
     for (;;) {
