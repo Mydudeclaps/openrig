@@ -124,6 +124,16 @@ describe("current draft-aware delivery through the real transport", () => {
     expect(result.warning).toMatch(/bookkeeping|receipt/i);
   });
 
+  it("protects a human draft without claiming custody when its record cannot be saved", async () => {
+    const f = fixture(); await f.enable(); f.bodies.a = "unfinished human input";
+    f.db.exec("CREATE TRIGGER fail_held_receipt BEFORE UPDATE OF guard_delivery ON outbox_entries BEGIN SELECT RAISE(ABORT, 'fixture receipt unavailable'); END;");
+    const result = await f.send("unsaved-held", "incoming message");
+    expect(result).toMatchObject({ ok: false, sent: false, outcome: "failed", reason: "draft_input_busy" });
+    expect(result.warning).toMatch(/bookkeeping/);
+    expect(result.outboxIds).toBeUndefined();
+    expect(f.bodies.a).toBe("unfinished human input"); expect(f.writes).toEqual([]);
+  });
+
   it("completes a successful send without requested verification without claiming render proof", async () => {
     const f = fixture(); await f.enable();
     const result = await f.send("no-verify", "message", { verify: false });
