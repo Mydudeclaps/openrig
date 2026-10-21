@@ -83,6 +83,17 @@ tagged `v0.6.14`. The changes since 0.6.13:
   ([#1565](https://github.com/mvschwarz/openrig/pull/1565)).
 - Drop three finished items from the roadmap
   ([#1560](https://github.com/mvschwarz/openrig/pull/1560)).
+- Name the missing-pane repair where people meet the problem. The send refusal
+  "Managed pane identity unavailable or changed; no input written." now names
+  `rig reconcile-session <seat> --repair-missing-pane --no-launch`. The
+  compaction refusal for a protected seat with no recorded pane says both fixes
+  refuse while typing protection is on, how to turn it off and back on with the
+  person's agreement, and that plain reconcile adopts into a new session row.
+  The as-built CLI reference and the `openrig-user` skill list
+  `--repair-missing-pane`, `rig config --help` lists
+  `transport.local_user_guard`, and `rig ask --help`'s exit codes cover the
+  `--wake` refusals. Text and help only
+  ([#1594](https://github.com/mvschwarz/openrig/pull/1594)).
 
 ### Dependency and install-script changes
 
@@ -96,14 +107,12 @@ tagged `v0.6.14`. The changes since 0.6.13:
   context, and check that refocus showed the current work
   ([#1562](https://github.com/mvschwarz/openrig/pull/1562),
   [#1563](https://github.com/mvschwarz/openrig/pull/1563)).
-- The pane repair refuses while typing protection is on, and the compaction
-  refusal for a protected seat with no recorded pane still suggests plain `rig
-  reconcile-session --no-launch`, which adopts the seat into a new session; for
-  a running launched seat whose pane was never recorded, use `rig
-  reconcile-session <seat> --repair-missing-pane --no-launch` instead, with
-  protection off only if the person agrees. A delivery held from before the
-  repair can still refuse
-  ([#1564](https://github.com/mvschwarz/openrig/pull/1564)).
+- The pane repair refuses while typing protection is on; the send and
+  compaction refusals say so, and protection goes off only if the person
+  agrees. It covers a running launched seat whose pane was never recorded, and
+  refuses others. A delivery held from before the repair can still refuse
+  ([#1564](https://github.com/mvschwarz/openrig/pull/1564),
+  [#1594](https://github.com/mvschwarz/openrig/pull/1594)).
 - `rig context get reference/quickstart.md` doesn't resolve: the page ships
   under the package's `docs/reference/` but isn't in the reference context pack
   ([#1565](https://github.com/mvschwarz/openrig/pull/1565)).
