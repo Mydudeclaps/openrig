@@ -1112,12 +1112,8 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       inboundRouting,
       recovery: recovery?.status() ?? { state: "unavailable", reason: "inbound-not-configured" },
       inbound: inboundHandle?.status() ?? { state: inboundReady ? "not-started" : "not-configured", generation: 0, reconnects: 0 },
-      // The retry pass's durable custody, counted from both dead-letter files:
-      // inbound events plus click answers. Records, not distinct messages — a
-      // message that left more than one record is counted once per record, which
-      // is why the field is named for records. Present iff inbound is configured;
-      // an unreadable file reports state "unknown" with a reason instead of a
-      // false zero.
+      // Durable inbound custody across event, click and relay files, even when inert.
+      // Count records, not distinct messages; unreadable storage is null/unknown.
       ...deadLetterBacklogFields(dead, deadActions, deadForwards),
       // A machine with no connection of its own can take events a hub relays here; whether a hub does is
       // the hub's configuration, so this says only that it can, and how many have arrived.

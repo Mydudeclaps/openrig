@@ -204,7 +204,7 @@ export function slackCommand(deps: SlackDeps = {}): Command {
         log(`slack-connector configuration checks (config: ${cfg.enabled ? "enabled" : "disabled"}; delivery runs IN-DAEMON — S10 subsystem)`);
         for (const r of readiness) log(`  ${r.ok ? "✓" : "✗"} ${r.label}: ${r.detail}`);
         log(`Daemon: ${observation.state}${observation.reason ? ` (${observation.reason})` : ""}`);
-        const connector = observation.connector as { configurationDigest?: string;
+        const connector = observation.connector as { configurationDigest?: string; inboundReady?: boolean; outboundReady?: boolean;
           inboundRouting?: { fallback: string; destination: string };
           deadLetterBacklog?: number | null; deadLetterBacklogState?: string; deadLetterBacklogReason?: string;
           inbound?: InboundDeliveryStatus & { state?: string; generation?: number; lastEventAt?: string };
@@ -248,7 +248,7 @@ export function slackCommand(deps: SlackDeps = {}): Command {
               // not be read, so the line must not read as an empty backlog.
               log(`  Inbound dead-letter backlog: unknown (could not read the ${scope} dead-letter records: ${connector.deadLetterBacklogReason ?? "unreadable"})`);
             } else {
-              log(`  Inbound dead-letter backlog: ${connector.deadLetterBacklog ?? 0} retained record(s)${connector.inbound?.state === "not-configured" ? "; retry paused" : " awaiting retry"} (${scope}; durable, kept across restarts)`);
+              log(`  Inbound dead-letter backlog: ${connector.deadLetterBacklog ?? 0} retained record(s)${connector.inboundReady === false && connector.outboundReady === false ? "; retry paused" : " awaiting retry"} (${scope}; durable, kept across restarts)`);
             }
           }
           if (connector.configurationDigest) log(`  Observed configuration digest: ${connector.configurationDigest} (local configuration above)`);
