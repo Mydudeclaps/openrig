@@ -494,6 +494,17 @@ describe("parked-owner-consumer policy — unit contract (OPR.0.5.6.24)", () => 
     expect(src).not.toMatch(/setInterval|setTimeout|new\s+\w*Scheduler|cron/i);
   });
 
+  it("parked owner rotation tries every current owner again without receipt-based starvation", async () => {
+    const store = new RowStore(); const history: WatchdogHistoryEntry[] = [];
+    for (const target of [SEAT, SEAT2, SEAT, SEAT2]) {
+      const result = await makeParkedOwnerConsumerPolicy(makeDeps([parkedSeat(), parkedSeat({ sessionName: SEAT2 })], store, history)).evaluate(makeJob());
+      expect(result.action).toBe("send");
+      if (result.action !== "send") return;
+      expect(result.target.session).toBe(target);
+      history.unshift({ ...sentHistory({ episodeKey: String(result.notes?.["episodeKey"]), primaryRow: String(result.notes?.["primaryRow"]) }), deliveryTargetSession: target });
+    }
+  });
+
   it("floor: a clean scan returns the quiet no-parked-owner skip and writes nothing", async () => {
     const store = new RowStore();
     const result = await makeParkedOwnerConsumerPolicy(makeDeps([parkedSeat({ parked: false })], store)).evaluate(makeJob());
