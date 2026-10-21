@@ -14,7 +14,7 @@ import type Database from "better-sqlite3";
  */
 export const WAKE_INTENT_PREFIX = "wake-intent-";
 
-// Outcomes describe the last attempt. Wake recovery can claim failed/indeterminate
+// Outcomes retain unresolved uncertainty. Wake recovery can claim failed/indeterminate
 // work again; it never steals a live sending claim or interprets unknown as unsent.
 // Startup marks abandoned sending claims indeterminate before the bounded recovery pass.
 export const OUTBOX_DELIVERY_STATES = ["pending", "sending", "delivered", "failed", "indeterminate", "retained", "retired"] as const;
