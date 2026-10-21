@@ -32,7 +32,7 @@ import path from "node:path";
 import { realRuntimesRequested, writeRuntimeStubs } from "./stub-runtimes.js";
 
 export function fixtureUserHomeEnv(userHome: string, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
-  return { HOME: userHome };
+  return { HOME: userHome, ...(platform === "win32" ? { USERPROFILE: userHome } : {}) };
 }
 
 // Scrub inherited instance selectors before product modules capture their defaults.
