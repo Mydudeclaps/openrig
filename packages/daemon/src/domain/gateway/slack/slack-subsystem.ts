@@ -239,21 +239,22 @@ function stateDir(home: string): string {
  *  retry pass owns exactly these records. When any file cannot be read the count is
  *  `null`, not 0: a number (or a zero) beside an unknown state still reads as "nothing
  *  stuck" to a consumer that only looks at the count, so the state and the reason tell
- *  the truth and the number says it does not know. Absent when inbound is not configured
- *  (no stores), keeping an inert connector silent. */
+ *  the truth and the number says it does not know. An inert connector still reports
+ *  retained relays, but stays silent when there are none. */
 function deadLetterBacklogFields(
   dead: DeadLetterStore<SlackEvent> | undefined,
   deadActions: DeadLetterStore<SlackBlockActions> | undefined,
   deadForwards?: DeadLetterStore<unknown>,
 ): Record<string, unknown> {
-  if (!dead || !deadActions) return {};
   let records = 0;
   let reason: string | undefined;
-  for (const store of [dead, deadActions, ...(deadForwards ? [deadForwards] : [])] as DeadLetterStore<unknown>[]) {
+  for (const store of [dead, deadActions, deadForwards]) {
+    if (!store) continue;
     const result = store.readResult();
     if (result.ok) records += result.entries.length;
     else reason = reason ?? result.reason;
   }
+  if (!dead && !deadActions && records === 0 && reason === undefined) return {};
   if (reason !== undefined) return { deadLetterBacklog: null, deadLetterBacklogState: "unknown", deadLetterBacklogReason: reason };
   return { deadLetterBacklog: records, deadLetterBacklogState: "ok" };
 }
@@ -271,6 +272,9 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
 
   const outboundReady = cfg.enabled && bot !== null && cfg.channel !== null;
   const inboundReady = cfg.enabled && app !== null;
+  // Retained relays belong to their original host, even after forwarding configuration changes.
+  const deadForwards = new DeadLetterStore<{ host: string; envelope: SocketEnvelope }>(
+    path.join(stateDir(opts.home), "slack-inbound-forward-deadletter.jsonl"));
 
   if (!outboundReady && !inboundReady) {
     const missing = !cfg.enabled ? "connector disabled (rig slack enable)" : !bot ? "SLACK_BOT_TOKEN unresolved" : "channel unconfigured";
@@ -281,7 +285,7 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       deliver: async () => ({ ok: false, class: "slack-not-configured", detail: missing }),
       log,
     });
-    return { ...inert, status: () => ({ platform: "slack", configurationDigest: channelStateDigest(cfg), outboundReady: false, inboundReady: false, recovery: { state: "unavailable", reason: "inbound-not-configured" }, inbound: { state: "not-configured" } }) };
+    return { ...inert, status: () => ({ platform: "slack", configurationDigest: channelStateDigest(cfg), outboundReady: false, inboundReady: false, recovery: { state: "unavailable", reason: "inbound-not-configured" }, inbound: { state: "not-configured" }, ...deadLetterBacklogFields(undefined, undefined, deadForwards) }) };
   }
 
   const registrySurface: RegistrySurface = opts.registry ?? { loadHumanRegistry, resolveSlackHandle };
@@ -947,12 +951,9 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
   // Both files are the retry pass's custody: the event dead-letter
   // (`slack-inbound-deadletter.jsonl`) and the click dead-letter
   // (`slack-inbound-action-deadletter.jsonl`), which retryActionDeadLetters owns.
-  // An inert wire omits the fields rather than inventing a count for a connector
-  // that is not running.
+  // Retained relays are also visible when the wire is inert; its local stores stay unwired.
   let dead: DeadLetterStore<SlackEvent> | undefined;
   let deadActions: DeadLetterStore<SlackBlockActions> | undefined;
-  // The hub's relays that failed, kept with their host (forwarding.ts).
-  let deadForwards: DeadLetterStore<{ host: string; envelope: SocketEnvelope }> | undefined;
   // A machine of a shared app receives its channels' events from the hub (routes/gateway.ts).
   let acceptForwarded: ((env: SocketEnvelope) => Promise<{ status: string; reason?: string }>) | undefined;
   let relayedReceived = 0; // envelopes a hub relayed here since this wire was built
@@ -1037,14 +1038,11 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
           lookupBot: (botId: string) => lookupBotApp(bot, botId, opts.fetchImpl),
         },
       } : {}),
-      ...(forwarding ? {
-        forward: {
-          hostFor: (channel: string | undefined) => cfg.forwardChannels!.find((f) => f.channel === channel)?.host ?? null,
-          send: makeEnvelopeForwarder({ fetchImpl: opts.fetchImpl as typeof fetch | undefined, loadRegistry: opts.loadHostRegistry }),
-        },
-        forwardDeadLetter: (deadForwards = new DeadLetterStore<{ host: string; envelope: SocketEnvelope }>(
-          path.join(stateDir(opts.home), "slack-inbound-forward-deadletter.jsonl"))),
-      } : {}),
+      forward: {
+        hostFor: (channel: string | undefined) => forwarding ? cfg.forwardChannels!.find((f) => f.channel === channel)?.host ?? null : null,
+        send: makeEnvelopeForwarder({ fetchImpl: opts.fetchImpl as typeof fetch | undefined, loadRegistry: opts.loadHostRegistry }),
+      },
+      forwardDeadLetter: deadForwards,
       log,
     }));
     if (cfg.botInbox && (!bot || botInboxProblems(cfg).length > 0)) {

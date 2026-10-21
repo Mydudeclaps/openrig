@@ -280,6 +280,7 @@ decisions, and posts its own replies.
   and the machine checks it when it has `OPENRIG_AUTH_BEARER_TOKEN` set.
 - **What the receiving machine trusts:** a relayed event comes from whoever holds that machine's
   daemon token (or, with no token set, anything that can reach its daemon), not from Slack directly, and nothing checks Slack's own signature on it. The
+  credential issued by `rig host pair` is the daemon API bearer, not a relay-only credential; it also authorizes the other daemon write APIs that use that bearer. The
   machine still looks up the sender in its own list of people, but on a relayed event that's no
   proof a person just typed or clicked it in Slack: it trusts the caller for where the event came
   from.
@@ -297,6 +298,11 @@ decisions, and posts its own replies.
   that's down costs one attempt per retry: its other relays wait for the next one. A relay the
   machine keeps refusing is kept and retried with no limit, because dropping it would lose a
   person's message.
+- **Changing forwarding entries is not a drain or cancellation:** relays already retained keep
+  their original host and remain visible in `rig slack status`, even after the last entry is
+  removed. An enabled connector retries them; disabling it pauses retry without deleting them.
+  Let relays finish before removing a forward entry. A zero dead-letter backlog alone does not
+  prove they have drained: it does not count relay HTTP requests still in flight.
 - **Who answered:** every post ends `from <seat> on <machine>`, using the machine's host id (set
   it with `host.name`).
 - **The hub's own channels** are handled on the hub, as before. A channel can be relayed to one
