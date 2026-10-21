@@ -1390,14 +1390,14 @@ describe("#514 unclaimed sweep and a pending ask posted to a registered human", 
     ["direct", "never-posted"], ["direct", "transport-failed"],
   ] as const)("#1679 %s %s identifies the human notice and routes its recovery to the asking agent", async (shape, outcome) => {
     const row = shape === "direct" ? await ask() : await repo.create({
-      sourceSession: "asker@r", destinationSession: "worker@r", body: "work", nudge: false,
+      sourceSession: "asker@r", destinationSession: "worker@r", body: "work",
     });
     if (shape === "park") {
       repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
       await repo.update({ qitemId: row.qitemId, actorSession: "worker@r", state: "blocked",
         blockedOn: "human-owner@kernel", summary: "Owner decision", evidenceRef: "rig queue show qitem-fixture" });
     }
-    if (shape === "park") await repo.update({ qitemId: row.qitemId, actorSession: "worker@r",
+    if (shape === "park" && outcome === "transport-failed") await repo.update({ qitemId: row.qitemId, actorSession: "worker@r",
       transitionNote: "wake-attempt: 1 prior agent wake" }); // an old wake ladder cannot hide the human notice
     if (outcome === "transport-failed") receipt(row.qitemId, "transport-failed");
     // Age the notice alone: no unrelated unclaimed/overdue condition is introduced.
