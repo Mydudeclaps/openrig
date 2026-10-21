@@ -1389,6 +1389,7 @@ describe("#514 unclaimed sweep and a pending ask posted to a registered human", 
     ["park", "never-posted"], ["park", "transport-failed"],
     ["direct", "never-posted"], ["direct", "transport-failed"],
   ] as const)("#1679 %s %s identifies the human notice and routes its recovery to the asking agent", async (shape, outcome) => {
+    repo.attachTransport({ send: async () => ({ ok: true, verified: false }) }); // recorded unconfirmed wake becomes claimed on pickup
     const row = shape === "direct" ? await ask() : await repo.create({
       sourceSession: "asker@r", destinationSession: "worker@r", body: "work",
     });
