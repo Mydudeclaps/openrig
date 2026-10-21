@@ -43,9 +43,9 @@ it("does not reclaim a live exception wake started by the current startup sweep"
     daemon = await createDaemon({ dbPath: path, tmuxExec: async () => "", cmuxFactory: async () => { throw Object.assign(new Error("no socket"), { code: "ENOENT" }); } });
     expect(exceptions).toHaveLength(1);
     const id = "wake-intent-" + exceptions[0];
-    expect(daemon.deps.outboxHandler.getById(id)!.deliveryState).toBe("sending");
+    expect(daemon.deps.outboxHandler!.getById(id)!.deliveryState).toBe("sending");
     release(); await completed;
-    await vi.waitFor(() => expect(daemon!.deps.outboxHandler.getById(id)!.deliveryState).toBe("delivered"));
+    await vi.waitFor(() => expect(daemon!.deps.outboxHandler!.getById(id)!.deliveryState).toBe("delivered"));
     expect(exceptions).toHaveLength(1);
   } finally {
     release(); if (exceptions.length) await completed;
