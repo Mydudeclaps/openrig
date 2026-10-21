@@ -53,6 +53,30 @@ describe("workflow boot recovery with durable wake intents", () => {
     },
   );
 
+  it.each(["failed", "indeterminate"] as const)("overdue recovery keeps a prior %s attempt with the durable intent owner", async state => {
+    const db = new Database(":memory:"); databases.push(db); migrate(db, ALL_MIGRATIONS);
+    db.exec("INSERT INTO rigs(id,name) VALUES ('rig','test')");
+    const repo = new QueueRepository(db, new EventBus(db), { validateRig: () => true });
+    const outbox = new OutboxHandler(db); repo.attachOutbox(outbox);
+    const packet = await repo.create({ sourceSession: "lead@test", destinationSession: "worker@test", body: "work", nudge: false });
+    repo.stageWakeIntent(packet.qitemId, "lead@test", "worker@test");
+    const id = WAKE_INTENT_PREFIX + packet.qitemId, frozen = outbox.getById(id)!.body;
+    const send = vi.fn(async (_session: string, _text: string, _opts?: SendOpts) => state === "failed" ? { ok: false, sent: false, error: "unavailable" } : { ok: true, verified: false });
+    repo.attachTransport({ send });
+    await repo.deliverWakeForSuccessor(packet.qitemId, "worker@test", "lead@test");
+    expect(repo.getById(packet.qitemId)!.lastNudgeAttempt).not.toBeNull();
+    expect(outbox.getById(id)!.deliveryState).toBe(state);
+    send.mockReset(); send.mockResolvedValue({ ok: true, verified: true });
+    const instances = new WorkflowInstanceStore(db);
+    instances.create({ workflowName: "recovery", workflowVersion: "1", createdBySession: "lead@test", initialFrontier: [packet.qitemId], currentStepId: "work" });
+    db.prepare("UPDATE queue_items SET ts_created='2000-01-01T00:00:00Z',last_nudge_attempt='2000-01-01T00:00:00Z' WHERE qitem_id=?").run(packet.qitemId);
+    await runWorkflowBootSweep({ instanceStore: instances, queueRepo: repo, watchdogJobsRepo: new WatchdogJobsRepository(db) });
+    await repo.drainPendingWakeIntents();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0]?.[1]).toContain(frozen);
+    expect(outbox.getById(id)!.deliveryState).toBe("delivered");
+  });
+
   it.each([false, true])("recovers legacy packets without an intent (outbox attached: %s), once even when overdue", async (attachOutbox) => {
     const db = new Database(":memory:");
     databases.push(db);

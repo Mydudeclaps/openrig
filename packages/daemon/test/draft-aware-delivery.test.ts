@@ -327,6 +327,43 @@ describe("supported seat and queue integration", () => {
     expect(f.repo.getById(item.qitemId)!.lastNudgeWireResult).toMatch(/^indeterminate:/);
   });
 
+  it("keeps earlier uncertainty when a recovery fails before input", async () => {
+    const f = fixture();
+    const item = await f.repo.create({ sourceSession: "sender@test", destinationSession: "worker@test", body: "work", nudge: false });
+    const id = "wake-intent-" + item.qitemId;
+    f.repo.stageWakeIntent(item.qitemId, "sender@test", "worker@test", null, true);
+    f.db.prepare("UPDATE outbox_entries SET delivery_state='indeterminate' WHERE outbox_id=?").run(id);
+    vi.spyOn(f.tmux, "probeSession").mockResolvedValue({ state: "absent" });
+    expect(await f.repo.drainPendingWakeIntents()).toMatchObject({ indeterminate: 1, failed: 0 });
+    expect(f.writes).toEqual([]);
+    expect(f.outbox.getById(id)!.deliveryState).toBe("indeterminate");
+    expect(f.repo.getById(item.qitemId)!.lastNudgeWireResult).toMatch(/^indeterminate:/);
+  });
+
+  it("does not describe an earlier attempt for a never-attempted pending wake", async () => {
+    const f = fixture();
+    const item = await f.repo.create({ sourceSession: "sender@test", destinationSession: "worker@test", body: "work", nudge: false });
+    f.repo.stageWakeIntent(item.qitemId, "sender@test", "worker@test", null, true);
+    await f.repo.drainPendingWakeIntents();
+    expect(f.submissions).toHaveLength(1);
+    expect(f.submissions[0]).not.toContain("earlier unconfirmed attempt");
+  });
+
+  it("reads current recovery candidates without visiting historical uncertain notifications", async () => {
+    const f = fixture();
+    const old = await f.repo.create({ sourceSession: "sender@test", destinationSession: "worker@test", body: "old work", nudge: false });
+    f.db.prepare("UPDATE queue_items SET state='done' WHERE qitem_id=?").run(old.qitemId);
+    f.db.transaction(() => { for (let i = 0; i < 600; i++) f.outbox.record({ outboxId: `wake-intent-history-${i}`, senderSession: "sender@test", destinationSession: "worker@test", body: "historical", auditPointer: old.qitemId }); })();
+    f.db.exec("UPDATE outbox_entries SET delivery_state='indeterminate' WHERE outbox_id LIKE 'wake-intent-history-%'");
+    const item = await f.repo.create({ sourceSession: "sender@test", destinationSession: "worker@test", body: "current work", nudge: false });
+    f.repo.stageWakeIntent(item.qitemId, "sender@test", "worker@test", null, true);
+    const reads = vi.spyOn(f.outbox, "getById");
+    await f.repo.drainPendingWakeIntents();
+    expect(f.submissions).toHaveLength(1);
+    expect(f.submissions[0]).toContain(item.qitemId);
+    expect(reads.mock.calls.length).toBeLessThan(10);
+  });
+
   it.each(["draft_input_changed", "delivery_indeterminate", "submit_failed", "send_failed"])(
     "keeps a committed wake's %s outcome indeterminate in the queue", async reason => {
       const f = fixture(); await f.enable();
