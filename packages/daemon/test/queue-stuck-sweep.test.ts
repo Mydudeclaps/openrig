@@ -1397,6 +1397,8 @@ describe("#514 unclaimed sweep and a pending ask posted to a registered human", 
       await repo.update({ qitemId: row.qitemId, actorSession: "worker@r", state: "blocked",
         blockedOn: "human-owner@kernel", summary: "Owner decision", evidenceRef: "rig queue show qitem-fixture" });
     }
+    if (shape === "park") await repo.update({ qitemId: row.qitemId, actorSession: "worker@r",
+      transitionNote: "wake-attempt: 1 prior agent wake" }); // an old wake ladder cannot hide the human notice
     if (outcome === "transport-failed") receipt(row.qitemId, "transport-failed");
     // Age the notice alone: no unrelated unclaimed/overdue condition is introduced.
     const episode = repo.transitionLog.latestOwnerNotificationForQitem(row.qitemId)!;
