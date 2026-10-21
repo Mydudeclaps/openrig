@@ -540,7 +540,7 @@ describe("W1 MF4 — the intent freezes its emitting generation/envelope", () =>
 // executable prefix; this pin is what stops such a row being sent as a real wake
 // when it points at nothing.
 describe("W1 — the drain never sends a wake for a nonexistent qitem", () => {
-  it("a wake-intent pointing at a NONEXISTENT qitem is failed, never sent", async () => {
+  it("a wake-intent pointing at a NONEXISTENT qitem is excluded, never sent", async () => {
     const h = makeHarness();
     h.outbox.record({
       outboxId: "wake-intent-ghost",
@@ -552,8 +552,8 @@ describe("W1 — the drain never sends a wake for a nonexistent qitem", () => {
     h.outcome.mode = "verified";
     const tally = await h.repo.drainPendingWakeIntents();
     expect(h.calls).toHaveLength(0); // never sent as a real wake
-    expect(tally.failed).toBe(1);
-    expect(h.outbox.getById("wake-intent-ghost")!.deliveryState).toBe("failed");
+    expect(tally.failed).toBe(0);
+    expect(h.outbox.getById("wake-intent-ghost")!.deliveryState).toBe("pending"); // not visited or relabeled as a failed attempt
     h.db.close();
   });
 });

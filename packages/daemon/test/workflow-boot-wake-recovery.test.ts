@@ -36,10 +36,10 @@ describe("workflow boot recovery with durable wake intents", () => {
       const log: string[] = [];
       const ensureStuckExceptionItem = vi.fn(async () => ({ outcome: "created" as const, qitemId: "exception" }));
 
-      // This is startup.ts's order: workflow sweep, abandoned-claim reconciliation, intent drain.
+      // Startup reconciles prior-process claims before current producers, then drains after the sweep.
+      repo.reconcileAbandonedWakeIntents();
       const result = await runWorkflowBootSweep({ instanceStore: instances, queueRepo: repo,
         watchdogJobsRepo: new WatchdogJobsRepository(db), log: line => log.push(line), ensureStuckExceptionItem });
-      repo.reconcileAbandonedWakeIntents();
       await repo.drainPendingWakeIntents();
 
       const retryable = ["pending", "sending", "indeterminate", "failed"].includes(state);
@@ -53,7 +53,7 @@ describe("workflow boot recovery with durable wake intents", () => {
     },
   );
 
-  it.each(["failed", "indeterminate"] as const)("overdue recovery keeps a prior %s attempt with the durable intent owner", async state => {
+  it.each(["failed", "indeterminate"].flatMap(state => ["pending", "in-progress"].map(packetState => ({ state, packetState }))))("overdue recovery keeps a prior $state attempt with the durable intent owner (packet: $packetState)", async ({ state, packetState }) => {
     const db = new Database(":memory:"); databases.push(db); migrate(db, ALL_MIGRATIONS);
     db.exec("INSERT INTO rigs(id,name) VALUES ('rig','test')");
     const repo = new QueueRepository(db, new EventBus(db), { validateRig: () => true });
@@ -67,14 +67,15 @@ describe("workflow boot recovery with durable wake intents", () => {
     expect(repo.getById(packet.qitemId)!.lastNudgeAttempt).not.toBeNull();
     expect(outbox.getById(id)!.deliveryState).toBe(state);
     send.mockReset(); send.mockResolvedValue({ ok: true, verified: true });
+    if (packetState === "in-progress") repo.claim({ qitemId: packet.qitemId, destinationSession: "worker@test" });
     const instances = new WorkflowInstanceStore(db);
     instances.create({ workflowName: "recovery", workflowVersion: "1", createdBySession: "lead@test", initialFrontier: [packet.qitemId], currentStepId: "work" });
     db.prepare("UPDATE queue_items SET ts_created='2000-01-01T00:00:00Z',last_nudge_attempt='2000-01-01T00:00:00Z' WHERE qitem_id=?").run(packet.qitemId);
     await runWorkflowBootSweep({ instanceStore: instances, queueRepo: repo, watchdogJobsRepo: new WatchdogJobsRepository(db) });
     await repo.drainPendingWakeIntents();
     expect(send).toHaveBeenCalledTimes(1);
-    expect(send.mock.calls[0]?.[1]).toContain(frozen);
-    expect(outbox.getById(id)!.deliveryState).toBe("delivered");
+    if (packetState === "pending") expect(send.mock.calls[0]?.[1]).toContain(frozen);
+    expect(outbox.getById(id)!.deliveryState).toBe(packetState === "pending" ? "delivered" : state);
   });
 
   it.each([false, true])("recovers legacy packets without an intent (outbox attached: %s), once even when overdue", async (attachOutbox) => {

@@ -99,7 +99,9 @@ explicit request and is not consulted to determine its result.
 At startup, the queue recovery pass retries still-current failed or unconfirmed
 wake notifications. It preserves their original envelopes and warns that delivery
 may repeat. Each notification is attempted once per pass, including coalesced
-wakes; a failed attempt cannot spin in that pass. Known deliveries and held or
+wakes; a failed attempt cannot spin in that pass. A no-write failure on a later
+retry does not resolve an earlier unknown delivery. Prior-process claims are
+reconciled before new startup sends can begin. Known deliveries and held or
 retired messages stay untouched. Closed, claimed or reassigned work is not woken,
 and the retry never repeats the queue mutation or a lifecycle action.
 

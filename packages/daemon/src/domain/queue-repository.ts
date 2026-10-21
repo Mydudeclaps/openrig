@@ -1245,7 +1245,7 @@ export class QueueRepository {
       if (alreadyHeld.auditPointer) this.recordNudgeAttempt(alreadyHeld.auditPointer, "retained:typing_guard");
       return "retained";
     }
-    let recovering = attempted !== undefined;
+    let recovering = false;
     const claim = (entry: OutboxEntry): boolean => {
       if (attempted?.has(entry.outboxId) || !this.outbox!.claimForDelivery(entry.outboxId)) return false;
       attempted?.add(entry.outboxId);
@@ -1269,7 +1269,7 @@ export class QueueRepository {
       const candidate = this.outbox!.getById(outboxId);
       if (!candidate || !["pending", "failed", "indeterminate"].includes(candidate.deliveryState) || !actionable(candidate)) return [];
       if (!claim(candidate)) return [];
-      const first = this.outbox!.getById(outboxId)!;
+      const first = candidate; // Keep each member's pre-claim uncertainty.
       const intents = [first];
       const correlation = first.tags?.find(tag => tag.startsWith("queue:return:"));
       if (correlation) {
@@ -1279,7 +1279,7 @@ export class QueueRepository {
           ORDER BY outbox_id`).all(first.destinationSession, WAKE_INTENT_PREFIX.length, WAKE_INTENT_PREFIX, correlation) as Array<{ outbox_id: string }>;
         for (const peer of peers) {
           const entry = this.outbox!.getById(peer.outbox_id)!;
-          if (actionable(entry) && claim(entry)) intents.push(this.outbox!.getById(peer.outbox_id)!);
+          if (actionable(entry) && claim(entry)) intents.push(entry);
         }
       }
       return intents;
@@ -1300,9 +1300,13 @@ export class QueueRepository {
     const outcome = await this.performWakeSend(
       qitemId, intent.destinationSession, intent.senderSession, undefined, recoveryNotice + group.map(entry => entry.body).join("\n"), group.map(entry => entry.outboxId),
     );
-    const finalState = outcome.classified === "verified" ? "delivered" : outcome.classified;
-    for (const member of group) {
-      const intent = member;
+    let reportedState = outcome.classified === "verified" ? "delivered" : outcome.classified;
+    for (const intent of group) {
+      // A no-write retry cannot settle whether an earlier attempt landed.
+      const earlierUnknown = intent.deliveryState === "indeterminate" && outcome.classified === "failed";
+      const finalState = earlierUnknown ? "indeterminate" : outcome.classified === "verified" ? "delivered" : outcome.classified;
+      const nudgeResult = earlierUnknown ? `indeterminate:earlier delivery unconfirmed; retry ${outcome.nudgeResult}` : outcome.nudgeResult;
+      if (earlierUnknown) reportedState = "indeterminate";
       const qitemId = intent.auditPointer!;
       const blockerRef = intent.tags?.includes(AUTO_UNPARK_WAKE_TAG)
         ? intent.tags
@@ -1311,7 +1315,7 @@ export class QueueRepository {
         : undefined;
       const wakeEvent = this.db.transaction(() => {
         // #1278: a coalesced wake is one send, so every row it woke gets that send's reading.
-        this.recordNudgeAttempt(qitemId, outcome.nudgeResult, outcome.inputBox);
+        this.recordNudgeAttempt(qitemId, nudgeResult, outcome.inputBox);
         this.outbox!.finalizeDelivery(intent.outboxId, finalState);
         if (!blockerRef) return null;
 
@@ -1320,7 +1324,7 @@ export class QueueRepository {
           qitemId,
           state: item.state,
           actorSession: "queue@system",
-          transitionNote: `blocker ${blockerRef} wake attempted; delivery=${outcome.nudgeResult}`,
+          transitionNote: `blocker ${blockerRef} wake attempted; delivery=${nudgeResult}`,
         });
         this.wakeRepo.record({
           transitionId: transition.transitionId,
@@ -1328,7 +1332,7 @@ export class QueueRepository {
           phase: "fired",
           kind: "blocker",
           ref: blockerRef,
-          deliveryStatus: outcome.nudgeResult,
+          deliveryStatus: nudgeResult,
         });
         return this.eventBus.persistWithinTransaction({
           type: "queue.updated",
@@ -1343,7 +1347,7 @@ export class QueueRepository {
       })();
       if (wakeEvent) this.eventBus.notifySubscribers(wakeEvent);
     }
-    return finalState;
+    return reportedState;
   }
 
   /** Deliver after the queue transaction commits, never from inside it. The shared
@@ -1382,9 +1386,11 @@ export class QueueRepository {
     const attempted = new Set<string>();
     let cursor = 0;
     for (;;) {
-      const pending = this.db.prepare(`SELECT rowid AS id, outbox_id FROM outbox_entries
-        WHERE rowid > ? AND rowid <= ? AND substr(outbox_id, 1, ?) = ?
-          AND delivery_state IN ('pending','failed','indeterminate') ORDER BY rowid LIMIT ?`)
+      const pending = this.db.prepare(`SELECT o.rowid AS id, o.outbox_id FROM outbox_entries o
+        JOIN queue_items q ON q.qitem_id = o.audit_pointer AND q.state = 'pending'
+          AND q.destination_session = o.destination_session
+        WHERE o.rowid > ? AND o.rowid <= ? AND substr(o.outbox_id, 1, ?) = ?
+          AND o.delivery_state IN ('pending','failed','indeterminate') ORDER BY o.rowid LIMIT ?`)
         .all(cursor, horizon, WAKE_INTENT_PREFIX.length, WAKE_INTENT_PREFIX, BATCH) as Array<{ id: number; outbox_id: string }>;
       if (pending.length === 0) break;
       for (const intent of pending) {
@@ -1432,11 +1438,11 @@ export class QueueRepository {
     this.recordNudgeAttempt(qitemId, outcome.nudgeResult, outcome.inputBox);
   }
 
-  /** The following startup intent drain owns durable wakes; do not make a second
-   * recovery attempt here. Older entry packets still need the legacy nudge path. */
+  /** The following startup intent drain owns durable pending wakes. Legacy packets
+   * and overdue claimed work (not eligible for that drain) still use the nudge path. */
   async recoverLostNudge(qitemId: string, destinationSession: string, sourceSession?: string): Promise<void> {
     const outboxId = `${WAKE_INTENT_PREFIX}${qitemId}`;
-    if (this.outbox?.getById(outboxId)) return;
+    if (this.outbox?.getById(outboxId) && this.getById(qitemId)?.state === "pending") return;
     await this.maybeNudge(qitemId, destinationSession, undefined, sourceSession);
   }
 
