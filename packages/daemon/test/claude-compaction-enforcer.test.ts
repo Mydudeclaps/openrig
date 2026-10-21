@@ -444,7 +444,7 @@ describe("ClaudeCompactionEnforcer", () => {
     send.mockResolvedValueOnce(held);
     expect(await highTick()).toEqual({ triggered: false, reason: "send_failed" });
     expect(send.mock.calls.at(-1)?.[1]).toContain("restoring this Claude session after compaction");
-    expect(send.mock.calls.at(-1)?.[2]).toEqual({ waitForIdleMs: expect.any(Number), readinessFromPaneOnly: true });
+    expect(send.mock.calls.at(-1)?.[2]).toEqual({ waitForIdleMs: expect.any(Number), readinessFromPaneOnly: true, beforeWrite: expect.any(Function) });
     expect(await highTick()).toEqual({ triggered: true });
     expect(send.mock.calls.at(-1)?.[1]).toContain("restoring this Claude session after compaction");
     expect(await highTick()).toEqual({ triggered: true });
@@ -496,7 +496,7 @@ describe("ClaudeCompactionEnforcer", () => {
     expect(send.mock.calls[queuedSends + 2]?.[1]).toContain("Now audit your compaction restore");
     // Without a sample, every stage's send must read the pane: no hook may stand in for it.
     for (let i = 0; i < 3; i++) {
-      expect(send.mock.calls[queuedSends + i]?.[2]).toEqual({ waitForIdleMs: expect.any(Number), readinessFromPaneOnly: true });
+      expect(send.mock.calls[queuedSends + i]?.[2]).toEqual({ waitForIdleMs: expect.any(Number), readinessFromPaneOnly: true, beforeWrite: expect.any(Function) });
     }
 
     expect(enforcer.hasPendingPostCompactStage("claude-seat@rig")).toBe(false);
@@ -507,7 +507,7 @@ describe("ClaudeCompactionEnforcer", () => {
   it("the sampled drain keeps ordinary send readiness", async () => {
     const { enforcer, send, queuedSends } = await queueStageWithGen("gen-uuid-1");
     expect(await belowTick(enforcer)).toEqual({ triggered: true });
-    expect(send.mock.calls[queuedSends]?.[2]).toEqual({ waitForIdleMs: expect.any(Number) });
+    expect(send.mock.calls[queuedSends]?.[2]).toEqual({ waitForIdleMs: expect.any(Number), beforeWrite: expect.any(Function) });
   });
 
   it("the restore prompt tells a seat that did not compact to say so and skip the restore reading", () => {
@@ -1414,7 +1414,7 @@ describe("ClaudeCompactionEnforcer", () => {
         sessionName: SEAT, runtime: "claude-code", usedPercentage: 95,
       })).toEqual({ triggered: true }); // owed turn boundary, not another prep
       expect(send).toHaveBeenCalledTimes(3);
-      expect(send).toHaveBeenLastCalledWith(SEAT, expect.stringContaining("OpenRig post-compaction turn boundary"), { waitForIdleMs: expect.any(Number), readinessFromPaneOnly: true });
+      expect(send).toHaveBeenLastCalledWith(SEAT, expect.stringContaining("OpenRig post-compaction turn boundary"), { waitForIdleMs: expect.any(Number), readinessFromPaneOnly: true, beforeWrite: expect.any(Function) });
       expect(await enforcer.maybeAutoCompact({
         sessionName: SEAT, runtime: "claude-code", usedPercentage: 20, transcriptPath: "/tmp/claude.jsonl",
       })).toEqual({ triggered: true }); // restore
@@ -1489,7 +1489,7 @@ describe("ClaudeCompactionEnforcer", () => {
       expect(enforcer.getManualCompactionState(SEAT)?.stage).toBe("compact-sent"); // busy timeout does NOT advance to restore-sent
       const restoreCall = send.mock.calls.find(isRestore);
       expect(restoreCall, "restore send must be attempted with an idle gate").toBeDefined();
-      expect(restoreCall![2]).toEqual({ waitForIdleMs: expect.any(Number) }); // idle-gated, not a busy-pane fire-and-forget
+      expect(restoreCall![2]).toEqual({ waitForIdleMs: expect.any(Number), beforeWrite: expect.any(Function) }); // idle-gated, not a busy-pane fire-and-forget
       expect(send.mock.calls.some(isAudit)).toBe(false); // audit cannot overtake restore
 
       // Claude goes idle → the SAME restore stage delivers and advances ONCE.
