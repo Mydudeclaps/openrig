@@ -34,7 +34,7 @@ function frame(body: string): ComposerSnapshot {
   const rows = body.split("\n").flatMap(line => {
     const chunks: string[] = []; let row = "";
     for (const char of line) {
-      if (stringWidth(row + char) > 236) { chunks.push(row); row = ""; }
+      if (stringWidth(row + char) > 238) { chunks.push(row); row = ""; }
       row += char;
     }
     return [...chunks, row];
@@ -287,7 +287,7 @@ function compactionFor(f: ReturnType<typeof fixture>) {
 }
 
 describe("current parked-owner reminders", () => {
-  it.each(["reserved", "delivered", "failed", "unconfirmed"])("parked current input survives an old %s episode record", async state => {
+  it.each(["reserved", "failed", "unconfirmed"])("parked current input survives an old %s episode record", async state => {
     const f = fixture();
     const s = await parkedReminder(f);
     // A previous process reserved this exact obligation; the current physical request is new.
@@ -317,8 +317,10 @@ describe("current parked-owner reminders", () => {
     expect(f.submissions).toHaveLength(1);
   });
 
+  describe.each([false, true])("late compaction with draft-aware=%s", draftAware => {
   it.each(["cancel", "invalidate"] as const)("parked compaction beginning during buffer setup prevents input, then retries after %s", async end => {
     const f = fixture();
+    if (draftAware) await f.enable();
     const compact = compactionFor(f);
     const s = await parkedReminder(f);
     f.hooks.stage = compact.submit; // after policy admission, while the real adapter awaits its buffer
@@ -326,6 +328,9 @@ describe("current parked-owner reminders", () => {
     expect(f.pastes).toEqual([]);
     expect(f.submissions).toEqual([]);
     expect(first.delivery?.status).not.toBe("ok");
+    expect(s.history.listForJob(s.job.jobId, 1)[0]!.evaluationNotes?.["deliveryReason"]).toContain("[managed-compaction-pending]");
+    await s.tick();
+    expect(s.repo.getById(s.row.qitemId)?.lastNudgeResult ?? "").not.toMatch(/^failed:/);
     f.hooks.stage = undefined;
     if (end === "cancel") compact.e.cancelPreparation(seat); else compact.e.invalidateOccupant(seat);
     expect(compact.e.hasPendingPostCompactStage(seat)).toBe(false);
@@ -335,6 +340,7 @@ describe("current parked-owner reminders", () => {
 
   it("parked compaction beginning after paste keeps its actual partial-input outcome", async () => {
     const f = fixture();
+    if (draftAware) await f.enable();
     const compact = compactionFor(f); const s = await parkedReminder(f);
     f.hooks.paste = compact.submit;
     const first = await s.tick();
@@ -342,6 +348,11 @@ describe("current parked-owner reminders", () => {
     expect(f.submissions).toEqual([]);
     expect(first.delivery).toMatchObject({ status: "failed", error: expect.stringContaining("Text was written") });
     expect(s.history.listForJob(s.job.jobId, 1)[0]!.evaluationNotes?.["deliveryInputPhase"]).toBe("written");
+    expect(s.history.listForJob(s.job.jobId, 1)[0]!.evaluationNotes?.["deliveryReason"]).toContain("[managed-compaction-pending]");
+    await s.tick();
+    expect(s.repo.getById(s.row.qitemId)?.lastNudgeResult ?? "").not.toMatch(/^failed:/);
+  });
+
   });
 
   it("parked compaction hold is scoped: peer sends and unrelated watchdog policies still input", async () => {

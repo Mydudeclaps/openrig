@@ -11,6 +11,7 @@ import {
   makeRigAnchor,
   RESERVE_PREFIX,
   CLOSE_PREFIX,
+  DELIVERED_PREFIX,
   REFUSED_PREFIX,
   FAILED_PREFIX,
   openPromptRefusals,
@@ -26,6 +27,7 @@ import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { QueueRepository, isBlockerLive } from "../src/domain/queue-repository.js";
 import { EventBus } from "../src/domain/event-bus.js";
+import { WatchdogPolicyEngine } from "../src/domain/watchdog-policy-engine.js";
 import { WatchdogHistoryLog } from "../src/domain/watchdog-history-log.js";
 import { WatchdogJobsRepository } from "../src/domain/watchdog-jobs-repository.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
@@ -218,6 +220,171 @@ describe("parked-owner-consumer policy — unit contract (OPR.0.5.6.24)", () => 
     expect(JSON.stringify(result.notes)).toMatch(/obligation[-_]closed[-_]between[-_]derive[-_]and[-_]wake/);
   });
 
+  describe("a repeat for the same set waits for a change in what the seat holds", () => {
+    // Each sent wake is reported delivered, as the engine records it; the next pass lands that on the row.
+    const harness = () => {
+      const store = new RowStore();
+      const history: WatchdogHistoryEntry[] = [];
+      let generation: string | null = "gen-1";
+      const wake = async (seat = parkedSeat()) => {
+        const result = await makeParkedOwnerConsumerPolicy(makeDeps([seat], store, history, () => generation)).evaluate(makeJob());
+        if (result.action === "send") history.unshift(sentHistory({ episodeKey: String(result.notes?.["episodeKey"]), primaryRow: String(result.notes?.["primaryRow"]) }));
+        return result;
+      };
+      const occupant = (next: string | null) => { generation = next; };
+      return { store, history, wake, occupant, resume: () => wake(parkedSeat({ parked: false })) };
+    };
+    const skippedWhy = (result: { notes?: Record<string, unknown> }) =>
+      ((result.notes?.["skippedSeats"] as Array<{ why: string }> | undefined) ?? []).map((s) => s.why);
+
+    it("an unchanged repeat is skipped: the seat resumed and re-parked with nothing changed", async () => {
+      const { store, wake, resume } = harness();
+      expect((await wake()).action).toBe("send");
+      await resume();
+      expect(store.appended.some((a) => a.note.startsWith(DELIVERED_PREFIX))).toBe(true);
+      const repeat = await wake();
+      expect(repeat.action).toBe("skip");
+      expect(skippedWhy(repeat)).toEqual(["unchanged-since-last-wake"]);
+      expect(store.appended.filter((a) => a.note.startsWith(RESERVE_PREFIX))).toHaveLength(1);
+    });
+
+    it("another seat's note on the row isn't a change", async () => {
+      const { store, wake, resume } = harness();
+      await wake();
+      await resume();
+      store.record(ROW_IDS[1]!, SEAT2, "in-progress", "relay from another seat");
+      expect(skippedWhy(await wake())).toEqual(["unchanged-since-last-wake"]);
+    });
+
+    it("the seat's own note re-arms exactly one wake", async () => {
+      const { store, wake, resume } = harness();
+      await wake();
+      await resume();
+      store.record(ROW_IDS[2]!, SEAT, "in-progress", "progress note");
+      const second = await wake();
+      expect(second.action).toBe("send");
+      expect(String(second.notes?.["episodeKey"])).toContain("#");
+      await resume();
+      expect(skippedWhy(await wake())).toEqual(["unchanged-since-last-wake"]);
+    });
+
+    it("an owner note in the same millisecond as the reserve still re-arms, by transition order", async () => {
+      const { store, wake, resume } = harness();
+      const first = await wake();
+      const primary = String(first.notes?.["primaryRow"]);
+      const reserveTs = store.transitions.get(primary)!.find((t) => t.transitionNote?.startsWith(RESERVE_PREFIX))!.ts;
+      store.record(ROW_IDS[1]!, SEAT, "in-progress", "progress note", reserveTs);
+      await resume();
+      expect((await wake()).action).toBe("send");
+    });
+
+    it("a state change by anyone re-arms one wake", async () => {
+      const { store, wake, resume } = harness();
+      await wake();
+      await resume();
+      store.record(ROW_IDS[0]!, "queue@system", "pending", "auto-unparked");
+      const second = await wake();
+      expect(second.action).toBe("send");
+      expect(String(second.notes?.["episodeKey"])).toContain("#");
+    });
+
+    it("a new obligation set wakes as today", async () => {
+      const { store, wake, resume } = harness();
+      await wake();
+      await resume();
+      const extra = "qitem-d-0a1b2c3d";
+      store.openIds = () => [...ROW_IDS, extra];
+      const grown = parkedSeat({ obligations: { items: [...ROW_IDS, extra].map((qitemId) => ({ qitemId, state: "in-progress", summary: null })), held: [] } });
+      const result = await wake(grown);
+      expect(result.action).toBe("send");
+      expect(String(result.notes?.["episodeKey"])).toContain("#");
+    });
+
+    it("a row handed to a new owner (same set) gets the new owner's first wake", async () => {
+      const { wake, resume } = harness();
+      await wake();
+      await resume(); // the old owner's wake was delivered and its episode closed
+      const handedOver = parkedSeat({ sessionName: SEAT2 });
+      expect((await wake(handedOver)).action).toBe("send");
+    });
+
+    it("a fallback while the old owner's episode is still open gives the new owner its wake", async () => {
+      const { wake } = harness();
+      expect((await wake()).action).toBe("send"); // the old owner stays parked: its episode stays open
+      const handedOver = await wake(parkedSeat({ sessionName: SEAT2 }));
+      expect(handedOver.action).toBe("send");
+      expect(String(handedOver.notes?.["episodeKey"]).startsWith(`${SEAT2}|`)).toBe(true);
+    });
+
+    it("a new occupant at the same seat gets its first wake; the same occupant stays suppressed", async () => {
+      const { wake, resume, occupant } = harness();
+      await wake();
+      await resume();
+      expect(skippedWhy(await wake())).toEqual(["unchanged-since-last-wake"]);
+      occupant("gen-2"); // a handover, fresh launch or restore keeps the session name and writes nothing on the rows
+      await resume();
+      expect((await wake()).action).toBe("send");
+      await resume();
+      expect(skippedWhy(await wake())).toEqual(["unchanged-since-last-wake"]);
+    });
+
+    it("a new occupant isn't held by the previous occupant's open episode", async () => {
+      const { wake, occupant } = harness();
+      await wake();
+      occupant("gen-2");
+      expect((await wake()).action).toBe("send");
+    });
+
+    it("an unknown generation cannot prove the same occupant, so an open attempt does not veto a repeat", async () => {
+      const { store, wake, resume, occupant } = harness();
+      occupant(null);
+      await wake();
+      expect(store.appended.find((a) => a.note.startsWith(RESERVE_PREFIX))?.note).not.toContain("generation");
+      expect((await wake()).action).toBe("send");
+      await resume();
+      expect((await wake()).action).toBe("send");
+      await resume();
+      occupant("gen-1"); // a wake recorded without a generation doesn't count for a known occupant
+      expect((await wake()).action).toBe("send");
+    });
+
+    it("a reserve with no recorded delivery (a stop between reserve and delivery) isn't treated as delivered", async () => {
+      const { history, wake, resume } = harness();
+      await wake();
+      history.length = 0; // the engine never recorded a delivery
+      await resume();
+      expect((await wake()).action).toBe("send");
+    });
+
+    it("a set whose last wake failed or was refused isn't suppressed", async () => {
+      const refusal = `Refused: '${SEAT}' is at an interactive prompt (target_needs_input). No text was sent.`;
+      for (const reason of ["transport timeout after 5000ms", refusal]) {
+        const { history, wake, resume } = harness();
+        const first = await wake();
+        history[0] = sentHistory({ episodeKey: String(first.notes?.["episodeKey"]), primaryRow: String(first.notes?.["primaryRow"]), deliveryStatus: "failed", deliveryReason: reason });
+        await resume();
+        expect((await wake()).action).toBe("send");
+      }
+    });
+
+    it("a view without actor or state can't show a row unchanged, so the repeat is sent", async () => {
+      const { store, wake, resume } = harness();
+      await wake();
+      await resume();
+      store.transitions.get(ROW_IDS[0]!)!.push({ ts: "2026-10-11T23:59:59.000Z", transitionNote: "legacy note" });
+      expect((await wake()).action).toBe("send");
+    });
+
+    it("a state with no baseline state before the reserve counts as a change", async () => {
+      const { store, wake, resume } = harness();
+      store.transitions.set(ROW_IDS[1]!, [{ ts: "2026-10-10T23:59:59.000Z", transitionNote: "created" }]);
+      await wake();
+      await resume();
+      store.record(ROW_IDS[1]!, SEAT2, "pending", "state change by another seat");
+      expect((await wake()).action).toBe("send");
+    });
+  });
+
   it("episode: an obligation-set change during one park earns its own wake (new idsHash)", async () => {
     const store = new RowStore();
     const first = await makeParkedOwnerConsumerPolicy(makeDeps([parkedSeat()], store)).evaluate(makeJob());
@@ -252,7 +419,8 @@ describe("parked-owner-consumer policy — unit contract (OPR.0.5.6.24)", () => 
     // Refused delivery → the refused note; the cell reads from the row thereafter.
     const h1 = [sentHistory({ episodeKey: key, primaryRow: primary, deliveryStatus: "failed", deliveryReason: refusal })];
     const afterRefusal = await makeParkedOwnerConsumerPolicy(makeDeps([parkedSeat()], store, h1)).evaluate(makeJob());
-    expect(afterRefusal.action).toBe("send"); // actual transport still checks the current prompt
+    expect(afterRefusal.action).toBe("skip");
+    expect(JSON.stringify(afterRefusal.notes)).toContain("destination-refused-interactive-prompt");
     expect(openPromptRefusals(store.transitions.get(primary) ?? [])).toMatchObject([{ key, ids: ROW_IDS }]);
     expect(store.appended.some((a) => a.note.startsWith(REFUSED_PREFIX))).toBe(true);
     expect(store.nudges).toHaveLength(0);
@@ -295,7 +463,7 @@ describe("parked-owner-consumer policy — unit contract (OPR.0.5.6.24)", () => 
       expect(result.action).toBe("send");
       if (result.action !== "send") return;
       expect(result.target.session).toBe(target);
-      history.unshift({ ...sentHistory({ episodeKey: String(result.notes?.["episodeKey"]), primaryRow: String(result.notes?.["primaryRow"]) }), deliveryTargetSession: target });
+      history.unshift({ ...sentHistory({ episodeKey: String(result.notes?.["episodeKey"]), primaryRow: String(result.notes?.["primaryRow"]) }), deliveryTargetSession: target, deliveryStatus: "failed" });
     }
   });
 
@@ -459,6 +627,23 @@ describe("parked-owner-consumer — R2 integration hard checks (OPR.0.5.6.24)", 
       .all(qitemId) as Array<{ transition_note: string | null }>;
     const joined = markers.map((m) => m.transition_note ?? "").join("\n");
     expect(joined).toMatch(/escalation-rung:|ladder-exhausted:/);
+  });
+
+  it.each([{ count: 2, retained: true }, { count: 27, retained: false }])("rotation reaches all $count owners with retained=$retained across a bounded history", async ({ count, retained }) => {
+    const names = Array.from({ length: count }, (_, i) => `s${String(i).padStart(2, "0")}@${RIG}`);
+    const seats = await Promise.all(names.map(async sessionName => parkedSeat({ sessionName,
+      obligations: { items: [{ qitemId: await mkClaimedRow(sessionName), state: "in-progress", summary: null }], held: [] } })));
+    const jobs = new WatchdogJobsRepository(db), history = new WatchdogHistoryLog(db);
+    const job = jobs.register({ policy: PARKED_OWNER_POLICY_NAME, targetSession: makeRigAnchor(RIG), intervalSeconds: 120,
+      registeredBySession: SEAT, specYaml: "interval_seconds: 120\n" });
+    const policy = makeParkedOwnerConsumerPolicy({ diagnoseRig: () => ({ seats }), rows: realRows(), history,
+      occupantGeneration: () => null }); // unknown occupant never proves a prior ok reached this occupant
+    const targets: string[] = [];
+    const engine = new WatchdogPolicyEngine({ jobsRepo: jobs, historyLog: history, eventBus: new EventBus(db), additionalPolicies: [policy],
+      deliver: async ({ targetSession }) => { targets.push(targetSession); return retained ? { status: "retained" } : { status: "ok" }; } });
+    for (let i = 0; i < count + 1; i++) await engine.evaluate(jobs.getByIdOrThrow(job.jobId));
+    expect(targets).toEqual([...names, names[0]]);
+    if (retained) expect(history.listForJob(job.jobId, 1)[0]).toMatchObject({ outcome: "skipped", deliveryStatus: "retained" });
   });
 
   it("late-rig hard check (born-armed): createRig arms the supervisor job in the same act, no restart", () => {
