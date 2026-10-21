@@ -96,12 +96,32 @@ function fixture(saved?: Buffer, opts: { runtime?: string; idleHook?: boolean } 
 }
 
 
-describe("single-attempt draft-aware delivery through the real transport", () => {
-  it.each(["ordinary request ", "1. Review the change"])("submits ordinary authored text once: %j", async text => {
+describe("current draft-aware delivery through the real transport", () => {
+  it.each(["ordinary request ", "1. Review the change"])("attempts each ordinary authored request, even with a reused caller ID: %j", async text => {
     const f = fixture(); await f.enable();
     expect(await f.send("ordinary", text)).toMatchObject({ ok: true, sent: true, delivery: { state: "complete" } });
-    expect(await f.send("ordinary", text)).toMatchObject({ delivery: { state: "complete" } });
-    expect(f.submissions).toEqual([text]);
+    expect(await f.send("ordinary", text)).toMatchObject({ ok: true, sent: true });
+    expect(f.submissions).toEqual([text, text]);
+  });
+
+  it("tries a current request after the person's draft clears, without replaying a saved prerequisite", async () => {
+    const f = fixture(); await f.enable(); f.bodies.a = "a person's draft";
+    const oldPrerequisite = vi.fn();
+    expect(await f.send("draft-cleared", "current request", { beforeWrite: oldPrerequisite })).toMatchObject({ outcome: "retained", sent: false });
+    expect(f.submissions).toEqual([]);
+    f.bodies.a = "";
+    expect(await f.send("draft-cleared", "current request")).toMatchObject({ ok: true, sent: true });
+    expect(f.submissions).toEqual(["current request"]);
+    expect(oldPrerequisite).not.toHaveBeenCalled();
+  });
+
+  it("delivers at an ordinary empty prompt when receipt bookkeeping is unavailable", async () => {
+    const f = fixture(); await f.enable();
+    f.db.exec("CREATE TRIGGER fail_delivery_receipt BEFORE UPDATE OF guard_delivery ON outbox_entries BEGIN SELECT RAISE(ABORT, 'fixture receipt unavailable'); END;");
+    const result = await f.send("no-receipt", "arrives despite bookkeeping");
+    expect(f.submissions).toEqual(["arrives despite bookkeeping"]);
+    expect(result).toMatchObject({ ok: true, sent: true });
+    expect(result.warning).toMatch(/bookkeeping|receipt/i);
   });
 
   it("completes a successful send without requested verification without claiming render proof", async () => {
