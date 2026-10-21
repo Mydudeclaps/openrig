@@ -53,13 +53,13 @@ describe("one shared Slack app across two machines", () => {
     stops.push(() => vps.wire?.stop()); vps.wire.startServices?.();
   }
 
-  function wireHub(forwardChannels: SlackConnectorConfig["forwardChannels"] = [{ channel: "C0VPS04", host: "vps04" }, { channel: "C0VPSWS", host: "vps04" }]): void {
+  function wireHub(forwardChannels: SlackConnectorConfig["forwardChannels"] = [{ channel: "C0VPS04", host: "vps04" }, { channel: "C0VPSWS", host: "vps04" }], enabled = true): void {
     hub.wire?.stop();
     sockets = [];
     const secrets = join(hub.home, "fake.env");
     writeFileSync(secrets, "SLACK_BOT_TOKEN=xoxb-EXAMPLE-fake\nSLACK_APP_TOKEN=xapp-EXAMPLE-fake\n");
     saveConfig({
-      ...DEFAULT_CONFIG, enabled: true, channel: "C0BUILD", inboundDestination: "orch-advisor@v-build", secretsEnvFile: secrets,
+      ...DEFAULT_CONFIG, enabled, channel: "C0BUILD", inboundDestination: "orch-advisor@v-build", secretsEnvFile: secrets,
       forwardChannels,
     }, hub.home);
     hub.wire = buildSlackGatewayWire({
@@ -169,14 +169,19 @@ describe("one shared Slack app across two machines", () => {
     expect(inbound(hub)).toEqual([]);
   });
 
-  it.each(["message", "click", "one-entry-left"])("keeps a retained relay visible and retries its original host after removing its mapping (%s)", async (kind) => {
+  it.each(["message", "click", "one-entry-left", "disabled"])("keeps a retained relay visible after removing its mapping, retrying only while enabled (%s)", async (kind) => {
     const envelope: SocketEnvelope = kind === "click"
       ? { envelope_id: "retained-click", type: "interactive", payload: { type: "block_actions", channel: { id: "C0VPS04" }, actions: [] } }
       : { envelope_id: "retained-message", type: "events_api", payload: { event: { type: "message", user: "UADA", text: "retained reply", ts: "970.1", channel: "C0VPS04" } } };
     const store = new DeadLetterStore<{ host: string; envelope: SocketEnvelope }>(join(hub.home, "state/slack-inbound-forward-deadletter.jsonl"));
     store.append({ host: "vps04", envelope }, 1);
-    wireHub(kind === "one-entry-left" ? [{ channel: "C0VPSWS", host: "vps04" }] : []);
+    wireHub(kind === "one-entry-left" ? [{ channel: "C0VPSWS", host: "vps04" }] : [], kind !== "disabled");
     expect(hub.wire!.status()).toMatchObject({ deadLetterBacklog: 1, deadLetterBacklogState: "ok" });
+    if (kind === "disabled") {
+      expect(hub.wire!.status()).toMatchObject({ inboundReady: false, outboundReady: false });
+      expect(store.readAll()).toHaveLength(1);
+      return;
+    }
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     sockets[0]!.onopen?.();
     await vi.waitFor(() => expect(store.readAll()).toEqual([]));
