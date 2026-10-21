@@ -287,7 +287,7 @@ export interface QueueNudgeTransport {
     // measure the wait for a handoff nudge too (the real impl is SessionTransport, which accepts it).
     text: string,
     opts?: { verify?: boolean; stampISO?: string; actorSession?: string; committedOutboxIds?: string[]; deliveryId?: string; auditPointer?: string; queueWake?: boolean }
-  ): Promise<{ ok: boolean; verified?: boolean; sent?: boolean; inputPhase?: "not_reached" | "attempted" | "written"; error?: string; reason?: string; outcome?: string; delivery?: { state: string }; inputBox?: InputBoxEvidence }>;
+  ): Promise<{ ok: boolean; verified?: boolean; sent?: boolean; inputPhase?: "not_reached" | "attempted" | "written"; error?: string; reason?: string; outcome?: string; inputBox?: InputBoxEvidence }>;
 }
 
 /** #1278: the result of one wake attempt — its classification, its recorded result, and the
@@ -1020,7 +1020,7 @@ export class QueueRepository {
     // Input evidence survives receipt removal: an issued paste or uncertain Enter is never an unsent failure.
     const inputUncertain = res.sent === true || res.inputPhase === "attempted" || res.inputPhase === "written"
       || (res.sent !== false && res.inputPhase !== "not_reached" && (res.reason === "delivery_indeterminate" || res.reason === "submit_failed"));
-    if (inputUncertain || res.delivery?.state === "indeterminate" || res.delivery?.state === "sending" || isWakeTimeoutSignal(res.reason) || isWakeTimeoutSignal(res.error)) {
+    if (inputUncertain || isWakeTimeoutSignal(res.reason) || isWakeTimeoutSignal(res.error)) {
       return { classified: "indeterminate", nudgeResult: `indeterminate:${detail}`, ...reading };
     }
     return { classified: "failed", nudgeResult: `failed:${detail}`, ...reading };
