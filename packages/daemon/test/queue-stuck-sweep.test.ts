@@ -1395,7 +1395,7 @@ describe("#514 unclaimed sweep and a pending ask posted to a registered human", 
     if (shape === "park") {
       repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
       await repo.update({ qitemId: row.qitemId, actorSession: "worker@r", state: "blocked",
-        blockedOn: "human-owner@external", summary: "Owner decision", evidenceRef: "rig queue show qitem-fixture" });
+        blockedOn: "human-owner@kernel", summary: "Owner decision", evidenceRef: "rig queue show qitem-fixture" });
     }
     if (outcome === "transport-failed") receipt(row.qitemId, "transport-failed");
     // Age the notice alone: no unrelated unclaimed/overdue condition is introduced.
@@ -1411,7 +1411,7 @@ describe("#514 unclaimed sweep and a pending ask posted to a registered human", 
     expect(finding).toMatchObject({ destinationSession: shape === "park" ? "worker@r" : "asker@r" });
     expect(finding!.body).toContain("undelivered-human-notice");
     expect(finding!.body).toContain(`human notice ${outcome}`);
-    expect(finding!.body).toContain("human-owner@external");
+    expect(finding!.body).toContain(shape === "park" ? "human-owner@kernel" : "human-owner@external");
     expect(finding!.body).not.toContain("wake failed");
     expect(repo.getById(row.qitemId)).toEqual(before); // reporting never re-parks or retries the wake
     await sweep();
