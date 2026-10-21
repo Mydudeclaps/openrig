@@ -2423,7 +2423,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // in a VISIBLE state and is retried on the next start.
     try {
       // BLOCKING 1: reconcile abandoned `sending` claims (a prior crash) FIRST,
-      // then drain committed `pending` intents. Reconcile is a one-time boundary
+      // then attempt current pending/failed/unconfirmed intents. Reconcile is a one-time boundary
       // step, separate from the drain.
       const reconciled = queueRepoInstance.reconcileAbandonedWakeIntents();
       const drained = await queueRepoInstance.drainPendingWakeIntents();

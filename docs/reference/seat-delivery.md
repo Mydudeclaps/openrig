@@ -96,6 +96,13 @@ A held queue wake stays on the existing queue recovery path. Interrupted histori
 writes become indeterminate at startup. That history never suppresses a current
 explicit request and is not consulted to determine its result.
 
+At startup, the queue recovery pass retries still-current failed or unconfirmed
+wake notifications. It preserves their original envelopes and warns that delivery
+may repeat. Each notification is attempted once per pass, including coalesced
+wakes; a failed attempt cannot spin in that pass. Known deliveries and held or
+retired messages stay untouched. Closed, claimed or reassigned work is not woken,
+and the retry never repeats the queue mutation or a lifecycle action.
+
 The existing retention limits apply: 100 records and 8 MiB per seat, with a 1 MiB
 message limit. Hold mode cannot retain another message at capacity. Draft-aware
 input attempts continue with a bookkeeping warning if a record cannot be saved;

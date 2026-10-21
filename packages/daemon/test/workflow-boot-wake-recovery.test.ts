@@ -15,7 +15,7 @@ afterEach(() => { for (const db of databases.splice(0)) db.close(); });
 
 describe("workflow boot recovery with durable wake intents", () => {
   it.each(["pending", "sending", "indeterminate", "delivered", "retained", "failed", "retired"] as const)(
-    "does not bypass a %s wake intent before the startup drain", async (state) => {
+    "leaves a %s wake intent to the one startup drain", async (state) => {
       const db = new Database(":memory:");
       databases.push(db);
       migrate(db, ALL_MIGRATIONS);
@@ -42,13 +42,14 @@ describe("workflow boot recovery with durable wake intents", () => {
       repo.reconcileAbandonedWakeIntents();
       await repo.drainPendingWakeIntents();
 
-      expect(send).toHaveBeenCalledTimes(state === "pending" ? 1 : 0);
+      const retryable = ["pending", "sending", "indeterminate", "failed"].includes(state);
+      expect(send).toHaveBeenCalledTimes(retryable ? 1 : 0);
       expect(result).toMatchObject({ lostNudgeRecoveryAttempts: 1, stuckSurfaced: 1, exceptionItemsCreated: 1 });
       expect(log.at(-1)).toContain("1 lost-nudge recovery attempt(s)");
       expect(log.at(-1)).not.toContain("reissued");
       expect(ensureStuckExceptionItem).toHaveBeenCalledOnce();
-      expect(outbox.getById(id)?.deliveryState).toBe(state === "pending" ? "delivered" : state === "sending" ? "indeterminate" : state);
-      if (state === "pending") expect(send.mock.calls[0]?.[2]).toMatchObject({ committedOutboxIds: [id] });
+      expect(outbox.getById(id)?.deliveryState).toBe(retryable ? "delivered" : state);
+      if (retryable) expect(send.mock.calls[0]?.[2]).toMatchObject({ committedOutboxIds: [id] });
     },
   );
 
