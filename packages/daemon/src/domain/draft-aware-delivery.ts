@@ -12,17 +12,19 @@ export interface GuardedDeliverySummary {
 /** Historical attempts contain outcomes, never executable options or callbacks. */
 interface Receipt { ids: string[]; result?: SendResult }
 type Deliver = (session: string, text: string, opts: SendOpts) => Promise<SendResult>;
+/** Applicability needs the intended queue row and recipient, not a saved delivery receipt. */
+export type QueueWakeFacts = Pick<OutboxEntry, "outboxId" | "auditPointer" | "destinationSession">;
 
 export class DraftAwareDelivery {
   private readonly outbox: OutboxHandler;
   private readonly sends = new Set<Promise<SendResult>>();
-  private wakeApplicable?: (entries: readonly OutboxEntry[]) => boolean;
+  private wakeApplicable?: (entries: readonly QueueWakeFacts[]) => boolean;
 
   constructor(private readonly db: Database.Database, private readonly guard: SeatDeliveryGuard, private readonly deliver: Deliver) {
     this.outbox = new OutboxHandler(db);
   }
 
-  configureWakes(applicable: (entries: readonly OutboxEntry[]) => boolean): void { this.wakeApplicable = applicable; }
+  configureWakes(applicable: (entries: readonly QueueWakeFacts[]) => boolean): void { this.wakeApplicable = applicable; }
 
   /** Read-only history for the held-messages surface. It is not consulted by send. */
   lookup(id: string): GuardedDeliverySummary | null {
@@ -50,7 +52,9 @@ export class DraftAwareDelivery {
     let result: SendResult;
     let inputWritten = false;
     const target = this.guard.target(session);
-    const entries = opts.queueWake ? receipt.ids.map(id => this.outbox.getById(id)!) : [];
+    const entries: QueueWakeFacts[] = !opts.queueWake ? [] : opts.committedOutboxIds
+      ? receipt.ids.map(id => this.outbox.getById(id)!)
+      : [{ outboxId: receipt.ids[0]!, auditPointer: opts.auditPointer ?? null, destinationSession: session }];
     let recorded = false;
     try {
       this.db.transaction(() => {

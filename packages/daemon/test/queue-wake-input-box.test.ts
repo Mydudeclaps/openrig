@@ -212,6 +212,9 @@ describe("a queue wake keeps its input-box reading (#1278)", () => {
   it.each([
     [{ ok: true, verified: true }, "verified"],
     [{ ok: false, error: "Session 'bob@rig' not found" }, "failed:Session 'bob@rig' not found"],
+    [{ ok: false, sent: false, inputPhase: "not_reached", reason: "caller_cancelled" }, "failed:caller_cancelled"],
+    [{ ok: false, reason: "delivery_indeterminate" }, "indeterminate:delivery_indeterminate"],
+    [{ ok: false, reason: "submit_failed" }, "indeterminate:submit_failed"],
     [{ ok: false, reason: "send_failed", inputPhase: "attempted" }, "indeterminate:send_failed"],
     [{ ok: true, verified: false, outcome: "retained", reason: "typing_guard_enabled" }, "retained:typing_guard"],
     [new Error("transport broke"), "failed:transport broke"],

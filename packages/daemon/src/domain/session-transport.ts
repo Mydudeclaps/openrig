@@ -25,8 +25,7 @@ import {
 } from "./composer-prompts.js";
 export { inspectStartupStagedText } from "./startup-submission-evidence.js";
 import { OutboxHandler } from "./outbox-handler.js";
-import { DraftAwareDelivery, type GuardedDeliverySummary } from "./draft-aware-delivery.js";
-import type { OutboxEntry } from "./outbox-handler.js";
+import { DraftAwareDelivery, type GuardedDeliverySummary, type QueueWakeFacts } from "./draft-aware-delivery.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import { claudeResumeRotation, type SessionRegistry } from "./session-registry.js";
@@ -1822,7 +1821,7 @@ export class SessionTransport {
       (session, text, opts) => this.sendUnguarded(session, text, opts));
   }
 
-  configureGuardedWakes(applicable: (entries: readonly OutboxEntry[]) => boolean): void {
+  configureGuardedWakes(applicable: (entries: readonly QueueWakeFacts[]) => boolean): void {
     this.guardedDelivery?.configureWakes(applicable);
   }
 
