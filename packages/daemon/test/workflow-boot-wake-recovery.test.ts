@@ -67,7 +67,10 @@ describe("workflow boot recovery with durable wake intents", () => {
     expect(repo.getById(packet.qitemId)!.lastNudgeAttempt).not.toBeNull();
     expect(outbox.getById(id)!.deliveryState).toBe(state);
     send.mockReset(); send.mockResolvedValue({ ok: true, verified: true });
-    if (packetState === "in-progress") repo.claim({ qitemId: packet.qitemId, destinationSession: "worker@test" });
+    if (packetState === "in-progress") {
+      repo.claim({ qitemId: packet.qitemId, destinationSession: "worker@test" });
+      db.prepare("UPDATE queue_items SET claimed_at='2000-01-01T00:00:00Z',closure_required_at=NULL WHERE qitem_id=?").run(packet.qitemId);
+    }
     const instances = new WorkflowInstanceStore(db);
     instances.create({ workflowName: "recovery", workflowVersion: "1", createdBySession: "lead@test", initialFrontier: [packet.qitemId], currentStepId: "work" });
     db.prepare("UPDATE queue_items SET ts_created='2000-01-01T00:00:00Z',last_nudge_attempt='2000-01-01T00:00:00Z' WHERE qitem_id=?").run(packet.qitemId);
