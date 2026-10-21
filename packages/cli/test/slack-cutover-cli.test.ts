@@ -132,6 +132,16 @@ describe("S10 CLI cutover — config surfaces survive on the daemon-homed module
     await run(slackCommand(deps), ["status"]);
     expect(logs.join("\n")).toContain("IN-DAEMON");
   });
+
+  it("shows the observed local routing fallback and its destination", async () => {
+    const { deps, logs } = makeDeps({ clientFactory: () => ({ get: async <T>() => ({ status: 200,
+      data: { state: "active", connector: { inboundRouting: { fallback: "local", destination: "ops@hub" } } } as T }) }) });
+    await run(slackCommand(deps), ["status"]);
+    expect(logs.join("\n")).toContain("Routing fallback: local to ops@hub (after forwarding, thread and channel routes)");
+    logs.length = 0;
+    await run(slackCommand(deps), ["status", "--json"]);
+    expect(JSON.parse(logs[0]!).observation.connector.inboundRouting).toEqual({ fallback: "local", destination: "ops@hub" });
+  });
 });
 
 

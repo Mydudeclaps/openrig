@@ -154,6 +154,14 @@ describe("one shared Slack app across two machines", () => {
     expect(await answer(hub, "orch-advisor@v-build", row.qitemId, "Seen")).toMatchObject({ channel: "C0BUILD", thread_ts: "730.1" });
   });
 
+  it("reports the local fallback and still routes an unmapped channel to that destination", async () => {
+    expect(hub.wire!.status()).toMatchObject({ inboundRouting: { fallback: "local", destination: "orch-advisor@v-build" } });
+    await say("C0UNMAPPED", "735.1");
+    await vi.waitFor(() => expect(inbound(hub)).toHaveLength(1));
+    expect(inbound(hub)[0]!.destinationSession).toBe("orch-advisor@v-build");
+    expect(inbound(vps)).toEqual([]);
+  });
+
   it("a machine without its own connection reports that it can take relayed events, and how many have arrived", async () => {
     expect(vps.wire!.status()).toMatchObject({ inboundReady: false, relayedInbound: { accepting: true, received: 0 } });
     expect(vps.wire!.status()).not.toHaveProperty("inboundRelayed");
