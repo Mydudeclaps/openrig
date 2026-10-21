@@ -31,7 +31,14 @@ const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
 function frame(body: string): ComposerSnapshot {
-  const rows = body.split("\n");
+  const rows = body.split("\n").flatMap(line => {
+    const chunks: string[] = []; let row = "";
+    for (const char of line) {
+      if (stringWidth(row + char) > 236) { chunks.push(row); row = ""; }
+      row += char;
+    }
+    return [...chunks, row];
+  });
   return { screen: ["Ready", "────────────────────", `❯ ${rows[0]}`, ...rows.slice(1).map(row => `  ${row}`), "────────────────────", "? for shortcuts", ""].join("\n"),
     cursor: { x: 2 + stringWidth(rows.at(-1)!), y: 1 + rows.length, width: 240, height: 60 }, inMode: false };
 }
@@ -334,6 +341,7 @@ describe("current parked-owner reminders", () => {
     expect(f.pastes).toHaveLength(1);
     expect(f.submissions).toEqual([]);
     expect(first.delivery).toMatchObject({ status: "failed", error: expect.stringContaining("Text was written") });
+    expect(s.history.listForJob(s.job.jobId, 1)[0]!.evaluationNotes?.["deliveryInputPhase"]).toBe("written");
   });
 
   it("parked compaction hold is scoped: peer sends and unrelated watchdog policies still input", async () => {
