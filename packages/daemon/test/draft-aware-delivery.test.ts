@@ -294,8 +294,9 @@ describe("supported seat and queue integration", () => {
     expect(reopened.outbox.getById(id)!.deliveryState).toBe(state);
   });
 
-  it.each(["closed", "claimed", "reassigned"])("recovery does not paste an unconfirmed wake for %s work", async state => {
-    const f = fixture(); await f.enable();
+  it.each(["closed", "claimed", "reassigned", "absent-pane", "replacement"].flatMap(state =>
+    [false, true].map(draftAware => ({ state, draftAware }))))("recovery does not paste for $state work (draft-aware: $draftAware)", async ({ state, draftAware }) => {
+    const f = fixture(); if (draftAware) await f.enable();
     const item = await f.repo.create({ sourceSession: "sender@test", destinationSession: "worker@test", body: "queued work", nudge: false });
     f.repo.stageWakeIntent(item.qitemId, "sender@test", "worker@test", null, true);
     const id = "wake-intent-" + item.qitemId;
@@ -303,7 +304,10 @@ describe("supported seat and queue integration", () => {
     if (state === "closed") f.db.prepare("UPDATE queue_items SET state='done' WHERE qitem_id=?").run(item.qitemId);
     if (state === "claimed") f.repo.claim({ qitemId: item.qitemId, destinationSession: "worker@test" });
     if (state === "reassigned") f.db.prepare("UPDATE queue_items SET destination_session='sibling@test' WHERE qitem_id=?").run(item.qitemId);
+    if (state === "absent-pane") f.db.prepare("UPDATE sessions SET status='exited' WHERE node_id='a'").run();
+    if (state === "replacement") f.db.exec("INSERT INTO occupant_tenures(id,node_id,generation_ordinal,generation_uuid,kind) VALUES ('next-a','a',2,'replacement-a','fresh')");
     const reopened = fixture(f.db.serialize());
+    if (state === "absent-pane") vi.mocked(reopened.tmux.probeSession).mockResolvedValue({ state: "absent" });
     reopened.repo.reconcileAbandonedWakeIntents();
     await reopened.repo.drainPendingWakeIntents();
     expect(reopened.writes).toEqual([]);
