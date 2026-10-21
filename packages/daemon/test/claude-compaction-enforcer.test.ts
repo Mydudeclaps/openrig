@@ -237,7 +237,7 @@ describe("ClaudeCompactionEnforcer", () => {
     expect(send).toHaveBeenLastCalledWith(
       "claude-seat@rig",
       expect.stringContaining("OpenRig post-compaction turn boundary"),
-      { waitForIdleMs: expect.any(Number) },
+      { waitForIdleMs: expect.any(Number), beforeWrite: expect.any(Function) },
     );
 
     const belowRestore = await enforcer.maybeAutoCompact({
@@ -250,7 +250,7 @@ describe("ClaudeCompactionEnforcer", () => {
     expect(send).toHaveBeenLastCalledWith(
       "claude-seat@rig",
       expect.stringContaining(`${TEST_HOME}/compaction/restore-pending/claude-seat@rig.json`),
-      { waitForIdleMs: expect.any(Number) },
+      { waitForIdleMs: expect.any(Number), beforeWrite: expect.any(Function) },
     );
     expect(send.mock.calls[3]![1]).toContain("/tmp/claude.jsonl");
     expect(send.mock.calls[3]![1]).toContain("Restoration is the current task");
@@ -266,7 +266,7 @@ describe("ClaudeCompactionEnforcer", () => {
     expect(send).toHaveBeenLastCalledWith(
       "claude-seat@rig",
       expect.stringContaining("Now audit your compaction restore"),
-      { waitForIdleMs: expect.any(Number) },
+      { waitForIdleMs: expect.any(Number), beforeWrite: expect.any(Function) },
     );
 
     now += 61_000;
@@ -1134,17 +1134,17 @@ describe("ClaudeCompactionEnforcer", () => {
       expect(await enforcer.maybeAutoCompact({
         sessionName: SEAT, runtime: "claude-code", usedPercentage: 20, transcriptPath: "/tmp/claude.jsonl",
       })).toEqual({ triggered: true });
-      expect(send).toHaveBeenLastCalledWith(SEAT, expect.stringContaining("OpenRig post-compaction turn boundary"), { waitForIdleMs: expect.any(Number) });
+      expect(send).toHaveBeenLastCalledWith(SEAT, expect.stringContaining("OpenRig post-compaction turn boundary"), { waitForIdleMs: expect.any(Number), beforeWrite: expect.any(Function) });
 
       expect(await enforcer.maybeAutoCompact({
         sessionName: SEAT, runtime: "claude-code", usedPercentage: 20, transcriptPath: "/tmp/claude.jsonl",
       })).toEqual({ triggered: true });
-      expect(send).toHaveBeenLastCalledWith(SEAT, expect.stringContaining("Please respond to this normal user message now"), { waitForIdleMs: expect.any(Number) });
+      expect(send).toHaveBeenLastCalledWith(SEAT, expect.stringContaining("Please respond to this normal user message now"), { waitForIdleMs: expect.any(Number), beforeWrite: expect.any(Function) });
 
       expect(await enforcer.maybeAutoCompact({
         sessionName: SEAT, runtime: "claude-code", usedPercentage: 20,
       })).toEqual({ triggered: true });
-      expect(send).toHaveBeenLastCalledWith(SEAT, expect.stringContaining("Now audit your compaction restore"), { waitForIdleMs: expect.any(Number) });
+      expect(send).toHaveBeenLastCalledWith(SEAT, expect.stringContaining("Now audit your compaction restore"), { waitForIdleMs: expect.any(Number), beforeWrite: expect.any(Function) });
 
       expect(send).toHaveBeenCalledTimes(5);
       expect(enforcer.getManualCompactionState(SEAT)?.stage).toBe("audit-sent");
@@ -1263,14 +1263,14 @@ describe("ClaudeCompactionEnforcer", () => {
       expect(await enforcer.maybeAutoCompact({
         sessionName: SEAT, runtime: "claude-code", usedPercentage: 20, transcriptPath: "/tmp/claude.jsonl",
       })).toEqual({ triggered: true });
-      expect(send).toHaveBeenLastCalledWith(SEAT, expect.stringContaining("OpenRig post-compaction turn boundary"), { waitForIdleMs: expect.any(Number) });
+      expect(send).toHaveBeenLastCalledWith(SEAT, expect.stringContaining("OpenRig post-compaction turn boundary"), { waitForIdleMs: expect.any(Number), beforeWrite: expect.any(Function) });
       expect(await enforcer.maybeAutoCompact({
         sessionName: SEAT, runtime: "claude-code", usedPercentage: 20, transcriptPath: "/tmp/claude.jsonl",
       })).toEqual({ triggered: true });
       expect(await enforcer.maybeAutoCompact({
         sessionName: SEAT, runtime: "claude-code", usedPercentage: 20,
       })).toEqual({ triggered: true });
-      expect(send).toHaveBeenLastCalledWith(SEAT, expect.stringContaining("Now audit your compaction restore"), { waitForIdleMs: expect.any(Number) });
+      expect(send).toHaveBeenLastCalledWith(SEAT, expect.stringContaining("Now audit your compaction restore"), { waitForIdleMs: expect.any(Number), beforeWrite: expect.any(Function) });
     });
 
     it("GHOST-STAGE (a) PM-pin: an AUTOMATION-initiated manual trigger is NOT drain-exempt — a disabled tick drains nothing (no laundering bypass)", async () => {
@@ -1421,7 +1421,7 @@ describe("ClaudeCompactionEnforcer", () => {
       expect(await enforcer.maybeAutoCompact({
         sessionName: SEAT, runtime: "claude-code", usedPercentage: 20,
       })).toEqual({ triggered: true }); // audit
-      expect(send).toHaveBeenLastCalledWith(SEAT, expect.stringContaining("Now audit your compaction restore"), { waitForIdleMs: expect.any(Number) });
+      expect(send).toHaveBeenLastCalledWith(SEAT, expect.stringContaining("Now audit your compaction restore"), { waitForIdleMs: expect.any(Number), beforeWrite: expect.any(Function) });
       expect(enforcer.getManualCompactionState(SEAT)?.stage).toBe("audit-sent");
       expect(send).toHaveBeenCalledTimes(5);
     });
