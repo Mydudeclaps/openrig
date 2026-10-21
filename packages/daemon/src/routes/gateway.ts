@@ -255,7 +255,7 @@ export function gatewayRoutes(opts: {
         run: async () => {
           let value = { seeded: 0, onlineStatus: `slack connector already ${enabled ? "enabled" : "disabled"}; no change` };
           if (cfg.enabled === enabled) {
-            if (enabled) value.onlineStatus += ". This call did not reload configuration or tokens. To reload, run rig slack disable --reason <reason>, then rig slack enable; environment token overrides still take precedence.";
+            if (enabled) value.onlineStatus += ". This call did not reload configuration or tokens. To reload, run rig daemon stop, then rig daemon start; environment token overrides still take precedence.";
             return { value, after: state(), effect: "no-op" };
           }
           if (enabled) {

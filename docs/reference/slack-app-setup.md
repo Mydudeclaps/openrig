@@ -307,7 +307,7 @@ decisions, and posts its own replies.
   it with `host.name`).
 - **The hub's own channels** are handled on the hub, as before. A channel can be relayed to one
   machine only, and never the hub's own default channel.
-  Events that match neither forwarding nor an existing thread or channel route fall back locally
+  Messages that match neither forwarding nor an existing thread or channel route fall back locally
   to `inboundDestination`; `rig slack status` names that policy and destination. These lists do not
   establish exclusive channel ownership: two machines can still both handle a channel.
 - **Missed messages:** each machine recovers the channels it owns: the hub its own channels, and
@@ -381,8 +381,9 @@ channel, a thread line (tracked, scanned, waiting and why any are backing off or
 retry time and accepted/dead-lettered recovery counts since the connector last
 started, including threads that have since left the window (they reset when it is enabled or disabled, and when the daemon restarts).
 It also reports the durable dead-letter backlog: the retained records for inbound messages,
-reactions and click answers that await retry, counted from both dead-letter files so the number
-survives a restart, and shown as unknown with a reason (and no count) when a file cannot be read.
+reactions and click answers that await retry, including retained relays, counted across all three
+dead-letter files so the number survives a restart. Retry is paused while the connector is disabled.
+If a file cannot be read, status shows unknown with a reason and no count.
 Human-readable coverage and pending bounds use ISO timestamps; JSON keeps Slack timestamps.
 The status read calls no Slack API and starts no scan. If the daemon cannot be
 observed, local configuration remains visible and live state is unknown. A
