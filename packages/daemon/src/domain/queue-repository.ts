@@ -1300,7 +1300,7 @@ export class QueueRepository {
     const outcome = await this.performWakeSend(
       qitemId, intent.destinationSession, intent.senderSession, undefined, recoveryNotice + group.map(entry => entry.body).join("\n"), group.map(entry => entry.outboxId),
     );
-    let reportedState = outcome.classified === "verified" ? "delivered" : outcome.classified;
+    let reportedState: "delivered" | "indeterminate" | "failed" | "retained" = outcome.classified === "verified" ? "delivered" : outcome.classified;
     for (const intent of group) {
       // A no-write retry cannot settle whether an earlier attempt landed.
       const earlierUnknown = intent.deliveryState === "indeterminate" && outcome.classified === "failed";
