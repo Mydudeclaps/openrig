@@ -188,7 +188,7 @@ describe("watchdog reminders reach the recipient despite earlier delivery record
     const f = fixture();
     await f.enable();
     const first = scheduled(f, { withoutPreview: true });
-    const a = await first.park("A's wait", "hand the head to the planner");
+    const a = await first.park("A's wait", "continuation: hand the head to the planner");
     first.due(a.jobId);
     let reached!: () => void;
     const pasting = new Promise<void>((done) => { reached = done; });
