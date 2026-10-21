@@ -288,7 +288,7 @@ function compactionFor(f: ReturnType<typeof fixture>) {
 
 describe("current parked-owner reminders", () => {
   it.each(["reserved", "delivered", "failed", "unconfirmed"])("parked current input survives an old %s episode record", async state => {
-    const f = fixture(); await f.enable();
+    const f = fixture();
     const s = await parkedReminder(f);
     // A previous process reserved this exact obligation; the current physical request is new.
     const prior = await s.policy.evaluate({ target: { session: makeRigAnchor("test") }, jobId: s.job.jobId } as never);
@@ -303,7 +303,7 @@ describe("current parked-owner reminders", () => {
   });
 
   it.each(["false", "throw"] as const)("parked current input does not require a pre-delivery note: %s", async failure => {
-    const f = fixture(); await f.enable();
+    const f = fixture();
     const s = await parkedReminder(f, failure);
     expect((await s.tick()).delivery).toMatchObject({ status: "ok" });
     expect(f.submissions).toHaveLength(1);
@@ -311,14 +311,14 @@ describe("current parked-owner reminders", () => {
   });
 
   it("parked current input survives unavailable watchdog telemetry", async () => {
-    const f = fixture(); await f.enable(); const s = await parkedReminder(f);
+    const f = fixture(); const s = await parkedReminder(f);
     vi.spyOn(s.history, "listForJob").mockImplementation(() => { throw new Error("telemetry read unavailable"); });
     expect((await s.tick()).delivery).toMatchObject({ status: "ok" });
     expect(f.submissions).toHaveLength(1);
   });
 
   it.each(["cancel", "invalidate"] as const)("parked compaction beginning during buffer setup prevents input, then retries after %s", async end => {
-    const f = fixture(); await f.enable();
+    const f = fixture();
     const compact = compactionFor(f);
     const s = await parkedReminder(f);
     f.hooks.stage = compact.submit; // after policy admission, while the real adapter awaits its buffer
@@ -334,7 +334,7 @@ describe("current parked-owner reminders", () => {
   });
 
   it("parked compaction beginning after paste keeps its actual partial-input outcome", async () => {
-    const f = fixture(); await f.enable();
+    const f = fixture();
     const compact = compactionFor(f); const s = await parkedReminder(f);
     f.hooks.paste = compact.submit;
     const first = await s.tick();
@@ -345,7 +345,7 @@ describe("current parked-owner reminders", () => {
   });
 
   it("parked compaction hold is scoped: peer sends and unrelated watchdog policies still input", async () => {
-    const f = fixture(); await f.enable();
+    const f = fixture();
     const compact = compactionFor(f); await compact.submit();
     expect(await f.transport.send(seat, "Peer context")).toMatchObject({ ok: true });
     expect(await f.deliver({ targetSession: seat, message: "Unrelated reminder" }, lone("other", "occ"))).toMatchObject({ status: "ok" });

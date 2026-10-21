@@ -91,7 +91,7 @@ async function fixture() {
   };
 }
 
-it("defers the parked row from submission through boundary/restore/audit without reserving its wake, then wakes it once", async () => {
+it("defers the parked row from submission through boundary/restore/audit without reserving its wake, then leaves each current pass eligible", async () => {
   const f = await fixture();
   await f.compact();
   for (const stage of ["compacting", "compacted", "restoring"]) {
@@ -111,8 +111,8 @@ it("defers the parked row from submission through boundary/restore/audit without
   expect(f.deliveries[0]).toMatchObject({ targetSession: seat });
   expect(f.deliveries[0]!.message).toContain(f.qitem);
   expect(f.reserveNotes()).toHaveLength(1);
-  expect((await f.tick()).outcome.action).toBe("skip");
-  expect(f.deliveries).toHaveLength(1);
+  expect((await f.tick()).outcome.action).toBe("send");
+  expect(f.deliveries).toHaveLength(2);
 });
 
 for (const end of ["cancel", "invalidate"] as const) {
