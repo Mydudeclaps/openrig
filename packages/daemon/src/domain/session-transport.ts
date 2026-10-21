@@ -2923,7 +2923,7 @@ export class SessionTransport {
         sessionName,
         reason: policyRefusal ? textResult.code : "send_failed",
         outcome: "failed",
-        ...(policyRefusal ? { inputPhase: "not_reached" as const } : { inputPhase: "attempted" as const }),
+        ...(policyRefusal ? (textResult.code === "managed_compaction_pending" ? { inputPhase: "not_reached" as const } : {}) : { inputPhase: "attempted" as const }),
         error: `Failed to send text to '${sessionName}': ${textResult.message}`,
         ...(waitMode || policyRefusal ? { sent: false, ...waitEvidence } : {}),
       });
