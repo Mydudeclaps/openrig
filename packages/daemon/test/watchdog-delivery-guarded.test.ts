@@ -3,6 +3,7 @@ import Database from "better-sqlite3";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { queueRecoveryOwnsWake } from "../src/domain/queue-wake-ladder.js";
 import { ClaudeCompactionEnforcer } from "../src/domain/claude-compaction-enforcer.js";
 import { makeParkedOwnerConsumerPolicy, makeRigAnchor, PARKED_OWNER_POLICY_NAME } from "../src/domain/policies/parked-owner-consumer.js";
 import stringWidth from "string-width";
@@ -331,6 +332,8 @@ describe("current parked-owner reminders", () => {
     expect(s.history.listForJob(s.job.jobId, 1)[0]!.evaluationNotes?.["deliveryReason"]).toContain("[managed-compaction-pending]");
     await s.tick();
     expect(s.repo.getById(s.row.qitemId)?.lastNudgeResult ?? "").not.toMatch(/^failed:/);
+    expect(queueRecoveryOwnsWake(f.db, s.repo.getById(s.row.qitemId))).toBe(false);
+    expect(s.repo.listTransitions(s.row.qitemId).some(t => t.transitionNote?.startsWith("parked-owner wake delivery failed:"))).toBe(false);
     f.hooks.stage = undefined;
     if (end === "cancel") compact.e.cancelPreparation(seat); else compact.e.invalidateOccupant(seat);
     expect(compact.e.hasPendingPostCompactStage(seat)).toBe(false);
@@ -351,6 +354,8 @@ describe("current parked-owner reminders", () => {
     expect(s.history.listForJob(s.job.jobId, 1)[0]!.evaluationNotes?.["deliveryReason"]).toContain("[managed-compaction-pending]");
     await s.tick();
     expect(s.repo.getById(s.row.qitemId)?.lastNudgeResult ?? "").not.toMatch(/^failed:/);
+    expect(queueRecoveryOwnsWake(f.db, s.repo.getById(s.row.qitemId))).toBe(false);
+    expect(s.repo.listTransitions(s.row.qitemId).some(t => t.transitionNote?.startsWith("parked-owner wake delivery failed:"))).toBe(false);
   });
 
   });

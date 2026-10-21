@@ -8,8 +8,8 @@
 // retries/escalation; the watchdog engine owns scheduling.
 //
 // Row notes describe attempts and preserve positive prompt-refusal recovery. They
-// do not veto an undelivered reminder. Recorded success and actual prompt holds still apply. The engine owns cadence;
-// recent attempts only rotate eligible owners, so one unchanged owner cannot starve the rest.
+// do not veto an undelivered reminder. Recorded success and actual prompt holds
+// still apply. The engine owns cadence; attempts rotate eligible owners.
 //
 // One-oracle law (mini-req 2): the parked verdict, held-health classification,
 // indeterminate arm, and obligation join all come from diagnoseRigParked — this
@@ -44,7 +44,7 @@ export interface RowTransitionView {
 export interface ParkedOwnerConsumerDeps {
   /** The shipped rig-scoped diagnosis (diagnoseRigParked), adapter-constructed. */
   diagnoseRig: (rigName: string) => { seats: ParkedSeatDiagnosisView[] } | null;
-  /** Bounded attempt history for owner rotation and positive refusal/failure reporting, never delivery eligibility. */
+  /** Bounded outcomes for rotation and best-effort reporting; missing history cannot veto input. */
   history: {
     listForJob: (jobId: string, limit: number) => WatchdogHistoryEntry[];
     countForJob: (jobId: string) => number;
