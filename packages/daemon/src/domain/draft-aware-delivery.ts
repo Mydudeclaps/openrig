@@ -88,6 +88,10 @@ export class DraftAwareDelivery {
     const noWrite = !result.ok && !inputWritten && preInputRefusal;
     if (noWrite) result = { ...result, ok: true, sent: false, verified: false, outcome: "retained",
       warning: "Held, not delivered. Retry the current request when the input is free; no saved callback or message is replayed automatically." };
+    else if (!inputWritten && result.sent === false && result.inputPhase !== "not_reached") {
+      // A wait-path failure can follow a dispatched native write. Only a positive pre-input result proves no write.
+      const { sent: _sent, ...uncertain } = result; result = uncertain;
+    }
     if (opts.deliveryId && !opts.committedOutboxIds) result = { ...result,
       warning: [result.warning, "Delivery IDs do not deduplicate requests; this is a new input attempt."].filter(Boolean).join(" ") };
     const state = noWrite ? "retained" : result.sent === false ? "failed" : result.ok && (result.verified || !opts.verify) ? "delivered" : "indeterminate";
