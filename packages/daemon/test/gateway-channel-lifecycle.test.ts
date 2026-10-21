@@ -116,7 +116,7 @@ describe("human channel lifecycle at the daemon door", () => {
     saveConfig({ ...loadConfig(f.home), enabled: true }, f.home);
     const response = await f.post("enable");
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ onlineStatus: expect.stringContaining("did not reload configuration or tokens") });
+    expect(await response.json()).toMatchObject({ onlineStatus: expect.stringContaining("To reload, run rig daemon stop, then rig daemon start") });
     expect(f.receipts().at(-1)).toMatchObject({ effect: "no-op" });
     expect(f.restart).not.toHaveBeenCalled();
     expect((await f.post("disable", { reason: "offline maintenance" })).status).toBe(200);
