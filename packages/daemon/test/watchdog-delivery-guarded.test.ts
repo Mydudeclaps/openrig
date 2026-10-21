@@ -11,7 +11,7 @@ import { RigRepository } from "../src/domain/rig-repository.js";
 import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { SessionTransport } from "../src/domain/session-transport.js";
-import { makeWatchdogDeliver, occurrenceAttempted, priorDigestAttempt, watchdogDeliveryId } from "../src/domain/watchdog-delivery.js";
+import { makeWatchdogDeliver } from "../src/domain/watchdog-delivery.js";
 import { EventBus } from "../src/domain/event-bus.js";
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import { WatchdogJobsRepository } from "../src/domain/watchdog-jobs-repository.js";
@@ -66,7 +66,7 @@ function fixture(saved?: Buffer) {
     agentActivityStore: { getLatestForNode: () => ({ state: "idle", reason: "fixture idle hook", evidenceSource: "runtime_hook", sampledAt: new Date(at).toISOString(), evidence: null }) } as never });
   transport.guardedDelivery!.recover();
   const outbox = new OutboxHandler(db);
-  const deliver = makeWatchdogDeliver({ sessionTransport: transport, outbox, db });
+  const deliver = makeWatchdogDeliver({ sessionTransport: transport });
   cleanup.push(async () => { await transport.guardedDelivery!.stop(); db.close(); });
   return { db, outbox, deliver, transport, submissions, hooks, setInput: (text: string) => { body = text; }, enable: () => guard.set("a", { mode: "draft-aware" }, "human@test", "keep draft") };
 }
@@ -86,8 +86,7 @@ function scheduled(f: ReturnType<typeof fixture>, { withoutPreview = false } = {
     resolvePreDeliveryTerminalReason: ({ jobId }) => repo.resolveWatchdogPreDeliveryTerminalReason(jobId),
     onWakeAttempt: ({ jobId, deliveryStatus }) => repo.recordWatchdogWakeAttempt(jobId, deliveryStatus),
     ...(withoutPreview ? {} : { resolveDigestEntry: ({ jobId, message }: { jobId: string; message: string }) => repo.parkReminderDigestEntry(jobId, message) }),
-    priorDigestAttempt: (occurrence) => priorDigestAttempt(f.outbox, occurrence),
-    occurrenceAttempted: (occurrence) => occurrenceAttempted(f.outbox, occurrence) });
+  });
   const scheduler = new WatchdogScheduler({ jobsRepo: jobs, policyEngine: engine });
   const park = async (summary: string, transitionNote = "parked") => {
     const row = await repo.create({ sourceSession: "orch@test", destinationSession: seat, body: summary, summary, nudge: false } as never) as unknown as { qitemId: string };
@@ -141,7 +140,7 @@ describe("watchdog reminders reach the recipient despite earlier delivery record
   it.each(["sending", "indeterminate", "delivered", "failed"] as const)("delivers the current reminder despite an old %s digest record", async (state) => {
     const f = fixture();
     await f.enable();
-    const id = watchdogDeliveryId("occ-a");
+    const id = "guard-watchdog-occ-a";
     f.outbox.record({ outboxId: id, senderSession: "watchdog@system", destinationSession: seat,
       body: "old body", tags: ["watchdog:digest"] });
     f.db.prepare("UPDATE outbox_entries SET delivery_state = ? WHERE outbox_id = ?").run(state, id);
