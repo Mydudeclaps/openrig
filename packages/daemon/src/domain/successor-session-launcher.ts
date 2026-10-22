@@ -228,18 +228,35 @@ export class SuccessorSessionLauncher {
     //    money-proof). The swap: set remain-on-exit so the pane survives the exit → graceful SIGTERM
     //    ("exits in place"; also protects the provider session state the successor's resume depends on) →
     //    bounded-timeout SIGKILL fallback (pinned degraded path) → respawn-pane (no -k) on the dead pane.
-    const terminated = await this.terminateRetiree(pane.id);
-    if (!terminated.ok) {
-      return { ok: false, code: "retiree_not_terminated", step: "create_successor", message: terminated.message, replacementStarted: false };
-    }
-    input.onReplacementStarted?.();
     // KI-14: the respawn command must be EXPLICIT. `respawn-pane` without a command re-runs the
     // pane's creation (or last-respawn) command — the default shell only for createSession panes.
     // Adopted/hand-recovered panes carry a full harness invocation there (`codex … resume
     // <old-token>`), which is exactly how the 2026-08-22 wave's "fresh" successors booted 14-day-old
     // contexts. An explicit shell also resets the pane's respawn default, self-healing the pane.
     const blankShell = (await this.tmuxAdapter.getDefaultShell()) ?? "/bin/sh";
-    const respawned = await this.tmuxAdapter.respawnPane(pane.id, blankShell, { cwd, env });
+    // #306: write the successor's private environment file before stopping the retiree, so a full or
+    // unwritable temporary directory leaves the working retiree running.
+    const staged = await this.tmuxAdapter.stageRespawnPane(pane.id, blankShell, { cwd, env });
+    if (!staged.ok) {
+      return {
+        ok: false,
+        code: staged.code,
+        step: "create_successor",
+        replacementStarted: false,
+        message: `Could not prepare the successor's environment for pane "${pane.id}" of "${departingSession}"; the running agent was left in place: ${staged.message}`,
+      };
+    }
+    let respawned: Awaited<ReturnType<TmuxAdapter["respawnPane"]>>;
+    try {
+      const terminated = await this.terminateRetiree(pane.id);
+      if (!terminated.ok) {
+        return { ok: false, code: "retiree_not_terminated", step: "create_successor", message: terminated.message, replacementStarted: false };
+      }
+      input.onReplacementStarted?.();
+      respawned = await this.tmuxAdapter.respawnPane(pane.id, blankShell, { cwd, env, staged: staged.staged });
+    } finally {
+      await staged.staged.discard();
+    }
     if (!respawned.ok) {
       return {
         ok: false,

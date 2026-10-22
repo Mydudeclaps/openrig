@@ -8,6 +8,9 @@ import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import type { TmuxOptionDefaultsApplier } from "../src/domain/tmux-option-defaults.js";
 import type { SettingsStore } from "../src/domain/user-settings/settings-store.js";
 
+// The successor stages its respawn before stopping the retiree; these tests' respawns need no staged file.
+const stageRespawnPane = async () => ({ ok: true, staged: { discard: async () => {} } });
+
 describe("SuccessorSessionLauncher", () => {
   let db: Database.Database;
   let discoveryRepo: DiscoveryRepository;
@@ -50,7 +53,7 @@ describe("SuccessorSessionLauncher", () => {
   }
 
   function launcher(tmuxOptionDefaults?: TmuxOptionDefaultsApplier): SuccessorSessionLauncher {
-    const tmux = { createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
+    const tmux = { createSession, listPanes, killSession, respawnPane, stageRespawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
     return new SuccessorSessionLauncher(tmux, discoveryRepo, {
       sessionEnv: { OPENRIG_HOME: "/home", HOME: "/daemon-home", CODEX_HOME: "/daemon-codex" },
       newId: () => "01ABCDEFG",
@@ -89,7 +92,7 @@ describe("SuccessorSessionLauncher", () => {
   it("never reads or writes the departing session's environment: a handover that works on main works here, whatever tmux does to those calls", async () => {
     const refused = async () => { throw new Error("tmux environment calls are not part of a handover"); };
     const tmux = {
-      listPanes, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand,
+      listPanes, respawnPane, stageRespawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand,
       getSessionEnv: refused, setSessionEnv: refused, unsetSessionEnv: refused,
     } as unknown as TmuxAdapter;
     for (const seatEnv of [undefined, { MODE: "fast" }]) {
@@ -218,7 +221,7 @@ describe("SuccessorSessionLauncher", () => {
   });
 
   it("carries the supplied generation exactly and never lets ambient session env override it", async () => {
-    const tmux = { createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
+    const tmux = { createSession, listPanes, killSession, respawnPane, stageRespawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
     const subject = new SuccessorSessionLauncher(tmux, discoveryRepo, {
       sessionEnv: { OPENRIG_OCCUPANT_GENERATION: "stale-ambient-generation" },
       newId: () => "01ABCDEFG",
@@ -343,7 +346,7 @@ describe("SuccessorSessionLauncher", () => {
     afterEach(() => vi.useRealTimers());
 
     function timedLauncher(timeoutMs?: number, readinessSettings?: Pick<SettingsStore, "resolveOne">): SuccessorSessionLauncher {
-      const tmux = { createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
+      const tmux = { createSession, listPanes, killSession, respawnPane, stageRespawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
       return new SuccessorSessionLauncher(tmux, discoveryRepo, {
         runtimeAdapters: { codex: fakeAdapter("codex") },
         readinessTimeoutMs: timeoutMs ?? (readinessSettings ? undefined : 30_000),
@@ -463,7 +466,7 @@ describe("SuccessorSessionLauncher", () => {
   });
 
   it("no runtime adapter for the seat's runtime → structured failure, preserved seat NOT killed", async () => {
-    const tmux = { createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
+    const tmux = { createSession, listPanes, killSession, respawnPane, stageRespawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
     const noAdapter = new SuccessorSessionLauncher(tmux, discoveryRepo, { newId: () => "01ABCDEFG", runtimeAdapters: {}, exitPollMs: 1, exitTimeoutMs: 5 });
     const res = await noAdapter.createSuccessor({ node: { id: "n", runtime: "codex", cwd: "/w" }, departingSessionName: "a@r" });
     expect(res).toMatchObject({ ok: false, step: "start_agent", code: "successor_runtime_unsupported" });

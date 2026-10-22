@@ -17,6 +17,9 @@ import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import { observeCodexSandbox } from "../src/domain/permission-drift.js";
 import { type OccupantInvalidator } from "../src/domain/occupant-invalidator.js";
 
+// The successor stages its respawn before stopping the retiree; these tests' respawns need no staged file.
+const stageRespawnPane = async () => ({ ok: true, staged: { discard: async () => {} } });
+
 describe("Claude fresh in-place handover readiness", () => {
   let db: Database.Database;
   let rigRepo: RigRepository;
@@ -90,7 +93,7 @@ describe("Claude fresh in-place handover readiness", () => {
   });
 
   function tmux(): TmuxAdapter {
-    return { hasSession, createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, sendText, sendKeys, capturePaneScreen, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
+    return { hasSession, createSession, listPanes, killSession, respawnPane, stageRespawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, sendText, sendKeys, capturePaneScreen, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
   }
 
   function codexAdapter(): RuntimeAdapter {

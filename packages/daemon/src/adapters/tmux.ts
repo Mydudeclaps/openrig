@@ -69,6 +69,20 @@ export type TmuxResult =
   | { ok: true; warnings?: string[] }
   | { ok: false; code: string; message: string };
 
+/** A private environment file holding one tmux command (#306): the command that reads it, and its removal. */
+interface PrivateEnvFile { source: string[]; discard(): Promise<void> }
+
+/** A pane respawn built and, when it carries environment values, written to its private file ahead of time
+ *  (stageRespawnPane). The caller passes it to respawnPane, then discards it. */
+export interface StagedRespawn {
+  exact: string;
+  argv: string[];
+  legacy: string;
+  warnings: string[];
+  file: PrivateEnvFile | null;
+  discard(): Promise<void>;
+}
+
 export interface TmuxSession {
   name: string;
   windows: number;
@@ -546,34 +560,46 @@ export class TmuxAdapter {
    * no global environment is changed. source-file completes before unlinking.
    * Empty-only overrides contain no values and need no temporary file. */
   private async runWithPrivateEnv(argv: string[], legacy: string, env?: Record<string, string>): Promise<string> {
-    if (!Object.values(env ?? {}).some(value => value.length > 0)) return this.run(argv, legacy);
-    const file = this.fileOps.tmpName();
-    let created = false;
+    const staged = await this.stagePrivateEnv(argv, env);
     try {
-      await this.fileOps.writeFile(file, argv.slice(1).map(tmuxQuote).join(" ") + "\n", { mode: 0o600, flag: "wx" });
-      created = true;
-      // source-file alone cannot start a cold server. Queue both commands in
-      // one client so the server does not exit before new-session is parsed.
-      // source-file expands globs even when its path is a single argv entry.
-      const sourcePath = file.replace(/[\\*?[\]]/g, "\\$&");
-      const source = ["tmux", ...(argv[1] === "new-session" ? ["start-server", ";"] : []), "source-file", sourcePath];
-      return await this.run(source);
+      return staged ? await this.run(staged.source) : await this.run(argv, legacy);
     } finally {
-      if (created) {
-        let removed = false;
-        for (let attempt = 0; attempt < 2 && !removed; attempt++) {
-          try {
-            await this.fileOps.unlink(file);
-            removed = true;
-          } catch (err) {
-            removed = (err as NodeJS.ErrnoException | null)?.code === "ENOENT";
-          }
-        }
-        if (!removed) {
-          console.warn(`[tmux] Could not remove private seat environment file ${JSON.stringify(file)}.`);
+      await staged?.discard();
+    }
+  }
+
+  /** Writes argv to an exclusively created 0600 file and returns the tmux command that reads it, and its
+   * removal; null when env carries no nonempty value, so argv can run as it is. */
+  private async stagePrivateEnv(argv: string[], env?: Record<string, string>): Promise<PrivateEnvFile | null> {
+    if (!Object.values(env ?? {}).some(value => value.length > 0)) return null;
+    const file = this.fileOps.tmpName();
+    const discard = async () => {
+      let removed = false;
+      for (let attempt = 0; attempt < 2 && !removed; attempt++) {
+        try {
+          await this.fileOps.unlink(file);
+          removed = true;
+        } catch (err) {
+          removed = (err as NodeJS.ErrnoException | null)?.code === "ENOENT";
         }
       }
+      if (!removed) {
+        console.warn(`[tmux] Could not remove private seat environment file ${JSON.stringify(file)}.`);
+      }
+    };
+    try {
+      await this.fileOps.writeFile(file, argv.slice(1).map(tmuxQuote).join(" ") + "\n", { mode: 0o600, flag: "wx" });
+    } catch (err) {
+      // The exclusive open may have created the file before the write failed (a full disk, say): remove it.
+      // A file that was already at this path (EEXIST) isn't ours to remove.
+      if ((err as NodeJS.ErrnoException | null)?.code !== "EEXIST") await discard();
+      throw err;
     }
+    // source-file alone cannot start a cold server. Queue both commands in
+    // one client so the server does not exit before new-session is parsed.
+    // source-file expands globs even when its path is a single argv entry.
+    const sourcePath = file.replace(/[\\*?[\]]/g, "\\$&");
+    return { source: ["tmux", ...(argv[1] === "new-session" ? ["start-server", ";"] : []), "source-file", sourcePath], discard };
   }
 
   /** Ends the daemon's tmux control client, and with it its session (tmux-control.ts), when tmux is driven through one. */
@@ -1014,7 +1040,7 @@ export class TmuxAdapter {
   async respawnPane(
     paneTarget: string,
     command?: string,
-    opts?: { cwd?: string; env?: Record<string, string> },
+    opts?: { cwd?: string; env?: Record<string, string>; staged?: StagedRespawn },
   ): Promise<TmuxResult> {
     return this.guardedInput(paneTarget, async (pane, beforeWrite) => {
       beforeWrite();
@@ -1026,7 +1052,24 @@ export class TmuxAdapter {
     }, false, "respawn");
   }
 
-  private async respawnPaneUnchecked(paneTarget: string, command?: string, opts?: { cwd?: string; env?: Record<string, string> }): Promise<TmuxResult> {
+  /** Builds a respawn and writes its private environment file now (#306), so a caller that must stop the pane's
+   *  process first, such as a successor cutover, learns that the file can't be written before it stops anything.
+   *  Pass the result to respawnPane as `staged`, then discard it. */
+  async stageRespawnPane(
+    paneTarget: string,
+    command?: string,
+    opts?: { cwd?: string; env?: Record<string, string> },
+  ): Promise<{ ok: true; staged: StagedRespawn } | { ok: false; code: string; message: string }> {
+    const built = await this.buildRespawn(paneTarget, command, opts);
+    try {
+      const file = await this.stagePrivateEnv(built.argv, opts?.env);
+      return { ok: true, staged: { ...built, file, discard: async () => { await file?.discard(); } } };
+    } catch (err) {
+      return classifyWriteError(err) as { ok: false; code: string; message: string };
+    }
+  }
+
+  private async buildRespawn(paneTarget: string, command?: string, opts?: { cwd?: string; env?: Record<string, string> }) {
     const exact = exactTarget(paneTarget, "pane");
     const argv = ["tmux", "respawn-pane", "-t", exact];
     if (opts?.cwd != null) argv.push("-c", opts.cwd);
@@ -1041,6 +1084,16 @@ export class TmuxAdapter {
     if (opts?.env) for (const [k, v] of Object.entries(opts.env)) legacyRespawn.push("-e", shellQuote(`${k}=${v}`));
     if (scopedCommand) legacyRespawn.push(...scopedCommand.map(shellQuote));
     else if (command != null && command.length > 0) legacyRespawn.push(shellQuote(command));
+    return { exact, argv, legacy: legacyRespawn.join(" "), warnings };
+  }
+
+  private async respawnPaneUnchecked(
+    paneTarget: string,
+    command?: string,
+    opts?: { cwd?: string; env?: Record<string, string>; staged?: StagedRespawn },
+  ): Promise<TmuxResult> {
+    const staged = opts?.staged;
+    const { exact, argv, legacy, warnings } = staged ?? await this.buildRespawn(paneTarget, command, opts);
     // The successor starts from the session environment: exclude inherited
     // parent-session identity there first (sessions made before this existed).
     // A failure here is a warning; the respawn goes ahead as it did before.
@@ -1050,7 +1103,8 @@ export class TmuxAdapter {
       warnings.push(parentSessionEnvWarning(exact, err));
     }
     try {
-      await this.runWithPrivateEnv(argv, legacyRespawn.join(" "), opts?.env);
+      if (staged) await (staged.file ? this.run(staged.file.source) : this.run(argv, legacy));
+      else await this.runWithPrivateEnv(argv, legacy, opts?.env);
       return warnings.length ? { ok: true, warnings } : { ok: true };
     } catch (err) {
       return classifyWriteError(err);

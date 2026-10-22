@@ -20,6 +20,9 @@ import { AppliedLaunchObservationStore } from "../src/domain/applied-launch-obse
 import { QueueRepository } from "../src/domain/queue-repository.js";
 import { DefaultOccupantInvalidator, type OccupantInvalidator } from "../src/domain/occupant-invalidator.js";
 
+// The successor stages its respawn before stopping the retiree; these tests' respawns need no staged file.
+const stageRespawnPane = async () => ({ ok: true, staged: { discard: async () => {} } });
+
 describe("SeatHandoverService", () => {
   let db: Database.Database;
   let rigRepo: RigRepository;
@@ -93,7 +96,7 @@ describe("SeatHandoverService", () => {
   });
 
   function tmux(): TmuxAdapter {
-    return { hasSession, createSession, listPanes, killSession, respawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, sendText, sendKeys, capturePaneScreen, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
+    return { hasSession, createSession, listPanes, killSession, respawnPane, stageRespawnPane, setRemainOnExit, signalPaneProcess, isPaneDead, sendText, sendKeys, capturePaneScreen, getDefaultShell, getPaneCommand } as unknown as TmuxAdapter;
   }
 
   function codexAdapter(): RuntimeAdapter {
