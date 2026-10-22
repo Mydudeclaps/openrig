@@ -140,13 +140,15 @@ describe.skipIf(process.platform === "win32")("private seat environment with nat
         try {
           const pane = (await f.tmux(["new-session", "-d", "-s", "seat", "-P", "-F", "#{pane_id}", "exec cat"])).trim();
           const launcher = new SuccessorSessionLauncher(f.adapter, new DiscoveryRepository(db), {
-            runtimeAdapters: {}, sleep: async () => {}, exitPollMs: 10, exitTimeoutMs: 1000,
+            // A real sleep: the retiree's exit is polled a bounded number of times, so it needs time to die.
+            runtimeAdapters: {}, sleep: (ms) => new Promise(resolve => setTimeout(resolve, ms)), exitPollMs: 20, exitTimeoutMs: 3000,
           });
           const result = await launcher.createSuccessor({
             node: { id: "node-1", runtime: "codex", cwd: f.home, seatEnv: { PROVIDER_FIXTURE_CREDENTIAL: CREDENTIAL } },
             departingSessionName: "seat",
           });
-          expect(result).toMatchObject({ ok: false, replacementStarted: false });
+          expect(result).toMatchObject({ ok: false, step: "create_successor", replacementStarted: false,
+            message: expect.stringContaining("the running agent was left in place") });
           expect((await f.tmux(["display-message", "-p", "-t", pane, "#{pane_dead} #{pane_current_command}"])).trim()).toBe("0 cat");
           expect(fs.readdirSync(staging)).toEqual([]);
         } finally {

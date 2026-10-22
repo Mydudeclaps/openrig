@@ -118,6 +118,8 @@ async function driveEveryMethod(): Promise<RunCall[]> {
   await a.killSession(SESSION);
   await a.respawnPane("%1", "codex resume 'tok en'", { cwd: "/w x", env: { A: "b c", Q: "it's" } });
   await a.respawnPane("%1");
+  const staged = await a.stageRespawnPane("%1", "codex resume 'tok en'", { cwd: "/w x" });
+  if (staged.ok) await a.respawnPane("%1", "codex resume 'tok en'", { cwd: "/w x", staged: staged.staged });
   await a.getPaneLocalOption("%1", "remain-on-exit");
   await a.restorePaneOption("%1", "remain-on-exit", "on");
   await a.restorePaneOption("%1", "remain-on-exit", null);
