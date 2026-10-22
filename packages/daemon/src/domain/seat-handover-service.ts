@@ -1,8 +1,9 @@
 import type Database from "better-sqlite3";
+import { readSeatEffort } from "./seat-effort.js";
 import { NativePermissionStore } from "./native-permission-store.js";
 import { ulid } from "ulid";
 import type { RigRepository } from "./rig-repository.js";
-import type { SessionRegistry } from "./session-registry.js";
+import { SessionAddressConflict, type SessionRegistry } from "./session-registry.js";
 import type { DiscoveryRepository } from "./discovery-repository.js";
 import type { EventBus } from "./event-bus.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
@@ -22,6 +23,8 @@ import type { PersistedEvent } from "./types.js";
 import type { AppliedLaunchObservation } from "./permission-drift.js";
 import { AppliedLaunchObservationStore } from "./applied-launch-observation-store.js";
 import { findOtherSessionOwner } from "./session-owner.js";
+import { seatCodexCorePluginDir, seatCorePluginDir, withPluginDirs } from "./claude-core-plugin-env.js";
+import { seatSkillPluginDirForNode } from "./seat-skill-storage.js";
 
 /** A bounded labeled-from-record recap of the predecessor's last exchanges + the record path,
  *  resolved from the predecessor's provider transcript (claude transcript_path / codex rollout_path).
@@ -86,7 +89,7 @@ export type SeatHandoverResult =
   | { ok: true; plan: SeatHandoverPlan }
   | { ok: true; result: SeatHandoverMutationResult }
   | { ok: false; code: "missing_reason" | "invalid_source" | "successor_creation_not_implemented" | "source_not_supported" | "resume_token_unavailable" | "fork_source_not_found"; message: string; guidance: string }
-  | { ok: false; code: "current_occupant_required" | "discovered_not_active" | "successor_tmux_absent" | "successor_already_managed" | "successor_is_current" | "runtime_mismatch"; message: string; guidance: string }
+  | { ok: false; code: "address_conflict" | "current_occupant_required" | "discovered_not_active" | "successor_tmux_absent" | "successor_already_managed" | "successor_is_current" | "runtime_mismatch"; message: string; guidance: string }
   | { ok: false; code: "discovered_not_found"; message: string; guidance: string }
   | { ok: false; code: "tmux_probe_failed" | "handover_commit_failed" | "successor_create_failed" | "context_delivery_failed"; message: string; guidance: string }
   | Extract<SeatStatusResult, { ok: false }>;
@@ -101,7 +104,8 @@ interface NodeRow {
   // 0.5.2-07 A4-profile: the seat's SPEC-pinned codex config profile (nodes.codex_config_profile),
   // threaded onto the successor binding for the same reason as model — the adapter emits `-p <profile>`.
   codex_config_profile: string | null;
-  // #75: the seat's configured reasoning effort (nodes.effort), threaded onto successor binding.
+  // #75: the seat's authored reasoning effort (nodes.effort). The successor binding reads the shared
+  // resolver (OPR.0.7.0.7: a saved seat choice first), not this column alone.
   effort: string | null;
 }
 
@@ -132,6 +136,8 @@ interface SeatHandoverServiceDeps {
   sessionEnv?: Record<string, string | undefined>;
   /** Extra env for one runtime only (OMP's provider keys), merged over sessionEnv. */
   runtimeSessionEnv?: Record<string, Record<string, string | undefined>>;
+  /** Where the daemon vendors its plugins; default is `plugins` under the OpenRig home (tests). */
+  pluginsDir?: string;
   /** Injectable id source for the successor session name (tests). */
   newSuccessorId?: () => string;
   /** Runtime adapters keyed by runtime — used to launch a fresh successor into
@@ -222,6 +228,7 @@ export class SeatHandoverService {
   private sleep: (ms: number) => Promise<void>;
   private appliedLaunchObservations: AppliedLaunchObservationStore;
   private now: () => Date;
+  private pluginsDir: string | undefined;
 
   constructor(deps: SeatHandoverServiceDeps) {
     if (deps.db !== deps.rigRepo.db) throw new Error("SeatHandoverService: rigRepo must share the same db handle");
@@ -243,6 +250,7 @@ export class SeatHandoverService {
     this.sleep = deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.appliedLaunchObservations = new AppliedLaunchObservationStore(deps.db);
     this.now = deps.now ?? (() => new Date());
+    this.pluginsDir = deps.pluginsDir;
     this.statusService = new SeatStatusService({ rigRepo: deps.rigRepo });
     this.planner = new SeatHandoverPlanner({ rigRepo: deps.rigRepo });
     this.successorLauncher = deps.successorLauncher ?? new SuccessorSessionLauncher(deps.tmuxAdapter, deps.discoveryRepo, {
@@ -353,6 +361,19 @@ export class SeatHandoverService {
       };
     }
 
+    if (parsed.source.mode !== "discovered") {
+      // Preserve the existing exact-owner refusal before testing the new address.
+      const owner = this.lookupManagedOwner(latestSession.session_name, node.id, true);
+      if (owner) return { ok: false, code: "successor_already_managed",
+        message: `Successor tmux session "${latestSession.session_name}" is already managed by ${owner.logical_id}@${owner.rig_name}.`,
+        guidance: "Use an unclaimed discovered successor session." };
+      try { this.sessionRegistry.assertAddressAvailable(node.id, latestSession.session_name); }
+      catch (error) {
+        if (!(error instanceof SessionAddressConflict)) throw error;
+        return { ok: false, code: "address_conflict", message: error.message, guidance: "Choose another member name; no successor was started." };
+      }
+    }
+
     const operator = input.operator?.trim() || null;
 
     // OPR.0.5.5.5 fork: resolve the native conversation id BEFORE any mutation
@@ -452,13 +473,17 @@ export class SeatHandoverService {
     // The successor must carry its own generation from its first byte. This reservation writes no
     // ledger row; commit consumes it, while every failed pre-commit branch remains unregistered.
     const occupantGeneration = this.sessionRegistry.reserveOccupantGeneration();
+    const corePluginDir = seatCorePluginDir(node, this.db, undefined, this.pluginsDir);
+    // OPR.0.7.0.13 — the successor is the same seat, so it gets the same skill storage.
+    const seatSkillDir = seatSkillPluginDirForNode(this.db, node.id);
+    const codexCorePluginDir = seatCodexCorePluginDir(node, this.db, undefined, this.pluginsDir);
     const launch = await this.successorLauncher.createSuccessor({
       // Seam B: the successor is the SAME seat continuing — persisted policy posture carries.
       // 0.5.2-07 model fidelity: carry the seat's SPEC-pinned model so the successor launch reads the
       // spec (else the running topology drifts from the founder-designed one at every handover).
       // A4-profile: likewise carry the codex config profile (adapter emits -p) — the restore path
       // already threads it; handover must too, or a profile-pinned codex seat reverts at handover.
-      node: { id: node.id, runtime: node.runtime, cwd: node.cwd, kernelAuthority: permissionOverride.kernelAuthority, teamPermissionDefault: permissionOverride.teamPermissionDefault, nonInterruptive: this.rigRepo.getRigNonInterruptive(statusResult.status.rig_id), launchPosture: effectivePosture, ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}), model: node.model, effort: node.effort ?? undefined, codexConfigProfile: node.codex_config_profile ?? undefined },
+      node: { id: node.id, runtime: node.runtime, cwd: node.cwd, kernelAuthority: permissionOverride.kernelAuthority, teamPermissionDefault: permissionOverride.teamPermissionDefault, nonInterruptive: this.rigRepo.getRigNonInterruptive(statusResult.status.rig_id), launchPosture: effectivePosture, ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}), model: node.model, effort: readSeatEffort(this.db, node.id)?.effective ?? undefined, codexConfigProfile: node.codex_config_profile ?? undefined, seatEnv: withPluginDirs(this.rigRepo.getEffectiveSeatEnv(node.id), [corePluginDir, seatSkillDir]), ...((corePluginDir || codexCorePluginDir) && node.cwd ? { seatProjectDir: node.cwd } : {}) },
       departingSessionName: latestSession.session_name,
       occupantGeneration,
       // OPR.0.5.5.5: a fork-sourced successor launches as a NATIVE FORK of the
@@ -701,6 +726,12 @@ export class SeatHandoverService {
       });
     }
 
+    try { this.sessionRegistry.assertAddressAvailable(input.node.id, discovered.tmuxSession); }
+    catch (error) {
+      if (!(error instanceof SessionAddressConflict)) throw error;
+      return fail({ ok: false, code: "address_conflict", message: error.message, guidance: "Choose another member name; this discovered session was not bound." });
+    }
+
     let tmuxPresent: boolean;
     try {
       tmuxPresent = await this.tmuxAdapter.hasSession(discovered.tmuxSession);
@@ -800,7 +831,7 @@ export class SeatHandoverService {
   private emitCaptureSkip(
     input: { rigId: string; nodeId: string; sessionId: string; sessionName: string },
     runtime: string,
-    reason: "missing_sidecar" | "parse_error" | "probe_timeout" | "invalid_token" | "stale_sidecar",
+    reason: "missing_sidecar" | "parse_error" | "probe_timeout" | "process_unreadable" | "invalid_token" | "stale_sidecar",
   ): void {
     try {
       this.eventBus.emit({
