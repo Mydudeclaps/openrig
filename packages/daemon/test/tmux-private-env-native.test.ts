@@ -49,7 +49,8 @@ async function fixture(mode: "shell" | "argv", stagingDirectory?: string, noSpac
   if (directory) fs.mkdirSync(directory);
   const adapter = new TmuxAdapter(async command => {
     commands.push(command);
-    return (await run(`tmux -S ${shellQuote(socket)} -f /dev/null ${command.slice(5)}`, { env })).stdout;
+    // Only tmux commands go to the private socket; others, such as the cutover's `kill`, run as given.
+    return (await run(command.startsWith("tmux ") ? `tmux -S ${shellQuote(socket)} -f /dev/null ${command.slice(5)}` : command, { env })).stdout;
   }, {
     ...files,
     ...(directory ? { tmpName: () => path.join(directory, path.basename(files.tmpName())) } : {}),
