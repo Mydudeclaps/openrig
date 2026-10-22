@@ -314,7 +314,7 @@ needs no warning. Literal file paths are escaped for tmux's glob expansion.
 A cold launch queues
 `start-server` before `source-file` in the same client. Empty-only overrides
 can still use direct arguments. This keeps activity-hook tokens and provider
-credentials out of process arguments without changing tmux's session/pane
+credentials out of the tmux client's process arguments without changing tmux's session/pane
 environment precedence or the server's global environment. The native
 regression tests are in `packages/daemon/test/tmux-private-env-native.test.ts`.
 
