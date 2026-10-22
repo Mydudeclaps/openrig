@@ -6,6 +6,9 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { TmuxAdapter, defaultTmuxFileOps } from "../src/adapters/tmux.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
+import { createFullTestDb } from "./helpers/test-app.js";
+import { DiscoveryRepository } from "../src/domain/discovery-repository.js";
+import { SuccessorSessionLauncher } from "../src/domain/successor-session-launcher.js";
 
 const run = promisify(exec);
 const runFile = promisify(execFile);
@@ -29,7 +32,7 @@ async function readReport(file: string): Promise<{ cwd: string; env: Record<stri
   return report;
 }
 
-async function fixture(mode: "shell" | "argv", stagingDirectory?: string) {
+async function fixture(mode: "shell" | "argv", stagingDirectory?: string, noSpace = false) {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "private-env-")));
   const socket = path.join(home, "s");
   const env = {
@@ -51,6 +54,11 @@ async function fixture(mode: "shell" | "argv", stagingDirectory?: string) {
     ...files,
     ...(directory ? { tmpName: () => path.join(directory, path.basename(files.tmpName())) } : {}),
     async writeFile(file, content, options) {
+      if (noSpace) {
+        // The exclusive open creates the file, then the disk fills partway through the write.
+        await files.writeFile(file, content.slice(0, 16), options);
+        throw Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
+      }
       await files.writeFile(file, content, options);
       staged.push(file);
       modes.push(fs.statSync(file).mode & 0o777);
@@ -122,6 +130,32 @@ describe.skipIf(process.platform === "win32")("private seat environment with nat
         f.privateCommands();
       } finally { await f.close(); }
     });
+
+    for (const failure of ["no space", "an unwritable directory"] as const) {
+      it(`${mode}: a successor whose environment file can't be written (${failure}) leaves the running agent in place`, async () => {
+        const f = await fixture(mode, "staging", failure === "no space");
+        const staging = path.join(f.home, "staging");
+        if (failure !== "no space") fs.chmodSync(staging, 0o500);
+        const db = createFullTestDb();
+        try {
+          const pane = (await f.tmux(["new-session", "-d", "-s", "seat", "-P", "-F", "#{pane_id}", "exec cat"])).trim();
+          const launcher = new SuccessorSessionLauncher(f.adapter, new DiscoveryRepository(db), {
+            runtimeAdapters: {}, sleep: async () => {}, exitPollMs: 10, exitTimeoutMs: 1000,
+          });
+          const result = await launcher.createSuccessor({
+            node: { id: "node-1", runtime: "codex", cwd: f.home, seatEnv: { PROVIDER_FIXTURE_CREDENTIAL: CREDENTIAL } },
+            departingSessionName: "seat",
+          });
+          expect(result).toMatchObject({ ok: false, replacementStarted: false });
+          expect((await f.tmux(["display-message", "-p", "-t", pane, "#{pane_dead} #{pane_current_command}"])).trim()).toBe("0 cat");
+          expect(fs.readdirSync(staging)).toEqual([]);
+        } finally {
+          db.close();
+          fs.chmodSync(staging, 0o700);
+          await f.close();
+        }
+      });
+    }
 
     it(`${mode}: reads a literal private path containing glob metacharacters`, async () => {
       const f = await fixture(mode, "staged [literal]*?\\");
