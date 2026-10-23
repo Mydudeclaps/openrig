@@ -125,11 +125,10 @@ after an upgrade it can still hold the previous version's note.
   --env`.
 - **A launch that warns "Scoped tmux environment unavailable; retaining the previous environment"** didn't give that seat
   the clean environment, and the seat may lack OpenRig's variables. Check `env` in the seat before relying on them.
-- **A Slack channel-mapping change needs a daemon restart** (`rig daemon stop`, then `rig daemon start`). `rig slack
-  disable` then `enable` doesn't reload it.
+- **A Slack channel-mapping change needs a daemon restart** (`rig daemon stop`, then `rig daemon start`). Don't use `rig
+  slack disable` then `enable` for it: enabling marks any alerts waiting to post to Slack as already seen, so open
+  exchanges miss them.
 
-- **A new agent can still act on requests nobody made** instead of waiting for its assignment. If a fresh seat starts
-  something nobody asked for, stop it and give it its assignment.
 - **A new Claude seat's startup text can stay in its input box unsent.** If a fresh Claude seat sits idle with text at
   its prompt, press Enter in its pane, or ask the person to.
 - **The TUI's terminal button refuses inside a Herdr pane reached over SSH.** Start the TUI with `env -u SSH_CONNECTION
