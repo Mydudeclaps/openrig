@@ -78,6 +78,7 @@ after an upgrade it can still hold the previous version's note.
   - **A first install only** (no earlier install or plugin cache): OpenRig checks the installed hook files against its own
     copy, then trusts the plugin's six shipped hooks by their exact definitions, so the seat starts without Codex's hook
     review.
+    The file check happens only when trust is granted: a later edit to the cached hook scripts keeps that trust, as with any hook trusted in Codex.
   - **An existing install keeps the person's choices.** A plugin or hook they disabled stays disabled. One they left
     untrusted stays under Codex's review: Codex records nothing for "continue without trusting", so OpenRig doesn't read a
     missing trust record as permission.
