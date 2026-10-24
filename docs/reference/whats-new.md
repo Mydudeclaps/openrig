@@ -138,6 +138,11 @@ after an upgrade it can still hold the previous version's note.
   everything" wait. On a slow host, start the daemon yourself first.
 - **A launch that warns "Scoped tmux environment unavailable; retaining the previous environment"** didn't give that seat
   the clean environment. Check `env` in the seat before relying on OpenRig's variables.
+- **Going back to 0.7.0 with a Slack subscription set:** 0.7.0 can't read a person file that holds one, and its people
+  registry stops loading. Save the choice first (`rig gateway human show <id> --json > <id>.json`), then run
+  `rig gateway human set <id> slack-subscription unset` (`urgent-only` becomes every-ask, as on 0.7.0); set it again after
+  returning to 0.7.1. A person file still holding a `subscriptions:` entry fails on 0.7.0 too. Don't restore an older
+  gateway folder or database instead: that can lose newer people, bindings and delivery records.
 - **A Herdr tile over SSH** doesn't come back by itself after a Herdr restart. Reopen it with `rig terminal open <view>
   --provider herdr`.
 - **Delegated decisions:** the ask is created before the decision, so without quiet hours it can post to the person
