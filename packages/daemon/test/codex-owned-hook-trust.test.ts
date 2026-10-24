@@ -136,7 +136,7 @@ async function legacyUpgrade() {
 
 it("an already-installed owned upgrade renews all six content approvals without changing other choices or the native baseline", async () => {
   const f = await legacyUpgrade();
-  fs.appendFileSync(f.file, '\n[hooks.state."outside:stop:0:0"]\nenabled = false\ntrusted_hash = "outside-choice"\n');
+  fs.appendFileSync(f.file, '\n[hooks.state."outside:stop:0:0"]\nenabled = false\ntrusted_hash = "outside-choice"\n\n\n');
   const before = fs.readFileSync(f.file, "utf8"), baseline = fs.readFileSync(f.baseline, "utf8"), calls = f.calls.length;
   const expectedContent = codexPluginContentHash(shipped);
   await f.adapter().ensureCodexCorePlugin();
