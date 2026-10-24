@@ -56,8 +56,8 @@ import { join } from "node:path";
  *  silencing a checker. */
 const SANCTIONED: Record<string, { sites: number; why: string }> = {
   "domain/mission-control/mission-control-write-contract.ts": {
-    sites: 2,
-    why: "P34 terminal close + successor create (route/handoff) at :160; the non-terminal resolve update at :415",
+    sites: 3,
+    why: "act(): P34 terminal close + successor create (route/handoff); resolveParked(): the non-terminal resolve update; recordCorrespondence(): a transition NOTE only, never a state, when another registered person answers, approves or resolves someone else's ask",
   },
   "domain/workflow-projector.ts": {
     sites: 4,
@@ -206,9 +206,9 @@ describe("P34 RED 3 — the enumeration guard (rev 2: call-site granularity)", (
   it("the LIVE corpus matches the sanctioned set exactly, by CALL SITE", () => {
     const result = checkCallSites(realCorpus(), SANCTIONED);
     expect(result.violations).toEqual([]);
-    // Counts SITES, not files. 13 sites across 4 files.
+    // Counts SITES, not files. 14 sites across 4 files.
     expect(result.examined).toBe(TOTAL_SITES);
-    expect(result.examined).toBe(13);
+    expect(result.examined).toBe(14);
     expect(result.vacuous).toBe(false);
   });
 
@@ -312,6 +312,6 @@ describe("P34 RED 5 — KNOWN-NEGATIVE: a guard that examines nothing must FAIL"
   it("the LIVE run is NOT vacuous and examined the expected number of SITES", () => {
     const live = checkCallSites(realCorpus(), SANCTIONED);
     expect(live.vacuous).toBe(false);
-    expect(live.examined).toBe(13);
+    expect(live.examined).toBe(14);
   });
 });
