@@ -100,6 +100,36 @@ describe("one person acting on another person's ask is correspondence", () => {
     expect(resolutions(parked).map((t) => t.actorSession)).toEqual([ANA]);
   });
 
+  it.each([
+    { verb: "deny" as const, extra: { reason: "not now" }, words: "denied: not now" },
+    { verb: "drop" as const, extra: { reason: "stale" }, words: "dropped: stale" },
+    { verb: "hold" as const, extra: { reason: "wait for Monday" }, words: "held: wait for Monday" },
+    { verb: "route" as const, extra: { destinationSession: "dev@r" }, words: "routed to dev@r" },
+    { verb: "handoff" as const, extra: { destinationSession: "dev@r" }, words: "handed off to dev@r" },
+  ])("another person's $verb leaves the ask with the person asked", async ({ verb, extra, words }) => {
+    const ask = await askAna();
+    const rows = () => (db.prepare("SELECT count(*) AS n FROM queue_items").get() as { n: number }).n;
+    const before = rows();
+    const result = await contract.act({ verb, qitemId: ask.qitemId, actorSession: MIKE, ...extra });
+    expect(result).toMatchObject({ createdQitemId: null, correspondence: { askedPerson: ANA } });
+    expect(repo.getById(ask.qitemId)).toMatchObject({ state: "pending", destinationSession: ANA });
+    expect(rows()).toBe(before);
+    expect(lastNote(ask)?.transitionNote).toBe(`Correspondence from ${MIKE}, not ${ANA}'s answer: ${words}`);
+    await contract.act({ verb: "answer", qitemId: ask.qitemId, actorSession: ANA, decision: "Alpha" });
+    expect(repo.getById(ask.qitemId)?.state).toBe("done");
+  });
+
+  it("another person can't close a question parked on someone else either", async () => {
+    const parked = await repo.create({ sourceSession: "orch-lead@r", destinationSession: "dev@r", body: "work", nudge: false });
+    repo.update({ qitemId: parked.qitemId, actorSession: "dev@r", state: "blocked", blockedOn: "human-ana@host", summary: "Parked",
+      evidenceRef: "/proof/parked.md", transitionNote: "parked on Ana" });
+    const result = await contract.act({ verb: "drop", qitemId: parked.qitemId, actorSession: MIKE, reason: "not needed" });
+    expect(result.correspondence?.message).toContain("is still parked on human-ana@external");
+    expect(repo.getById(parked.qitemId)).toMatchObject({ state: "blocked", blockedOn: "human-ana@host" });
+    await contract.act({ verb: "resolve", qitemId: parked.qitemId, actorSession: ANA, decision: "go ahead", notify: false });
+    expect(repo.getById(parked.qitemId)?.state).toBe("in-progress");
+  });
+
   it("a different person's Slack reply to a parked question doesn't resume it", async () => {
     const parked = await repo.create({ sourceSession: "orch-lead@r", destinationSession: "dev@r", body: "work", nudge: false });
     repo.update({ qitemId: parked.qitemId, actorSession: "dev@r", state: "blocked", blockedOn: "human-ana@host", summary: "Parked",

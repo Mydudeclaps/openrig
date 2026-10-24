@@ -150,11 +150,12 @@ export class MissionControlWriteContract {
     }
 
     const source = this.requireMutableQitem(input.qitemId);
-    const approvedForSomeoneElse = input.verb === "approve" && source.humanIntent !== "update"
-      ? this.queueRepo.askedSomeoneElse(input.actorSession, source.destinationSession) : null;
-    if (approvedForSomeoneElse) {
-      return this.recordCorrespondence(input, source, approvedForSomeoneElse, input.reason?.trim() ? `approved: ${input.reason.trim()}` : "approved");
-    }
+    // Someone else's ask, or a question parked on someone else, isn't another registered person's to approve, deny,
+    // route, hold, drop or hand off: what they did is kept as their correspondence, and the row stays as it was.
+    const askedSomeoneElse = source.humanIntent === "update" ? null
+      : this.queueRepo.askedSomeoneElse(input.actorSession, source.destinationSession)
+        ?? (source.state === "blocked" ? this.queueRepo.askedSomeoneElse(input.actorSession, source.blockedOn) : null);
+    if (askedSomeoneElse) return this.recordCorrespondence(input, source, askedSomeoneElse, correspondenceWords(input));
 
     if ((input.verb === "route" || input.verb === "handoff") && !input.destinationSession) {
       throw new MissionControlWriteContractError(
@@ -743,6 +744,12 @@ function verbToClosure(input: MissionControlActionInput): ClosureMapping {
         "answer verb should have been routed to answerAsk",
       );
   }
+}
+
+/** What another person's act on someone else's ask said, in words, for its correspondence note. */
+function correspondenceWords(input: MissionControlActionInput): string {
+  const did: Record<string, string> = { approve: "approved", deny: "denied", route: "routed", hold: "held", drop: "dropped", handoff: "handed off" };
+  return `${did[input.verb] ?? input.verb}${input.destinationSession ? ` to ${input.destinationSession}` : ""}${input.reason?.trim() ? `: ${input.reason.trim()}` : ""}`;
 }
 
 function snapshotQitem(q: QueueItem): Record<string, unknown> {
