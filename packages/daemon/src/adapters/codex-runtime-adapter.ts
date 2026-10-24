@@ -1837,7 +1837,7 @@ export function computeCodexHookTrust(
  * `[hooks.state."<key>"] trusted_hash = "<hash>"` record. Mirrors upsertCodexProjectTrust:
  * find/create the exact table header, splice ONLY its `trusted_hash` line, leave every other
  * `[hooks.state]` / `[projects]` entry and the managed hook block byte-identical. Same key+hash
- * ⇒ no-op. Only called for our authored inline or exact first-install plugin keys (never blanket trust).
+ * ⇒ no-op. Only called for our authored inline or verified owned plugin keys (never blanket trust).
  */
 export function upsertCodexHookTrust(content: string, key: string, hash: string, field: "trusted_hash" | "trusted_content_hash" = "trusted_hash"): string {
   const header = `[hooks.state.${JSON.stringify(key)}]`;
@@ -1868,7 +1868,7 @@ export function upsertCodexHookTrust(content: string, key: string, hash: string,
     lines.splice(headerIndex + 1, 0, trustLine);
   }
 
-  return `${lines.join("\n").replace(/\n*$/, "\n")}`;
+  return field === "trusted_content_hash" ? lines.join("\n") : `${lines.join("\n").replace(/\n*$/, "\n")}`;
 }
 
 export function isCodex013xOrLater(version: string): boolean {

@@ -136,7 +136,7 @@ async function legacyUpgrade() {
 
 it("an already-installed owned upgrade renews all six content approvals without changing other choices or the native baseline", async () => {
   const f = await legacyUpgrade();
-  fs.appendFileSync(f.file, '\n[hooks.state."outside:stop:0:0"]\nenabled = false\ntrusted_hash = "outside-choice"\n');
+  fs.appendFileSync(f.file, '\n[hooks.state."outside:stop:0:0"]\nenabled = false\ntrusted_hash = "outside-choice"\n\n\n');
   const before = fs.readFileSync(f.file, "utf8"), baseline = fs.readFileSync(f.baseline, "utf8"), calls = f.calls.length;
   const expectedContent = codexPluginContentHash(shipped);
   await f.adapter().ensureCodexCorePlugin();
@@ -196,6 +196,22 @@ it("records an already-approved current legacy bundle for subsequent upgrades", 
   expect(Object.values(f.read().hooks.state).every((state: any) => state.trusted_content_hash === current)).toBe(true);
   expect(JSON.parse(fs.readFileSync(path.join(f.home, ".openrig-core-hook-trust.json"), "utf8"))).toMatchObject({ contentHash: current });
   expect(fs.readFileSync(f.baseline, "utf8")).toBe(current);
+});
+
+it("renews only the selected Codex home when the daemon has a different default home", async () => {
+  const f = await legacyUpgrade(), selected = path.join(f.home, "selected-home"), file = path.join(selected, "config.toml");
+  const before = fs.readFileSync(f.file, "utf8");
+  fs.mkdirSync(selected); fs.writeFileSync(file, before);
+  const version = path.basename(f.cache);
+  fs.cpSync(f.cache, path.join(selected, "plugins/cache/openrig/openrig-core", version), { recursive: true });
+  const baseline = codexLegacyPluginTrustPath(file);
+  fs.mkdirSync(path.dirname(baseline), { recursive: true }); fs.copyFileSync(f.baseline, baseline);
+  await f.adapter().ensureCodexCorePlugin(selected);
+  const states = (parse(fs.readFileSync(file, "utf8")) as any).hooks.state;
+  expect(Object.values(states).every((state: any) => state.trusted_content_hash === codexPluginContentHash(shipped))).toBe(true);
+  expect(fs.readFileSync(f.file, "utf8")).toBe(before);
+  expect(fs.existsSync(path.join(f.home, ".openrig-core-hook-trust.json"))).toBe(false);
+  expect(fs.existsSync(path.join(selected, ".openrig-core-hook-trust.json"))).toBe(true);
 });
 
 it("uses the native bundle fingerprint and legacy identity recipes", () => {
