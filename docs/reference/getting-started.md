@@ -50,6 +50,9 @@ The `rigs` skill is the procedure: follow it in order. This page is what it look
 >   - Claude Code: workspace trust in `~/.claude.json`, and activity hooks in the project's
 >     `.claude/settings.local.json`, plus a status line unless you already have your own.
 >   - Discovery skills go in `~/.claude/skills` and `~/.agents/skills`.
+>   - Each seat's `CLAUDE.md` or `AGENTS.md` gets OpenRig's managed blocks (culture, identity, onboarding). One more
+>     line, pointing an agent at its seat skills, is added only on a yes: saved at setup, or set where the daemon runs
+>     (`OPENRIG_SKILLS_ROUTER_LINE_ENABLED`).
 > - **Starting a team in your project:** adds managed guidance to `AGENTS.md` or `CLAUDE.md`, plus the team's skills
 >   and plugins.
 > - **Permissions:** by default, OpenRig's own kernel gets broader permissions than a project team gets by default.
@@ -181,11 +184,11 @@ You can also read [`skills/rigs/SKILL.md`](../../skills/rigs/SKILL.md) directly.
 script will do and changes nothing:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.6.12/scripts/install.sh | sh -s -- --dry-run
+curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.7.0/scripts/install.sh | sh -s -- --dry-run
 ```
 
 The same command without `--dry-run`,
-`curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.6.12/scripts/install.sh | sh`, installs the
+`curl -fsSL https://raw.githubusercontent.com/mvschwarz/openrig/v0.7.0/scripts/install.sh | sh`, installs the
 latest published `@openrig/cli` with `npm install -g`,
 runs the Node.js and SQLite check, then `rig setup --dry-run` and `rig setup`. `rig setup` checks both Claude Code and
 Codex and may install a missing one, as described below. A failed step prints
@@ -223,6 +226,37 @@ writes an OpenRig-managed block (mouse on, a longer history) into `~/.tmux.conf`
 It is optional for this selected-provider path, not a requirement to fix an unused
 provider.
 
+Setup also prints the one line OpenRig can add to each seat's `CLAUDE.md` or
+`AGENTS.md`, plus OpenRig's markers around it so it can be removed cleanly: the
+exact text it writes, which files it goes in, and what a no gives up. Show the person,
+ask, and save their answer with `rig setup --router-line yes` or
+`rig setup --router-line no`. No answer isn't a yes: with nothing saved and
+nothing set in the environment, the line isn't added. The answer covers only
+that line, and so does what setup says a no gives up; setup's "OpenRig may
+modify" list names the other writes.
+
+The block keeps `terminal.history_limit` rows of scrollback per pane (default
+10000). To keep more, run `rig config set terminal.history_limit 50000`, then
+`rig setup` again. A running tmux server keeps its old limit until it restarts
+or you run `tmux source-file ~/.tmux.conf`; before tmux 3.7 that changes new
+panes only.
+
+New managed agents and handover successors on macOS/Linux start from the daemon's
+selected launch environment and declared seat values, rather than stored tmux globals.
+Values named by tmux's `update-environment` option, including its default SSH-agent
+and display variables, come from the daemon's environment.
+Normal shell startup and configured tmux shell commands still run. OpenRig reasserts its
+selected `OPENRIG_DB` and configured `TMUX_TMPDIR` when starting the runtime after shell startup.
+If your custom setup intentionally supplies values through tmux's global environment,
+opt in with
+`rig config set terminal.inherit_tmux_environment true`. Setup points out this option
+when it detects custom tmux configuration; it never enables it automatically. The setting
+applies to future launches and successors, not running agents or your personal tmux server.
+If the scoped environment cannot be prepared, launch keeps its previous environment and
+reports a warning in fresh launch results and the daemon log. For handovers, check
+that log for this warning. This is not a promise that shell startup cannot add or override values.
+
+
 ## Start the kernel and check its state
 
 With a working selected login, start the daemon if it is stopped, then read its
@@ -254,9 +288,51 @@ A missing or unknown readiness signal is not proof of readiness. Follow
 startup or missing-seat problems.
 
 `rig setup` itself does not start the daemon. Preserve a daemon and kernel that
-already exist: ordinary daemon startup skips a managed kernel, and
-`OPENRIG_NO_KERNEL=1` skips automatic kernel startup. If neither runtime is
-authenticated, kernel boot reports `auth_blocked`. Do not restart or recreate an
+already exist: daemon startup does not boot a second kernel when one is managed,
+and `OPENRIG_NO_KERNEL=1` (`--no-kernel`) skips automatic kernel startup,
+including the restore below. If neither runtime is authenticated, kernel boot
+reports `auth_blocked`.
+
+Daemon startup restores one existing kernel by itself: a managed kernel whose
+seats are all `detached` and still bound to their newest session, which is what
+startup reconcile leaves when every kernel terminal is gone, for example after a
+reboot. It does not detect a reboot as such. It uses the same restore as
+`rig up kernel --existing`, and `rig status` reports it as `Kernel: booting`
+until the seats are ready. A kernel stopped with `rig down kernel`, including
+one whose seats were already detached, stays down on later starts. So do a kernel
+with only some seats stopped and seats you unclaimed. Start one again with
+`rig up kernel --existing`.
+When the tmux server is gone, an explicit `rig down` of any rig can start an
+empty server and probe again. It records the stop and clears eligible bindings
+only after confirming the sessions are absent. This can leave an empty tmux
+server running; it never launches an agent or provider session. Unreadable or
+permission results and changed occupants leave the stop bookkeeping unchanged.
+
+While that automatic restore runs, `rig start` continues to your other rigs and
+says the kernel is still restoring (`kernelRestore.state: "restoring"` with
+`--json`). Its exit status 0 then does not mean the kernel is ready; check
+`rig status`. When the restore has returned without a ready kernel, `rig start`
+still goes on to your other rigs but exits 1 (`kernelRestore.state: "failed"`),
+so `rig start && next` does not run `next`. A `rig down kernel` made during the
+restore waits for it to return and then stops the kernel, which stays down on
+later starts. A `rig up kernel --existing` with no fresh seats and no change to
+the saved non-interruptive choice, made during the restore, or after it restored
+every seat while those seats still run the sessions it started, reports that
+restore's outcome instead of starting another. Explicitly repeating the saved
+`--non-interruptive` or `--no-non-interruptive` choice also joins that restore.
+
+An explicit `rig up kernel --existing --fresh <seat...>` waits for startup's
+restore to finish, then replaces only the named seats that still hold the exact
+sessions startup launched. Other seats keep running. An operator's conversation
+correction also takes effect for that seat on the next explicit `up` or
+`restore`, using the corrected target; editing the token alone restarts nothing.
+Each replacement takes new seat leases, rechecks the managed occupant and terminal,
+and reports its own per-seat outcome. If the occupant changed, it is left alone.
+A different `--non-interruptive` or `--no-non-interruptive` choice after startup
+launched the seats is refused: the running launch choice stays unchanged. Stop
+the rig, then rerun with the desired choice.
+
+Do not restart or recreate an
 existing kernel merely to open its view. The startup TUI (`rig`) offers its own
 kernel setup and individual-seat recovery; it does not automatically boot agents
 when it starts the daemon.
@@ -413,6 +489,11 @@ rig terminal open saved:kernel --provider cmux --json
 ```
 
 Use `rig terminal status --json` to inspect provider availability and liveness.
+To keep rigs in separate Herdr sessions, select one explicitly:
+`rig terminal open future-prod-rig --provider herdr --session future-prod`.
+`--session default` selects Herdr's default session; omitting the option keeps
+the daemon's configured endpoint. See [named terminal sessions](terminal-sessions.md)
+for desktop windows, previews and session-specific status.
 For the first desktop handoff, use `--window`. Only if the window cannot open,
 `rig tui --shared` is the dashboard-only fallback, not the operator's conversation.
 
@@ -515,8 +596,8 @@ rig ps --nodes --rig starter
 
 Preview the selected seats, models and resources. Plan checks resolution and
 preflight for the working directory. The kernel is already your entry point; this step starts the chosen project
-team. Read readiness for the project seats, not only daemon health. Resolve a named authentication, trust or permission prompt before giving
-that seat work. When a seat stops at such a prompt, `rig up` reports
+team. Read readiness for the project seats, not only daemon health. Have the person answer a named authentication, trust, hook-review or
+permission prompt before giving that seat work; a launch default, or their answer for another seat, isn't their answer to this one. When a seat stops at such a prompt, `rig up` reports
 `Status: partial`, prints `Startup attention (<seat>): <reason>` and exits 1;
 `rig ps --nodes` repeats it as "Startup details". The reason ends with the command
 to run once the prompt is answered: `rig seat continue <seat>`, which delivers the
@@ -693,7 +774,7 @@ the lifecycle API without booting a new kernel, then stop the remaining rigs.
 | Shared terminal is absent | Inspect the existing kernel binding and recovery state; use standalone `rig tui` while resolving it. |
 | Viewing terminal was closed | Open the conversations again with `rig terminal open saved:kernel --window`; `rig tui --shared` is only the dashboard fallback if that window cannot open. Do not relaunch the team. |
 | Daemon restarted but tmux survived | Re-read `rig status` and the existing queue; a daemon restart is not a fresh project. |
-| Host reboot lost tmux sessions | Open `rig`, start the daemon if needed (press **S** if it opens on the work views), and select the existing rig and seats. Resume is the default; a fresh conversation needs a separate decision. |
+| Host reboot lost tmux sessions | Starting the daemon restores the kernel by itself when all of its seats were lost; check `rig status`, and if it reports the restore failed, run `rig up kernel --existing`. For other rigs, open `rig`, start the daemon if needed (press **S** if it opens on the work views), and select the existing rig and seats. Resume is the default; a fresh conversation needs a separate decision. |
 | Launch reports no usable snapshot | Inspect the existing rig and retained project files, then follow the same-seat recovery below. |
 | Work is waiting on a prompt or decision | Read the row, transition and named prompt; preserve the obligation until the missing decision arrives. |
 
@@ -724,8 +805,27 @@ This recovery is for the case the reporter hit: the kernel's seats failed and no
 IDs, for example `advisor.lead operator.agent operator.human queue.worker` when all four failed. `--fresh` starts a
 new conversation for each seat you name. Seats you don't name follow their normal recovery policy and may remain
 awaiting a decision if their old conversation can't be resumed. A later `rig daemon start` doesn't retry the failed
-seats by itself: once a kernel exists, startup skips the built-in kernel boot, and `rig status` then reads
-`Kernel: skipped` whatever its seats' state, so check `rig ps --nodes --rig kernel --full`.
+seats by itself: once a kernel exists, startup skips the built-in kernel boot and restores only a kernel whose seats
+were all lost, not seats that failed. `rig status` then reads `Kernel: skipped` unless some of its seats are running
+and ready, so check `rig ps --nodes --rig kernel --full`.
+
+**When every agent stops at once on Ubuntu 22.04.** Ubuntu 22.04's packaged tmux, 3.2a, can exit its whole server
+when it's asked about a pane or session that has just closed. OpenRig checks each seat about once a second, so when a
+seat's session closes, the next check can stop every agent on that tmux server, and tmux reports "server exited
+unexpectedly". This was reproduced with Ubuntu 22.04's `tmux 3.2a-4ubuntu0.3` for a closed pane, a closed session,
+and a closed pane in a window that stayed open. If `tmux -V` prints `tmux 3.2a`, put tmux 3.4 or later first on
+your `PATH`. Newer versions weren't tested against this crash; #980's reporter runs 3.5a, and none of OpenRig's own
+machines runs 3.2a. One way to get one is to build a current release from the tmux project, as that reporter did:
+
+```sh
+sudo apt install build-essential pkg-config bison libevent-dev libncurses-dev
+# in the unpacked release tarball:
+./configure && make && sudo make install   # installs into /usr/local/bin
+```
+
+Then restart the daemon from a shell where `tmux -V` shows the new tmux. A tmux server that's already running keeps
+its version until it exits, so the change applies to servers started afterwards. If a crash already stopped your
+agents, recover as for lost tmux sessions in the table above.
 
 If a snapshot is unavailable, the startup view checks the selected seat's
 retained startup source and authoritative occupant relation. It reports a

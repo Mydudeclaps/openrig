@@ -23,6 +23,7 @@ import { hydrateSnapshot } from "./hydrate.js";
 import { createLiveRefresh } from "./live.js";
 import { resolvePendingAddress } from "./pending-address.js";
 import { subscribeActivityEvents } from "./live-events.js";
+import { checkVersionSkew, parseCliIdentity } from "./version-skew.js";
 import { execFile } from "node:child_process";
 import { helperCwd } from "./helper-cwd.js";
 import { probeCrashCart, type CrashCartRenderOpts } from "./crash-cart/from-emit.js";
@@ -32,6 +33,7 @@ import { restoreKeyAction, type RestoreInputEvent } from "./crash-cart/restore-i
 import { evaluateOneClickGate, restoreConfirmMessage } from "./crash-cart/one-click-gate.js";
 import { daemonStartArgs } from "./crash-cart/start-daemon.js";
 import { readLocal } from "./local-reading.js";
+import { replyAct } from "./attention/attention-model.js";
 import { StartupController } from "./startup.js";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -139,10 +141,31 @@ async function run(): Promise<void> {
   let drawnSettled = false;
   let previousPage: { state: ReturnType<typeof view.get>; snapshot: FleetSnapshot } | undefined;
   let activityEvents: ReturnType<typeof subscribeActivityEvents> | null = null;
+  // A daemon upgraded or restarted under this TUI: on the first connect and every reconnect, compare
+  // builds; on a mismatch stop the background reads (event-driven and quiet) until the TUI restarts.
+  const tuiBuild = parseCliIdentity(process.env["OPENRIG_TUI_CLI_IDENTITY"]);
+  let buildMismatch = false;
+  let eventsDropped = false;
+  function checkDaemonBuild(attempt = 0): void {
+    if (!live || !client || buildMismatch) return;
+    void checkVersionSkew(tuiBuild, () => client.health()).then((skew) => {
+      // A loaded daemon can time out a /healthz read; retry twice before waiting for the next reconnect.
+      if (skew.state === "unreadable" && attempt < 2) { setTimeout(() => checkDaemonBuild(attempt + 1), 15_000).unref(); return; }
+      if (skew.state !== "mismatch" || buildMismatch) return;
+      buildMismatch = true;
+      activityEvents?.close();
+      live.stopBackground(skew.message);
+    });
+  }
   function enableLive(): boolean {
     if (!live || !client || startup?.state.connection !== "up") return false;
+    if (!liveEnabled) checkDaemonBuild();
     liveEnabled = true;
-    activityEvents ??= subscribeActivityEvents({ open: () => client.openActivityEvents(), onEvent: (event) => { if (event.type.startsWith("proof.")) reviewCache.clear(); void live.invalidate(); }, onStatus: (status) => live.connectionStatus(status) });
+    if (!buildMismatch) activityEvents ??= subscribeActivityEvents({ open: () => client.openActivityEvents(), onEvent: (event) => { if (event.type.startsWith("proof.")) reviewCache.clear(); live.pushed(); }, onStatus: (status) => {
+      if (status === "dropped") eventsDropped = true;
+      else if (status === "connected" && eventsDropped) { eventsDropped = false; checkDaemonBuild(); }
+      live.connectionStatus(status);
+    } });
     return true;
   }
   function commandContext() {
@@ -417,6 +440,13 @@ async function run(): Promise<void> {
       } else if (action.act === "run") {
         const result = await client.launchNode(action.rigId, action.agent);
         view.dispatch({ type: "notice", message: launchNodeNotice(action.agent, result) });
+      } else if (action.act === "answer") {
+        const { act: _act, type: _type, ...input } = action;
+        const result = await client.missionControlAction(input);
+        view.dispatch({ type: "notice", message: action.verb === "approve"
+          ? `Approved ${action.qitemId} as ${action.actorSession}: the request is closed on its own row.`
+          : result.answer?.outcome === "recorded" ? `Recorded on ${action.qitemId}. Still to answer: ${result.answer.unanswered.join("; ")}`
+          : `Answered ${action.qitemId} as ${action.actorSession}: the answer went back to the asker, and the request is closed.` });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -454,6 +484,10 @@ async function run(): Promise<void> {
           notice: message => view.dispatch({ type: "notice", message }), draw,
         }).catch(error => view.dispatch({ type: "notice", message: String(error) }));
       } catch (err) { view.dispatch({ type: "notice", message: (err as Error).message }); }
+      return;
+    }
+    if (action.type === "attention-reply") {
+      perform(replyAct(snapshot.attentionRead, view.get().attentionOpen, action.text));
       return;
     }
     if (action.type === "act") {
@@ -739,8 +773,9 @@ async function run(): Promise<void> {
   draw();
   // Probe the daemon-down verdict once on launch: bare `rig` with the daemon down renders the cockpit.
   // (Key-triggered re-probe after `s start daemon` / `r retry` is the follow-on increment.)
+  // --demo renders its labeled fixture without a daemon, so it never probes for one.
   if (startup) void startup.refresh();
-  else void refreshCrashCart();
+  else if (!demo) void refreshCrashCart();
   // A merely-open TUI must impose no steady-state fleet load. The initial
   // hydrate establishes honest state; navigation, commands, and socket-driven
   // mutations request later truth through the same single-flight owner.

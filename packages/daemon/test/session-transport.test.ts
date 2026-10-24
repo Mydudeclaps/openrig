@@ -27,7 +27,8 @@ import type { TmuxAdapter, TmuxResult } from "../src/adapters/tmux.js";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { StartupOrchestrator } from "../src/domain/startup-orchestrator.js";
 import { assessNativeResumeProbe } from "../src/domain/native-resume-probe.js";
-import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
+import type { NodeBinding, RuntimeAdapter } from "../src/domain/runtime-adapter.js";
+import { recordRotation, requestedToken, rotatedToken, rotation, rowsWith as claudeRows, seat as claudeSeat } from "./helpers/claude-sweeper-seat.js";
 
 describe("agent pane activity classifier", () => {
   it("classifies active Working pane as agent_active", () => {
@@ -1116,6 +1117,39 @@ describe("SessionTransport", () => {
     expect(submitFailed.outcome).toBe("failed");
   });
 
+  it.each(["draft_input_busy", "draft_input_unknown", "draft_input_changed"])(
+    "a %s refusal at the text step is labeled not_reached and sends no Enter (fake receipt, not a real-guard proof)", async (code) => {
+    seedCanonicalRig();
+    const keys: string[][] = [];
+    const tmux = mockTmux({
+      sendText: async () => ({ ok: false, code, message: "held by the guard" }),
+      sendKeys: async (_target, k) => { keys.push(k); return { ok: true as const }; },
+    });
+    const result = await createTransport(tmux).send("dev-impl@my-rig", "hello");
+    expect(result).toMatchObject({ ok: false, reason: code, outcome: "failed", sent: false, inputPhase: "not_reached" });
+    expect(keys).toEqual([]);
+  });
+
+  it("a draft refusal of Enter after a successful paste stays written with sent:true", async () => {
+    seedCanonicalRig();
+    const texts: string[] = [];
+    const tmux = mockTmux({
+      sendText: async (_target, text) => { texts.push(text); return { ok: true as const }; },
+      sendKeys: async () => ({ ok: false, code: "draft_input_changed", message: "Enter was not sent." }),
+    });
+    const result = await createTransport(tmux).send("dev-impl@my-rig", "hello");
+    expect(texts).toEqual(["hello"]);
+    expect(result).toMatchObject({ ok: false, reason: "draft_input_changed", outcome: "failed", sent: true, inputPhase: "written" });
+  });
+
+  it("a generic failed text write stays attempted, never not_reached", async () => {
+    seedCanonicalRig();
+    const tmux = mockTmux({ sendText: async () => ({ ok: false, code: "session_not_found", message: "gone" }) });
+    const result = await createTransport(tmux).send("dev-impl@my-rig", "hello");
+    expect(result).toMatchObject({ ok: false, reason: "send_failed", inputPhase: "attempted" });
+    expect(result.sent).toBeUndefined();
+  });
+
   it("send without verify carries no outcome field (additive, verify-scoped)", async () => {
     seedCanonicalRig();
     const transport = createTransport(mockTmux());
@@ -1648,6 +1682,61 @@ describe("SessionTransport", () => {
     expect(result.ok).toBe(true);
     expect(result.warning).toBeDefined();
     expect(result.attempts).toBeUndefined();
+    expect(sendTextSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("a fresh Claude working hook cannot override a visible MCP approval menu", async () => {
+    seedCanonicalRig();
+    const eventBus = new EventBus(db);
+    const agentActivityStore = new AgentActivityStore({ db, eventBus });
+    agentActivityStore.recordHookEvent({
+      runtime: "claude-code",
+      sessionName: "dev-impl@my-rig",
+      hookEvent: "UserPromptSubmit",
+    });
+    const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
+    const capture = vi.fn(async () => [
+      "2 new MCP servers found in this project",
+      "Select any you wish to enable.",
+      "MCP servers may execute code or access system resources. All tool calls",
+      "require approval. Learn more in the MCP documentation.",
+      "❯ [✔] dummy1",
+      "  [✔] dummy2",
+      "     Enable selected",
+      "Space to select · Esc to reject all",
+    ].join("\n"));
+    const transport = createTransport(mockTmux({ capturePaneContent: capture, sendText: sendTextSpy }), {
+      agentActivityStore,
+    });
+
+    const result = await transport.send("dev-impl@my-rig", "hello");
+
+    expect(result).toMatchObject({ ok: false, reason: "target_needs_input" });
+    expect(result.activity).toMatchObject({ state: "needs_input", reason: "selection_prompt" });
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(sendTextSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps busy sends advisory when a fresh Claude working hook has no visible prompt", async () => {
+    seedCanonicalRig();
+    const eventBus = new EventBus(db);
+    const agentActivityStore = new AgentActivityStore({ db, eventBus });
+    agentActivityStore.recordHookEvent({
+      runtime: "claude-code",
+      sessionName: "dev-impl@my-rig",
+      hookEvent: "UserPromptSubmit",
+    });
+    const sendTextSpy = vi.fn(async () => ({ ok: true as const }));
+    const capture = vi.fn(async () => "Working on task...\n⠋ Processing files\nesc to interrupt");
+    const transport = createTransport(mockTmux({ capturePaneContent: capture, sendText: sendTextSpy }), {
+      agentActivityStore,
+    });
+
+    const result = await transport.send("dev-impl@my-rig", "hello");
+
+    expect(result.ok).toBe(true);
+    expect(result.warning).toContain("target pane appears mid-task");
+    expect(capture).toHaveBeenCalledTimes(1);
     expect(sendTextSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -3096,6 +3185,109 @@ describe("startup readiness reconciliation on session interaction (#7)", () => {
         previousStatus: "failed",
       }),
     ]);
+  });
+
+  describe("a Claude seat with no launch record (#1477 section 2)", () => {
+    const resumeToken = "00000000-0000-4000-8000-000000001477";
+    function seedClaude(status: "failed" | "attention_required") {
+      const { rig, node, session } = seedRig("claude-code");
+      sessionRegistry.updateStartupStatus(session.id, status);
+      sessionRegistry.updateResumeToken(session.id, "claude_id", resumeToken);
+      sessionRegistry.updateBinding(node.id, { tmuxPane: "%1" });
+      seedStartupFailureEvent(rig.id, node.id, session.id, { requestedResumeToken: resumeToken, requestedResumeType: "claude_id" });
+      return { rig, node, session };
+    }
+    const transportWith = (checkReady: (binding: NodeBinding, opts?: { resumeToken?: string | null }) => Promise<{ ready: boolean }>) =>
+      new SessionTransport({ db, rigRepo, sessionRegistry, eventBus,
+        tmuxAdapter: mockTmux({ capturePaneContent: async () => "› Current idle prompt\n────────────\n" }),
+        runtimeAdapters: { "claude-code": { checkReady } as never } });
+    const startupStatus = (id: string) => (db.prepare("SELECT startup_status FROM sessions WHERE id = ?").get(id) as { startup_status: string }).startup_status;
+
+    it("passes the seat's real binding and its recorded resume token to the readiness check", async () => {
+      const { node } = seedClaude("attention_required");
+      const check = vi.fn(async () => ({ ready: false }));
+      await transportWith(check).capture("worker-1@test-rig");
+      expect(check).toHaveBeenCalledTimes(1);
+      const [binding, options] = check.mock.calls[0] as unknown as [NodeBinding, { resumeToken?: string }];
+      expect(binding).toMatchObject({ nodeId: node.id, tmuxSession: "worker-1@test-rig", tmuxPane: "%1" });
+      expect(options).toEqual({ resumeToken: resumeToken });
+    });
+
+    it.each(["failed", "attention_required"] as const)("promotes a %s seat the real adapter proves, with no attention-cleared event", async from => {
+      const { session } = seedClaude(from);
+      const { adapter } = claudeSeat();
+      const cleared: unknown[] = [];
+      eventBus.subscribe(evt => { if (evt.type === "seat.attention_cleared") cleared.push(evt); });
+      await transportWith((binding, opts) => adapter.checkReady(binding, opts)).capture("worker-1@test-rig");
+      expect(startupStatus(session.id)).toBe("ready");
+      expect(cleared).toEqual([]);
+    });
+
+    it("passes the rotation recorded with the token, and the real adapter promotes a rotated seat by it", async () => {
+      const { session } = seedClaude("attention_required");
+      recordRotation(db, session.id);
+      const check = vi.fn(async () => ({ ready: false }));
+      await transportWith(check).capture("worker-1@test-rig");
+      expect(check.mock.calls[0]![1]).toEqual({ resumeToken: rotatedToken, resumeRotation: rotation });
+      const { adapter } = claudeSeat();
+      await transportWith((binding, opts) => adapter.checkReady(binding, opts)).capture("worker-1@test-rig");
+      expect(startupStatus(session.id)).toBe("ready");
+    });
+
+    // The anchor (#1477, the maintainer's shape) is the reconcile's own existing comparison; these pin it beside the proof.
+    describe("the requested conversation", () => {
+      const reconcile = async (session: { id: string }) => {
+        const { adapter } = claudeSeat();
+        await transportWith((binding, opts) => adapter.checkReady(binding, opts)).capture("worker-1@test-rig");
+        return startupStatus(session.id);
+      };
+      const reseed = (ids: ReturnType<typeof seedClaude>, fields: Record<string, unknown>) => {
+        db.prepare("DELETE FROM events WHERE type = 'node.startup_failed'").run();
+        seedStartupFailureEvent(ids.rig.id, ids.node.id, ids.session.id, fields);
+      };
+
+      it("leaves flagged a seat whose record and process are on another conversation than the one it asked for", async () => {
+        const ids = seedClaude("attention_required");
+        reseed(ids, { requestedResumeToken: requestedToken, requestedResumeType: "claude_id" });
+        expect(await reconcile(ids.session)).toBe("attention_required");
+      });
+
+      it("promotes a seat whose recorded rotation started from the requested conversation, which the process names", async () => {
+        const ids = seedClaude("attention_required");
+        recordRotation(db, ids.session.id);
+        reseed(ids, { requestedResumeToken: resumeToken, requestedResumeType: "claude_id" });
+        expect(await reconcile(ids.session)).toBe("ready");
+      });
+
+      it("promotes a fresh launch (null request)", async () => {
+        const fresh = seedClaude("attention_required");
+        reseed(fresh, { requestedResumeToken: null, requestedResumeType: null });
+        expect(await reconcile(fresh.session)).toBe("ready");
+      });
+
+      it("keeps the reconcile's existing hold for an older event without the request fields", async () => {
+        const older = seedClaude("attention_required");
+        db.prepare("DELETE FROM events WHERE type = 'node.startup_failed' AND node_id = ?").run(older.node.id);
+        db.prepare("INSERT INTO events (rig_id, node_id, type, payload) VALUES (?, ?, 'node.startup_failed', ?)").run(older.rig.id, older.node.id,
+          JSON.stringify({ type: "node.startup_failed", sessionId: older.session.id, stage: "readiness_check", hasPendingWork: false, error: "x" }));
+        expect(await reconcile(older.session)).toBe("attention_required");
+      });
+
+      it("still compares the process with the record after an in-process /resume", async () => {
+        const ids = seedClaude("attention_required");
+        db.prepare("UPDATE sessions SET resume_token = ? WHERE id = ?").run(rotatedToken, ids.session.id);
+        reseed(ids, { requestedResumeToken: resumeToken, requestedResumeType: "claude_id" });
+        expect(await reconcile(ids.session)).toBe("attention_required");
+      });
+    });
+
+    it("leaves a seat whose pane runs another conversation flagged", async () => {
+      const { session } = seedClaude("attention_required");
+      const { adapter, set } = claudeSeat();
+      set(claudeRows({ command: "/x/claude --permission-mode auto --resume other --name seat@rig" }));
+      await transportWith((binding, opts) => adapter.checkReady(binding, opts)).capture("worker-1@test-rig");
+      expect(startupStatus(session.id)).toBe("attention_required");
+    });
   });
 
   it("does not reconcile non-recoverable startup failure even if prompt is responsive", async () => {

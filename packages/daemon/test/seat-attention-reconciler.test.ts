@@ -554,16 +554,56 @@ describe("SeatAttentionReconciler", () => {
     expect(payload.nodeId).toBe(nodeId);
   });
 
+  it.each([
+    ["a previous restore attempt", "assisted_startup", true, false],
+    ["another startup failure", "readiness_check", false, false],
+    ["another occupant", "assisted_startup", false, true],
+  ] as const)("doesn't acknowledge full-restore attention from %s as this seat's assisted startup", async (_case, stage, oldAttempt, otherOccupant) => {
+    const { rigId, nodeId, sessionId } = seedAttentionSeat("assisted-control", "worker@assisted-control");
+    sessionRegistry.updateStatus(sessionId, "running");
+    db.prepare("UPDATE nodes SET runtime='synth' WHERE id=?").run(nodeId);
+    sessionRegistry.recordCommunityHarnessSelection(sessionId, "synth");
+    const start = () => eventBus.emit({ type: "restore.started", rigId, snapshotId: "snapshot" });
+    if (!oldAttempt) start();
+    eventBus.emit({ type: "node.startup_failed", rigId, nodeId,
+      sessionId: otherOccupant ? "retired-occupant" : sessionId, stage, error: "Needs attention" });
+    if (oldAttempt) start();
+    eventBus.emit({ type: "restore.completed", rigId, snapshotId: "snapshot", result: {
+      snapshotId: "snapshot", preRestoreSnapshotId: null, rigResult: "partially_restored",
+      nodes: [{ nodeId, logicalId: "worker", status: "attention_required" }], warnings: [],
+    } });
+    const strict = vi.fn(async () => ({ ok: false as const, code: "runtime_unsupported", detail: "Not an assisted startup acknowledgement." }));
+    const checked = new SeatAttentionReconciler({ db, sessionRegistry, eventBus, agentActivityStore: activityStore, reconcileRestoreOutcome: strict });
+    expect(await checked.clearAttention("worker@assisted-control", { reason: "Checked startup" })).toMatchObject({ ok: false });
+    expect(strict).toHaveBeenCalledTimes(1);
+    expect(db.prepare("SELECT startup_status FROM sessions WHERE id=?").get(sessionId)).toEqual({ startup_status: "attention_required" });
+    expect(db.prepare("SELECT seq FROM events WHERE type='restore.outcome_reconciled'").all()).toEqual([]);
+  });
+
   it("OPR.0.5.9.14: refuses derived-class clear without strict evidence even with operator attestation", async () => {
-    seedDerivedAttentionSeat("r-derived-refuse", "worker@r-derived-refuse");
+    const { rigId, nodeId, sessionId } = seedDerivedAttentionSeat("r-derived-refuse", "worker@r-derived-refuse");
+    const before = db.prepare("SELECT payload FROM events WHERE type = 'restore.completed'").all();
+    const sendVerify = vi.fn(async () => ({ ok: true }));
+    const capture = vi.fn(async (sessionName: string) => ({ ok: true, sessionName, content: "fixture" }));
     const derivedReconciler = new SeatAttentionReconciler({
-      sessionRegistry, eventBus, agentActivityStore: activityStore, db,
+      sessionRegistry, eventBus, agentActivityStore: activityStore, db, sendVerify, capture,
     });
 
     const result = await derivedReconciler.clearAttention("worker@r-derived-refuse", { reason: "operator verified" });
 
     expect(result.ok).toBe(false);
     expect(result.code).toBe("not_demonstrably_responsive");
+    expect(result.detail).toContain("strict restore reconciler is unavailable");
+    const refusals = db.prepare("SELECT payload FROM events WHERE type = 'seat.attention_clear_refused'").all() as { payload: string }[];
+    expect(refusals).toHaveLength(1);
+    expect(JSON.parse(refusals[0]!.payload)).toEqual({
+      type: "seat.attention_clear_refused", rigId, nodeId, sessionId,
+      sessionName: "worker@r-derived-refuse", attentionClass: "restore_outcome", code: "strict_reconciler_unavailable",
+    });
+    expect(db.prepare("SELECT payload FROM events WHERE type = 'restore.completed'").all()).toEqual(before);
+    expect(db.prepare("SELECT payload FROM events WHERE type = 'seat.attention_cleared'").all()).toHaveLength(0);
+    expect(sendVerify).not.toHaveBeenCalled();
+    expect(capture).not.toHaveBeenCalled();
     const events = db.prepare("SELECT payload FROM events WHERE type = 'restore.outcome_reconciled'").all();
     expect(events).toHaveLength(0);
   });

@@ -10,7 +10,7 @@ import { wrapPaneEnvelope } from "../lib/pane-envelope.js";
 // Held to the S1 truthfulness bar for a success payload: what happened, what the
 // recipient cannot know, and the concrete fix (sign).
 const UNKNOWN_SENDER_NOTICE =
-  "Delivered without sender identity: this request carried no X-OpenRig-Session header, so your recipient has no way of knowing who sent it. Follow up and sign it — send from a seat shell (the header stamps automatically) or state your identity in the message body.";
+  "Delivered without sender identity: this request carried no X-OpenRig-Session header, so your recipient has no way of knowing who sent it. Follow up and sign it: from a seat shell the header stamps automatically; from anywhere else, send it as a declared sender, `rig queue create --source <you>@external --destination <seat> --summary \"<one line>\" --body-file <file>` (recorded as declared; a registered human gets a reply route), or join this shell to a seat, `eval \"$(rig attach --self --rig <rigId> --node <logicalId> --print-env)\"`, so its sends carry that seat's name (`rig attach --help` covers adding a new member).";
 
 // The unknown-sender From: marker, DERIVED from the canonical envelope wrapper
 // (pane-envelope.ts SENDER_FALLBACK is unexported and its literal is
@@ -42,6 +42,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       expectedStagedLineCount?: number;
       /** The unwrapped text; typed instead of `text` when the recipient is a terminal seat. */
       exactText?: string;
+      urgent?: boolean;
     }>();
 
     // submitOnly (mechanics-gate fix d9b3989a) sends NO text — the Enter-only retry for staged
@@ -109,6 +110,8 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       reason: body.reason,
       actorSession: derivedActor, // transport-derived, never the body claim
       ...(derivedActor ? { identityProvenance: "transport:v1" } : {}),
+      // Anyone may mark a send urgent; who marked it is the transport-derived sender, never a body claim.
+      ...(body.urgent === true ? { urgent: { by: derivedActor ?? "unknown" } } : {}),
       // Mechanics-gate fix (d9b3989a): the walk retry's bare-Enter mode, guarded in the
       // transport by the expected-staged-text precheck.
       submitOnly: body.submitOnly,
@@ -119,6 +122,10 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       signal: c.req.raw.signal,
     });
 
+    // The seat's own agent typing into its own terminal is told apart where the sender is known: it's treated like any
+    // agent's message, and recorded as its own.
+    const self = !!derivedActor && resolved.sessions.length === 1 && resolved.sessions[0]!.sessionName === derivedActor;
+    if (self) Object.assign(result, { fromDestinationSeat: true });
     if (result.outcome === "retained") return c.json(result);
 
     if (!result.ok) {
@@ -171,12 +178,14 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       const outbox = c.get("outboxHandler" as never) as OutboxHandler | undefined;
       if (outbox) {
         try {
-          outbox.record({
+          const entry = outbox.record({
             senderSession: derivedActor,
             destinationSession: body.session,
             body: result.envelopeOmitted && exactText !== undefined ? exactText : body.text,
             identityProvenance: "transport:v1",
           });
+          // The input was dispatched successfully; mark its audit row as broadcast does.
+          outbox.markDelivered(entry.outboxId);
         } catch (err) {
           console.warn(`[transport/send] outbox auto-record failed (send already delivered): ${(err as Error).message}`);
         }
@@ -263,6 +272,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       dangerouslyInteract?: boolean;
       reason?: string;
       actorSession?: string | null;
+      urgent?: boolean;
       // OPR.0.4.3.30 — when set, the fan-out wraps each recipient in its own From/To envelope.
       // `rig broadcast` never sets it (raw-to-all, unchanged).
       envelopeSender?: string | null;
@@ -307,6 +317,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
       dangerouslyInteract: body.dangerouslyInteract,
       reason: body.reason,
       actorSession: derivedActor, // transport-derived, never the body claim
+      ...(body.urgent === true ? { urgent: { by: derivedActor ?? "unknown" } } : {}),
       envelopeSender, // the From: is the DERIVED identity (never the body value) — orch ruling (a)
       ...(derivedActor ? { identityProvenance: "transport:v1" } : {}),
       // Recipients not yet started when the caller goes away are not written; started ones keep their results.

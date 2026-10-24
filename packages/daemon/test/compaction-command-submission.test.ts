@@ -8,7 +8,7 @@ import {mkdtempSync, mkdirSync, writeFileSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join, dirname} from 'node:path';
 import {compactionRoutes} from '../src/routes/compaction.js';
-import {ClaudeCompactionEnforcer, AUTO_PREP_WAIT_MS_DEFAULT, MANAGED_COMPACT_COMMAND_MAX_CHARS, MANAGED_COMPACT_PREFIX, MANAGED_COMPACT_TRUST_NOTE, composeManagedCompactCommand, buildCompactCommand} from '../src/domain/claude-compaction-enforcer.js';
+import {ClaudeCompactionEnforcer, AUTO_PREP_WAIT_MS_DEFAULT, AUTO_RETRY_AFTER_STOP_MS_DEFAULT, MANAGED_COMPACT_COMMAND_MAX_CHARS, MANAGED_COMPACT_PREFIX, MANAGED_COMPACT_TRUST_NOTE, composeManagedCompactCommand, buildCompactCommand} from '../src/domain/claude-compaction-enforcer.js';
 import {SessionTransport} from '../src/domain/session-transport.js';
 import {SeatDeliveryGuard} from '../src/domain/seat-delivery-guard.js';
 
@@ -247,7 +247,8 @@ it('a failed manual trigger reports the /compact result too', async () => {
     c.set('compactionEnforcer' as never, f.e);
     c.set('sessionTransport' as never, f.transport);
     c.set('contextUsageStore' as never, {getForNode: () => ({availability: 'known', usedPercentage: 40})});
-    c.set('db' as never, {prepare: () => ({get: () => ({node_id: 'node-one', runtime: 'claude-code', cwd: null})})});
+    // Canonical-only fixture: no bindings table exists for alias normalization.
+    c.set('db' as never, {prepare: (sql: string) => ({get: () => sql.includes('sqlite_master') ? undefined : ({node_id: 'node-one', runtime: 'claude-code', cwd: null})})});
     await next();
   });
   app.route('/api/compaction', compactionRoutes());
@@ -405,6 +406,52 @@ it('a draft_* receipt from the paste stage is classified not_sent (the guard\'s 
   expect(f.e.getPreparationState(seat)).toMatchObject({status: 'stopped', compact: 'not_sent'});
 });
 
+for (const code of ['draft_input_busy', 'draft_input_unknown', 'draft_input_changed']) {
+  it(`automatic: a ${code} hold is labeled not_reached by the transport, and still stops as not sent instead of waiting for idle`, async () => {
+    const f = fixture();
+    await armed(f);
+    const real = f.transport.send.bind(f.transport);
+    const results: unknown[] = [];
+    vi.spyOn(f.transport, 'send').mockImplementation(async (s: string, text: string, opts?: any) => { const r = await real(s, text, opts); if (text.startsWith('/compact')) results.push(r); return r; });
+    f.onText((text) => (text.startsWith('/compact') ? {ok: false, code, message: 'The seat has an unsubmitted input.'} : undefined));
+    expect(await f.e.maybeAutoCompact(input)).toEqual({triggered: false, reason: 'send_failed'});
+    expect(results[0]).toMatchObject({ok: false, reason: code, sent: false, inputPhase: 'not_reached'});
+    expect(f.e.getPreparationState(seat)).toMatchObject({status: 'stopped', reason: code, compact: 'not_sent'});
+  });
+}
+
+it('automatic: a draft hold of the preparation prompt (a not_reached receipt) is not sent, so the next poll sends it again instead of waiting out the deadline', async () => {
+  const f = fixture();
+  f.onText((text) => (text.startsWith('/compact') ? undefined : {ok: false, code: 'draft_input_busy', message: 'The seat has an unsubmitted input.'}));
+  expect(await f.e.maybeAutoCompact(input)).toEqual({triggered: false, reason: 'send_failed'});
+  expect(f.e.getPreparationState(seat)).toMatchObject({status: 'sending', delivery: 'not_sent'});
+  f.onText(() => undefined);
+  expect(await f.e.maybeAutoCompact(input)).toEqual({triggered: true});
+  expect(f.e.getPreparationState(seat)).toMatchObject({status: 'waiting', delivery: 'delivered'});
+  // The fake records the held call too: two preparation prompts, one held and one delivered.
+  expect(f.texts().filter((t) => !t.startsWith('/compact'))).toHaveLength(2);
+});
+
+it('automatic: once a draft hold clears, the next poll before the cooldown does not reuse the stopped attempt; after it, a fresh one begins', async () => {
+  const f = fixture();
+  await armed(f);
+  f.onText((text) => (text.startsWith('/compact') ? {ok: false, code: 'draft_input_busy', message: 'The seat has an unsubmitted input.'} : undefined));
+  await f.e.maybeAutoCompact(input);
+  const stopped = f.e.getPreparationState(seat)!;
+  expect(stopped).toMatchObject({status: 'stopped', compact: 'not_sent'});
+  f.onText(() => undefined);
+  expect(await f.e.maybeAutoCompact(input)).toEqual({triggered: false, reason: 'preparation_stopped'});
+  // The fake records the refused call, so one /compact call exists; the cleared poll adds none.
+  expect(compactWrites(f)).toBe(1);
+  expect(f.e.getPreparationState(seat)).toMatchObject({attemptId: stopped.attemptId, status: 'stopped'});
+  f.advance(AUTO_RETRY_AFTER_STOP_MS_DEFAULT);
+  await f.e.maybeAutoCompact(input);
+  const fresh = f.e.getPreparationState(seat)!;
+  expect(fresh.attemptId).not.toBe(stopped.attemptId);
+  expect(fresh).toMatchObject({status: 'waiting', compact: 'not_sent'});
+  expect(compactWrites(f)).toBe(1);
+});
+
 it('--skip-map with only the temporary map written: the restore request names the .tmp that carries the marker', async () => {
   const f = fixture();
   // --skip-map does not wait for a map, so the seat writes it while /compact goes in. stageMap writes only
@@ -536,3 +583,115 @@ it('a real zero-input refusal through the transport (the pane is stuck in a tmux
   for (let i = 0; i < 3; i++) await f.e.maybeAutoCompact(input);
   expect(compactWrites(f)).toBe(0);
 });
+
+
+it('cancel disarms a submitted manual attempt without claiming it failed or sending input; an explicit retry uses a fresh map', async () => {
+  const f = fixture();
+  f.onSleep(() => f.stageMap());
+  expect(await f.e.triggerManualCompact(input, {operatorInitiated: true})).toMatchObject({triggered: true});
+  const previous = f.e.getPreparationState(seat)!;
+  const before = [...f.events];
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    c.set('compactionEnforcer' as never, f.e);
+    c.set('sessionTransport' as never, f.transport);
+    await next();
+  });
+  app.route('/api/compaction', compactionRoutes());
+  vi.spyOn(f.transport, 'resolveSessions').mockResolvedValue({ok: true, sessions: [seat]} as any);
+  const response = await app.request('/api/compaction/cancel', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({session: seat}),
+  });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({ok: true, preparation: {
+    attemptId: previous.attemptId, status: 'stopped', reason: 'compaction_cancelled', compact: 'submitted_unconfirmed',
+  }});
+  expect(f.e.getManualCompactionState(seat)).toMatchObject({stage: 'cancelled', reason: 'compaction_cancelled'});
+  expect(f.e.observedCompaction(seat)).toBeNull();
+  expect(f.e.hasPendingPostCompactStage(seat)).toBe(false);
+  expect(await f.e.drainPendingPostCompactStage(input)).toEqual({triggered: false, reason: 'no_pending_stage'});
+  f.advance(61_000);
+  await f.e.maybeAutoCompact(input);
+  expect(f.events).toEqual(before); // no automatic retry, restore, audit, or cancellation keystroke
+  expect(await f.e.triggerManualCompact(input, {operatorInitiated: true})).toMatchObject({triggered: true});
+  const next = f.e.getPreparationState(seat)!;
+  expect(next.attemptId).not.toBe(previous.attemptId);
+  expect(next.mapPath).not.toBe(previous.mapPath);
+  expect(f.texts().filter((t) => t.startsWith('/compact'))).toHaveLength(2);
+});
+
+for (const activity of ['running', 'unknown']) {
+  it(`cancel preserves the unconfirmed receipt, and a ${activity} pane cannot get a second /compact through a stale idle hook`, async () => {
+    const f = fixture();
+    await f.e.triggerManualCompact(input, {operatorInitiated: true, skipMap: true});
+    expect(f.e.cancelPreparation(seat)).toMatchObject({status: 'stopped', compact: 'submitted_unconfirmed'});
+    f.activity(activity);
+    f.hook('idle');
+    const retry = await f.e.triggerManualCompact(input, {operatorInitiated: true, skipMap: true});
+    expect(retry).toMatchObject({triggered: false, reason: activity === 'unknown' ? 'target_activity_unknown' : 'wait_for_idle_timeout'});
+    expect(f.texts().filter((t) => t.startsWith('/compact'))).toHaveLength(1);
+    expect(f.e.getPreparationState(seat)).toMatchObject({status: 'stopped', compact: 'not_sent'});
+  });
+}
+
+it('cancel fences a pending back-half pane read before any text or Enter can land', async () => {
+  const f = fixture();
+  await f.e.triggerManualCompact(input, {operatorInitiated: true, skipMap: true});
+  const before = [...f.events];
+  let release!: () => void;
+  const blocked = new Promise<void>((r) => { release = r; });
+  let entered!: () => void;
+  const reading = new Promise<void>((r) => { entered = r; });
+  vi.spyOn(f.transport as any, 'classifySendReadiness').mockImplementation(async () => {
+    entered(); await blocked; return {state: 'idle', reason: 'fixture', evidenceSource: 'fixture'};
+  });
+  const drain = f.e.drainPendingPostCompactStage(input);
+  await reading;
+  f.e.cancelPreparation(seat);
+  release();
+  await drain;
+  expect(f.events).toEqual(before);
+  expect(f.e.hasPendingPostCompactStage(seat)).toBe(false);
+  expect(f.e.getManualCompactionState(seat)?.stage).toBe('cancelled');
+});
+
+it('cancel after a back-half paste prevents Enter and does not resurrect the next stage', async () => {
+  const f = fixture();
+  await f.e.triggerManualCompact(input, {operatorInitiated: true, skipMap: true});
+  const before = f.events.length;
+  f.onText(() => { f.e.cancelPreparation(seat); });
+  await f.e.drainPendingPostCompactStage(input);
+  expect(f.events.slice(before).filter((ev) => ev.kind === 'keys' && ev.keys.includes('Enter'))).toEqual([]);
+  expect(f.e.hasPendingPostCompactStage(seat)).toBe(false);
+  expect(f.e.getPreparationState(seat)).toMatchObject({status: 'stopped', compact: 'submitted_unconfirmed'});
+});
+
+it('cancel after a back-half send settles prevents its late receipt from rearming restore', async () => {
+  const f = fixture();
+  await f.e.triggerManualCompact(input, {operatorInitiated: true, skipMap: true});
+  const real = f.transport.send.bind(f.transport);
+  vi.spyOn(f.transport, 'send').mockImplementation(async (...args) => {
+    const result = await real(...args);
+    f.e.cancelPreparation(seat);
+    return result;
+  });
+  await f.e.drainPendingPostCompactStage(input);
+  expect(f.e.hasPendingPostCompactStage(seat)).toBe(false);
+  const after = [...f.events];
+  await f.e.drainPendingPostCompactStage(input);
+  expect(f.events).toEqual(after);
+});
+
+for (const completedStages of [1, 2]) {
+  it(`cancel disarms the remaining restore/audit after ${completedStages} completed back-half stages`, async () => {
+    const f = fixture();
+    await f.e.triggerManualCompact(input, {operatorInitiated: true, skipMap: true});
+    for (let i = 0; i < completedStages; i++) await f.e.drainPendingPostCompactStage(input);
+    const before = [...f.events];
+    f.e.cancelPreparation(seat);
+    expect(f.e.getPreparationState(seat)).toMatchObject({status: 'stopped', compact: 'submitted_unconfirmed'});
+    expect(f.e.getManualCompactionState(seat)?.stage).toBe('cancelled');
+    expect(await f.e.drainPendingPostCompactStage(input)).toEqual({triggered: false, reason: 'no_pending_stage'});
+    expect(f.events).toEqual(before);
+  });
+}

@@ -1,6 +1,6 @@
 import { readFileSync, mkdirSync, unlinkSync, existsSync } from "node:fs";
 import { writeTextAtomically } from "./atomic-text-write.js";
-import { join, dirname, resolve } from "node:path";
+import { join, dirname, resolve, isAbsolute } from "node:path";
 import { homedir } from "node:os";
 import {
   getDefaultOpenRigPath,
@@ -52,6 +52,8 @@ export interface RiggedConfig {
   };
   skills: {
     root: string;
+    // OPR.0.7.0.13 (router): the person's recorded yes to the one-line seat-skills bootstrap.
+    routerLine: { enabled: boolean };
   };
   onboarding: {
     defaultPack: {
@@ -134,6 +136,7 @@ export interface RiggedConfig {
   // extra instruction file path for mission-specific reading lists.
   policies: {
     claudeCompaction: {
+      preparationRoot: string;
       enabled: boolean;
       thresholdPercent: number;
       preCompactInstruction: string;
@@ -162,6 +165,9 @@ export interface RiggedConfig {
   // `rig config get/set terminal.status_bar` surface + twin parity.
   terminal: {
     statusBar: boolean;
+    /** Rows of tmux scrollback per pane; `rig setup` writes it into the managed `~/.tmux.conf` block. */
+    historyLimit: number;
+    inheritTmuxEnvironment: boolean;
   };
   // Slice 15 (OPR.0.7.0.15) — the ONE switch for compact command-output
   // defaults (default off: today's output). Read by the CLI only; the daemon
@@ -175,9 +181,8 @@ export interface RiggedConfig {
   // off). Read by the daemon; the CLI key is the lockstep twin.
   provider: {
     usageWindows: boolean;
-    // Slice 18 (OPR.0.7.0.18) — the subscription move record and its reads (default off). Read by the daemon;
-    // the CLI key is the lockstep twin.
-    subscriptionMoves: boolean;
+    /** The providers the person chose at rig setup --providers ("claude", "codex" or "claude,codex"); "" when none was recorded. */
+    selected: string;
   };
   bundle: { servicesEnabled: boolean };
   // Slice 02 (OPR.0.7.0.2) — Pi seats report model-priced cost from persisted session entries
@@ -191,6 +196,13 @@ export interface RiggedConfig {
   transport: {
     verifyInputBox: boolean;
     localUserGuard: boolean;
+  };
+  // Slice 22 (OPR.0.7.2.22) — typed decisions (OpenRouter + Jev), off until enabled; read by the
+  // invoking rig process. templateDir holds optional <name>.yaml templates. Lockstep with the daemon twin.
+  decisions: {
+    enabled: boolean;
+    consumers: string;
+    templateDir: string;
   };
   // OPR.0.4.6.FS-1 W2 — queue-retention maintenance knobs (twin of the daemon
   // settings-store): enabled + the four bounded numeric tunables.
@@ -267,7 +279,7 @@ const DEFAULTS = {
   topology: { root: getDefaultOpenRigPath("topology") },
   // OPR.0.5.9.5 Wave B — canonical addressable context library.
   context: { root: getDefaultOpenRigPath("context"), systemWorld: "default" },
-  skills: { root: getDefaultOpenRigPath("skills") },
+  skills: { root: getDefaultOpenRigPath("skills"), routerLine: { enabled: false } },
   onboarding: { defaultPack: { enabled: true } },
   health: { contextPressure: { warningPercent: 95, criticalPercent: 99 } },
   files: { allowlist: "" },
@@ -315,6 +327,7 @@ const DEFAULTS = {
   // Slice 27 — opt-in default-off. Threshold default 80% per spec.
   policies: {
     claudeCompaction: {
+      preparationRoot: "",
       enabled: false,
       thresholdPercent: 80,
       preCompactInstruction: DEFAULT_CLAUDE_COMPACTION_PRE_COMPACT_INSTRUCTION,
@@ -340,6 +353,8 @@ const DEFAULTS = {
   // OPR.0.4.6.02 S1 — inner-tmux status bar OFF at launch by default.
   terminal: {
     statusBar: false,
+    historyLimit: 10000,
+    inheritTmuxEnvironment: false,
   },
   // Slice 15 — compact command-output defaults OFF until the switch is on.
   output: {
@@ -349,8 +364,7 @@ const DEFAULTS = {
   // Slice 01 — Codex usage windows OFF until the switch is on.
   provider: {
     usageWindows: false,
-    // Slice 18 — the subscription move record OFF until the switch is on.
-    subscriptionMoves: false,
+    selected: "",
   },
   bundle: { servicesEnabled: false },
   // Slice 02 — Pi cost facts OFF until the switch is on.
@@ -362,6 +376,12 @@ const DEFAULTS = {
   transport: {
     verifyInputBox: false,
     localUserGuard: false,
+  },
+  // Slice 22 — typed decisions OFF, no consumers, shipped templates only.
+  decisions: {
+    enabled: false,
+    consumers: "",
+    templateDir: "",
   },
   // OPR.0.4.6.FS-1 W2 — retention defaults (twin of daemon getDefaultValue).
   retention: {
@@ -427,6 +447,8 @@ export const VALID_KEYS = [
   "context.root",
   "context.system_world",
   "skills.root",
+  // OPR.0.7.0.13 (router): the person's recorded yes to OpenRig's one-line seat-skills bootstrap in AGENTS.md / CLAUDE.md.
+  "skills.router_line.enabled",
   "onboarding.default_pack.enabled",
   "launch.non_interruptive",
   "health.context_pressure.warning_percent",
@@ -455,7 +477,8 @@ export const VALID_KEYS = [
   "runtime.codex.hooks_enabled",
   "runtime.readiness_timeout_seconds",
   // Slice 27 — Claude auto-compaction policy. SC-29 EXCEPTION #10:
-  // 7 ConfigStore keys (lockstep with daemon SETTINGS_VALID_KEYS).
+  // 8 ConfigStore keys (lockstep with daemon SETTINGS_VALID_KEYS).
+  "policies.claude_compaction.preparation_root",
   "policies.claude_compaction.enabled",
   "policies.claude_compaction.threshold_percent",
   "policies.claude_compaction.pre_compact_instruction",
@@ -476,19 +499,26 @@ export const VALID_KEYS = [
   // boolean (default off), lockstep with the daemon settings-store twin
   // (the parity test pins both). Flip is future-launches-only (BR-1).
   "terminal.status_bar",
+  // The managed ~/.tmux.conf block's history-limit, written by `rig setup`; lockstep with the daemon twin.
+  "terminal.history_limit",
+  "terminal.inherit_tmux_environment",
   // Slice 15 — compact command-output defaults; lockstep with the daemon twin.
   "output.compact",
   "output.whoami_peers",
   // Slice 01 — Codex and Claude usage windows in the provider view; lockstep with the daemon twin.
   "provider.usage_windows",
+  // The providers chosen at rig setup --providers, which kernel boot honours; lockstep with the daemon twin.
+  "provider.selected",
   // Service-backed archives, including packing, preview and durable-target admission; default off.
   "bundle.services_enabled",
-  // Slice 18 — the subscription move record and its reads; lockstep with the daemon twin.
-  "provider.subscription_moves",
   "usage.pi_cost_facts",
   "usage.pi_openrouter_charge",
   "transport.verify_input_box",
   "transport.local_user_guard",
+  // Slice 22 — typed decisions (OpenRouter + Jev), off by default; lockstep with the daemon twin.
+  "decisions.enabled",
+  "decisions.consumers",
+  "decisions.template_dir",
   // OPR.0.4.6.FS-1 W2 — queue-retention maintenance knobs; CLI-settable twin,
   // lockstep with the daemon settings-store SETTINGS_VALID_KEYS.
   "retention.enabled",
@@ -539,6 +569,7 @@ export const ENV_MAP: Record<ValidKey, { primary: string; legacy?: string }> = {
   "context.root": { primary: "OPENRIG_CONTEXT_ROOT" },
   "context.system_world": { primary: "OPENRIG_CONTEXT_SYSTEM_WORLD" },
   "skills.root": { primary: "OPENRIG_SKILLS_ROOT" },
+  "skills.router_line.enabled": { primary: "OPENRIG_SKILLS_ROUTER_LINE_ENABLED" },
   "onboarding.default_pack.enabled": { primary: "OPENRIG_ONBOARDING_DEFAULT_PACK_ENABLED" },
   "launch.non_interruptive": { primary: "OPENRIG_LAUNCH_NON_INTERRUPTIVE" },
   "health.context_pressure.warning_percent": { primary: "OPENRIG_HEALTH_CONTEXT_PRESSURE_WARNING_PERCENT" },
@@ -569,6 +600,7 @@ export const ENV_MAP: Record<ValidKey, { primary: string; legacy?: string }> = {
   "runtime.readiness_timeout_seconds": { primary: "OPENRIG_RUNTIME_READINESS_TIMEOUT_SECONDS" },
   // Slice 27 — Claude auto-compaction policy. OPENRIG_X primary only
   // (net-new keys, no legacy).
+  "policies.claude_compaction.preparation_root": { primary: "OPENRIG_POLICIES_CLAUDE_COMPACTION_PREPARATION_ROOT" },
   "policies.claude_compaction.enabled": { primary: "OPENRIG_POLICIES_CLAUDE_COMPACTION_ENABLED" },
   "policies.claude_compaction.threshold_percent": { primary: "OPENRIG_POLICIES_CLAUDE_COMPACTION_THRESHOLD_PERCENT" },
   "policies.claude_compaction.pre_compact_instruction": { primary: "OPENRIG_POLICIES_CLAUDE_COMPACTION_PRE_COMPACT_INSTRUCTION" },
@@ -585,15 +617,20 @@ export const ENV_MAP: Record<ValidKey, { primary: string; legacy?: string }> = {
   "snapshots.periodic.retention_keep": { primary: "OPENRIG_SNAPSHOTS_PERIODIC_RETENTION_KEEP" },
   // OPR.0.4.6.02 S1 — net-new key; OPENRIG_* primary only (no RIGGED_* legacy).
   "terminal.status_bar": { primary: "OPENRIG_TERMINAL_STATUS_BAR" },
+  "terminal.history_limit": { primary: "OPENRIG_TERMINAL_HISTORY_LIMIT" },
+  "terminal.inherit_tmux_environment": { primary: "OPENRIG_TERMINAL_INHERIT_TMUX_ENVIRONMENT" },
   "output.compact": { primary: "OPENRIG_OUTPUT_COMPACT" },
   "output.whoami_peers": { primary: "OPENRIG_OUTPUT_WHOAMI_PEERS" },
   "provider.usage_windows": { primary: "OPENRIG_PROVIDER_USAGE_WINDOWS" },
+  "provider.selected": { primary: "OPENRIG_PROVIDER_SELECTED" },
   "bundle.services_enabled": { primary: "OPENRIG_BUNDLE_SERVICES_ENABLED" },
-  "provider.subscription_moves": { primary: "OPENRIG_PROVIDER_SUBSCRIPTION_MOVES" },
   "usage.pi_cost_facts": { primary: "OPENRIG_USAGE_PI_COST_FACTS" },
   "usage.pi_openrouter_charge": { primary: "OPENRIG_USAGE_PI_OPENROUTER_CHARGE" },
   "transport.local_user_guard": { primary: "OPENRIG_TRANSPORT_LOCAL_USER_GUARD" },
   "transport.verify_input_box": { primary: "OPENRIG_TRANSPORT_VERIFY_INPUT_BOX" },
+  "decisions.enabled": { primary: "OPENRIG_DECISIONS_ENABLED" },
+  "decisions.consumers": { primary: "OPENRIG_DECISIONS_CONSUMERS" },
+  "decisions.template_dir": { primary: "OPENRIG_DECISIONS_TEMPLATE_DIR" },
   // OPR.0.4.6.FS-1 W2 — retention knobs; net-new keys, OPENRIG_* primary only.
   "retention.enabled": { primary: "OPENRIG_RETENTION_ENABLED" },
   "retention.transitions_days": { primary: "OPENRIG_RETENTION_TRANSITIONS_DAYS" },
@@ -635,6 +672,7 @@ const KEY_TO_PATH: Record<ValidKey, string[]> = {
   "context.root": ["context", "root"],
   "context.system_world": ["context", "systemWorld"],
   "skills.root": ["skills", "root"],
+  "skills.router_line.enabled": ["skills", "routerLine", "enabled"],
   "onboarding.default_pack.enabled": ["onboarding", "defaultPack", "enabled"],
   "launch.non_interruptive": ["launch", "nonInterruptive"],
   "health.context_pressure.warning_percent": ["health", "contextPressure", "warningPercent"],
@@ -658,6 +696,7 @@ const KEY_TO_PATH: Record<ValidKey, string[]> = {
   "feed.subscriptions.audit_log": ["feed", "subscriptions", "auditLog"],
   "runtime.codex.hooks_enabled": ["runtime", "codex", "hooksEnabled"],
   "runtime.readiness_timeout_seconds": ["runtime", "readinessTimeoutSeconds"],
+  "policies.claude_compaction.preparation_root": ["policies", "claudeCompaction", "preparationRoot"],
   "policies.claude_compaction.enabled": ["policies", "claudeCompaction", "enabled"],
   "policies.claude_compaction.threshold_percent": ["policies", "claudeCompaction", "thresholdPercent"],
   "policies.claude_compaction.pre_compact_instruction": ["policies", "claudeCompaction", "preCompactInstruction"],
@@ -673,15 +712,20 @@ const KEY_TO_PATH: Record<ValidKey, string[]> = {
   "snapshots.periodic.interval_seconds": ["snapshots", "periodic", "intervalSeconds"],
   "snapshots.periodic.retention_keep": ["snapshots", "periodic", "retentionKeep"],
   "terminal.status_bar": ["terminal", "statusBar"],
+  "terminal.history_limit": ["terminal", "historyLimit"],
+  "terminal.inherit_tmux_environment": ["terminal", "inheritTmuxEnvironment"],
   "output.compact": ["output", "compact"],
   "output.whoami_peers": ["output", "whoamiPeers"],
   "provider.usage_windows": ["provider", "usageWindows"],
+  "provider.selected": ["provider", "selected"],
   "bundle.services_enabled": ["bundle", "servicesEnabled"],
-  "provider.subscription_moves": ["provider", "subscriptionMoves"],
   "usage.pi_cost_facts": ["usage", "piCostFacts"],
   "usage.pi_openrouter_charge": ["usage", "piOpenRouterCharge"],
   "transport.local_user_guard": ["transport", "localUserGuard"],
   "transport.verify_input_box": ["transport", "verifyInputBox"],
+  "decisions.enabled": ["decisions", "enabled"],
+  "decisions.consumers": ["decisions", "consumers"],
+  "decisions.template_dir": ["decisions", "templateDir"],
   "retention.enabled": ["retention", "enabled"],
   "retention.transitions_days": ["retention", "transitionsDays"],
   "retention.watchdog_days": ["retention", "watchdogDays"],
@@ -765,6 +809,22 @@ function getNestedValue(obj: Record<string, unknown>, parts: string[]): unknown 
     current = (current as Record<string, unknown>)[part];
   }
   return current;
+}
+
+/**
+ * After a reset deletes a leaf key, remove any now-empty object literals along
+ * the leaf's own parent path, walking from the deepest parent toward the root.
+ * Stops as soon as a parent still has a key (a sibling, or an unrelated key),
+ * so unrelated empty objects elsewhere in the file are never touched. If the
+ * walk empties the root itself, it is left as `{}` rather than removed.
+ */
+function pruneEmptyAncestors(root: Record<string, unknown>, parentParts: string[]): void {
+  for (let depth = parentParts.length; depth >= 1; depth--) {
+    const obj = getNestedValue(root, parentParts.slice(0, depth));
+    if (obj == null || typeof obj !== "object" || Object.keys(obj).length > 0) break;
+    const grandparent = depth === 1 ? root : (getNestedValue(root, parentParts.slice(0, depth - 1)) as Record<string, unknown>);
+    delete grandparent[parentParts[depth - 1]!];
+  }
 }
 
 function setNestedValue(obj: Record<string, unknown>, parts: string[], value: unknown): void {
@@ -890,6 +950,12 @@ const KEY_CONSTRAINTS: Partial<Record<ValidKey, (raw: string, coerced: string | 
       throw new Error(`Invalid value for runtime.readiness_timeout_seconds: must be an integer in [1, 600], got "${raw}"`);
     }
   },
+  // tmux trims a full pane by a tenth of the limit, so 2000 keeps the 1000-row transcript window.
+  "terminal.history_limit": (raw, coerced) => {
+    if (!/^\d+$/.test(raw.trim()) || typeof coerced !== "number" || !Number.isSafeInteger(coerced) || coerced < 2000 || coerced > 1_000_000) {
+      throw new Error(`Invalid value for terminal.history_limit: must be an integer in [2000, 1000000], got "${raw}"`);
+    }
+  },
   // daemon.port had no KEY_CONSTRAINTS entry, so `rig config set daemon.port
   // 99999` stored 99999 and the next daemon start died with a raw
   // ERR_SOCKET_BAD_PORT from serve(). The check range-validates the value
@@ -932,6 +998,16 @@ const KEY_CONSTRAINTS: Partial<Record<ValidKey, (raw: string, coerced: string | 
   // e.g. 50 = compact earlier; range is 1-100 inclusive. A value of 0
   // would fire /compact on every poll tick (catastrophic without
   // default-off as backstop).
+  "provider.selected": (_raw, value) => {
+    if (typeof value !== "string" || !/^(|claude|codex|claude,codex|codex,claude)$/.test(value)) {
+      throw new Error("Invalid provider.selected: use claude, codex, claude,codex, or an empty string for no recorded choice");
+    }
+  },
+  "policies.claude_compaction.preparation_root": (_raw, value) => {
+    if (typeof value !== "string" || (value !== "" && (!isAbsolute(value) || value.includes("\0")))) {
+      throw new Error("Invalid policies.claude_compaction.preparation_root: use an absolute path or an empty string for the default");
+    }
+  },
   "policies.claude_compaction.threshold_percent": (raw, coerced) => {
     const trimmed = (raw ?? "").trim();
     if (!/^-?\d+$/.test(trimmed)) {
@@ -1012,6 +1088,12 @@ const KEY_CONSTRAINTS: Partial<Record<ValidKey, (raw: string, coerced: string | 
   "queue.wake_unconfirmed_window_minutes": positiveIntegerConstraint("queue.wake_unconfirmed_window_minutes"),
   "queue.wake_swap_grace_seconds": positiveIntegerConstraint("queue.wake_swap_grace_seconds"),
   "queue.wake_human_rung": wakeHumanRungConstraint,
+  // Slice 22 — every rig process resolves the same folder, whatever its cwd.
+  "decisions.template_dir": (_raw, value) => {
+    if (typeof value !== "string" || (value !== "" && (!isAbsolute(value) || value.includes("\0")))) {
+      throw new Error("Invalid decisions.template_dir: use an absolute path, or an empty string for the shipped templates only");
+    }
+  },
 };
 
 function validateKeyConstraints(key: ValidKey, raw: string, coerced: string | number | boolean): void {
@@ -1139,6 +1221,7 @@ export class ConfigStore {
       },
       skills: {
         root: v("skills.root") as string,
+        routerLine: { enabled: v("skills.router_line.enabled") as boolean },
       },
       onboarding: {
         defaultPack: {
@@ -1192,6 +1275,7 @@ export class ConfigStore {
       },
       policies: {
         claudeCompaction: {
+          preparationRoot: v("policies.claude_compaction.preparation_root") as string,
           enabled: v("policies.claude_compaction.enabled") as boolean,
           thresholdPercent: v("policies.claude_compaction.threshold_percent") as number,
           preCompactInstruction: v("policies.claude_compaction.pre_compact_instruction") as string,
@@ -1216,6 +1300,8 @@ export class ConfigStore {
       },
       terminal: {
         statusBar: v("terminal.status_bar") as boolean,
+        historyLimit: v("terminal.history_limit") as number,
+        inheritTmuxEnvironment: v("terminal.inherit_tmux_environment") as boolean,
       },
       output: {
         compact: v("output.compact") as boolean,
@@ -1223,7 +1309,7 @@ export class ConfigStore {
       },
       provider: {
         usageWindows: v("provider.usage_windows") as boolean,
-        subscriptionMoves: v("provider.subscription_moves") as boolean,
+        selected: v("provider.selected") as string,
       },
       bundle: { servicesEnabled: v("bundle.services_enabled") as boolean },
       usage: {
@@ -1233,6 +1319,11 @@ export class ConfigStore {
       transport: {
         localUserGuard: v("transport.local_user_guard") as boolean,
         verifyInputBox: v("transport.verify_input_box") as boolean,
+      },
+      decisions: {
+        enabled: v("decisions.enabled") as boolean,
+        consumers: v("decisions.consumers") as string,
+        templateDir: v("decisions.template_dir") as string,
       },
       retention: {
         enabled: v("retention.enabled") as boolean,
@@ -1446,6 +1537,7 @@ export class ConfigStore {
           throw new Error(`Invalid context-pressure policy: warning (${warning}) must be less than critical (${critical})`);
         }
       }
+      pruneEmptyAncestors(fileConfig, parentParts);
     }
     this.writeConfig(JSON.stringify(fileConfig, null, 2) + "\n");
   }

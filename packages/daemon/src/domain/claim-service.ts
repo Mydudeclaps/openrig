@@ -1,14 +1,16 @@
+import { shellQuote } from "../adapters/shell-quote.js";
+import { resumeTypeForRuntime, validateResumeToken } from "./resume-token-validation.js";
 import { OutboxHandler } from "./outbox-handler.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
-import type { SessionRegistry } from "./session-registry.js";
+import { SessionAddressConflict, type SessionRegistry } from "./session-registry.js";
 import type { DiscoveryRepository } from "./discovery-repository.js";
 import type { EventBus } from "./event-bus.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import type { TranscriptStore } from "./transcript-store.js";
 import { startTmuxTranscriptCapture } from "./transcript-capture.js";
 import { deriveResumeToken, type ResumeTokenCaptureDeps } from "./resume-token-capture.js";
-import { verifyClaudePaneRuntime, verifyCodexPaneProcess, type NativeProcessLister } from "./native-process-lineage.js";
+import { verifyClaudePaneRuntime, verifyCodexPaneProcess, witnessedClaudeVersionLabel, type NativeProcessLister } from "./native-process-lineage.js";
 import {
   observeSolePane,
   paneObservationVerdict,
@@ -16,10 +18,38 @@ import {
 } from "./pane-binding-observation.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { DeliveryGuardError } from "./seat-delivery-guard.js";
+import { SessionTransport, type SendResult } from "./session-transport.js";
+
+/** Describe a failed identity-hint send by what the transport positively reported about the seat's input. Only
+ *  `inputPhase: "not_reached"` establishes that nothing was written; an `attempted` write may have landed, a `written`
+ *  text may sit unsubmitted, and a result without a phase does not say. The transport's reason and error are kept. */
+function describeHintFailure(tmuxSession: string, result: SendResult): string {
+  const detail = [result.reason ?? "send_failed", result.error ?? ""].join(". ").trim();
+  if (result.sent === true || result.inputPhase === "written") {
+    return `identity hint text was written into ${tmuxSession}, but submission is not confirmed: ${detail}`;
+  }
+  if (result.inputPhase === "not_reached") return `identity hint not typed into ${tmuxSession}: ${detail}`;
+  if (result.inputPhase === "attempted") {
+    return `identity hint may have been typed into ${tmuxSession}: the text write was issued and reported a failure, so it may or may not have landed: ${detail}`;
+  }
+  return `could not establish whether identity hint was typed into ${tmuxSession}: the send did not report input placement: ${detail}`;
+}
 
 export type ClaimResult =
   | { ok: true; nodeId: string; sessionId: string }
   | { ok: false; code: string; error: string };
+
+export interface AdoptionCaptureOutcome {
+  outcome: "captured" | "preserved" | "skipped" | "exempt" | "noop" | "error";
+  reason?: string;
+}
+
+export interface ReconcileResumeMetadata {
+  capture: AdoptionCaptureOutcome;
+  /** Recorded metadata is not proof of conversation continuity or resumability. */
+  status: "recorded" | "missing" | "unknown" | "not_applicable";
+  guidance?: string;
+}
 
 /**
  * OPR.0.3.4.3 — outcome of the no-launch reconcile (adopt a hand-resumed
@@ -40,6 +70,8 @@ export interface ReconcileSessionResult {
   projectionDrift: string[];
   /** Provider-session conversation continuity is never verified by reconcile. */
   continuity: "unverified";
+  /** Absent for the binding-only missing-pane repair, which does not capture. */
+  resumeMetadata?: ReconcileResumeMetadata;
 }
 
 export interface MissingPaneRepairResult extends ReconcileSessionResult {
@@ -81,7 +113,7 @@ interface ClaimServiceDeps {
   };
   /** #421 — start time of the pane's current Claude process; a sidecar sampled earlier is skipped. */
   claudeProcessStartedAt?: ResumeTokenCaptureDeps["claudeProcessStartedAt"];
-  /** Process census for the runtime proof in `reconcileSession`; defaults to the live process table. */
+  /** Process census for the runtime proof in `reconcileSession` and #86's native version-label witness; defaults to the live process table. */
   listProcesses?: NativeProcessLister;
   resumeTokenCapturer?: {
     captureCodexThreadId(sessionName: string): Promise<string | undefined>;
@@ -127,6 +159,8 @@ export class ClaimService {
   private resumeTokenCapturer: ClaimServiceDeps["resumeTokenCapturer"] | null;
   private piRunnerStateStore: ClaimServiceDeps["piRunnerStateStore"] | null;
   private ompRunnerStateStore: ClaimServiceDeps["ompRunnerStateStore"] | null;
+  /** Delivers the claim hint the way the startup retry is delivered (startup-orchestrator.ts builds the same transport). */
+  private sessionTransport: SessionTransport | null;
 
   constructor(deps: ClaimServiceDeps) {
     if (deps.db !== deps.rigRepo.db) throw new Error("ClaimService: rigRepo must share the same db handle");
@@ -147,6 +181,9 @@ export class ClaimService {
     this.resumeTokenCapturer = deps.resumeTokenCapturer ?? null;
     this.piRunnerStateStore = deps.piRunnerStateStore ?? null;
     this.ompRunnerStateStore = deps.ompRunnerStateStore ?? null;
+    this.sessionTransport = this.tmuxAdapter ? new SessionTransport({
+      db: deps.db, rigRepo: deps.rigRepo, sessionRegistry: deps.sessionRegistry, tmuxAdapter: this.tmuxAdapter, eventBus: deps.eventBus,
+    }) : null;
   }
 
   private async observeBindingPane(
@@ -199,22 +236,30 @@ export class ClaimService {
     }
   }
 
-  /** Best-effort: send a short identity hint into the adopted session after claim. */
+  /**
+   * Best-effort: send a short identity hint into the adopted session after claim. It goes through the delivery path as
+   * an OpenRig notice, so the seat's level types or holds it, and at every level the prompt guard refuses it while the
+   * seat is waiting at a native prompt (slice 21 I7).
+   */
   private async deliverClaimHint(tmuxSession: string, meta: {
     rigName: string; logicalId: string;
   }): Promise<void> {
-    if (!this.tmuxAdapter) return;
+    if (!this.sessionTransport) return;
     const hint = `--- OpenRig: You have been adopted into rig "${meta.rigName}" as ${meta.logicalId}. Run: rig whoami --json ---`;
-    const write = async () => {
-      const sent = await this.tmuxAdapter!.sendText(tmuxSession, hint);
-      if (sent.ok) await this.tmuxAdapter!.sendKeys(tmuxSession, ["Enter"]);
-    };
-    const guard = this.tmuxAdapter.deliveryGuard;
-    if (guard) await guard.operation(tmuxSession, write, async target => {
-      new OutboxHandler(this.db).retain({ outboxId: `guard-claim-${target.nodeId}-${target.occupant ?? "unknown"}`,
-        senderSession: "claim@system", destinationSession: tmuxSession, body: hint }, target);
+    const guard = this.tmuxAdapter?.deliveryGuard;
+    const target = guard?.maybeTarget(tmuxSession);
+    // One held copy per occupant, however often the hint is retried.
+    const deliveryId = target ? `guard-claim-${target.nodeId}-${target.occupant ?? "unknown"}` : undefined;
+    // A claim runs under its lifecycle lease, and a send inside that lease isn't re-checked against the level (a terminal
+    // member's default holds OpenRig notices), so the hint checks the level itself.
+    if (guard && target && deliveryId && guard.holdsInput(target.nodeId, { source: "openrig", urgent: false })) {
+      new OutboxHandler(this.db).retain({ outboxId: deliveryId, senderSession: "claim@system", destinationSession: tmuxSession, body: hint }, target);
+      return;
+    }
+    const result = await this.sessionTransport.send(tmuxSession, hint, {
+      actorSession: "claim@system", openrigNotice: true, ...(deliveryId ? { deliveryId } : {}),
     });
-    else await write();
+    if (!result.ok) console.warn(`[claim] ${describeHintFailure(tmuxSession, result)}`);
   }
 
   private maybeProvisionContextCollector(runtime: string | null | undefined, cwd: string | null | undefined, tmuxSession: string): void {
@@ -247,7 +292,7 @@ export class ClaimService {
    */
   private async captureResumeTokenOnAdoption(input: {
     rigId: string; nodeId: string; sessionId: string; sessionName: string; runtime: string | null;
-  }): Promise<void> {
+  }): Promise<AdoptionCaptureOutcome> {
     try {
       // Derivation is the shared PURE helper (OPR.0.4.3.04 B2 — reused by the
       // seat-handover discovered-mode capture); persistence + events stay here so
@@ -256,11 +301,12 @@ export class ClaimService {
         { runtime: input.runtime, sessionName: input.sessionName },
         { contextUsageStore: this.contextUsageStore, claudeProcessStartedAt: this.claudeProcessStartedAt, resumeTokenCapturer: this.resumeTokenCapturer, piRunnerStateStore: this.piRunnerStateStore, ompRunnerStateStore: this.ompRunnerStateStore },
       );
-      if (derived.outcome === "exempt" || derived.outcome === "noop") return;
+      if (derived.outcome === "exempt" || derived.outcome === "noop") return { outcome: derived.outcome };
       const runtime = input.runtime as string; // non-null past exempt
       if (derived.outcome === "skipped") {
         this.emitCaptureSkip(input, runtime, derived.reason);
-        return;
+        // The legacy capture reason also covers an absent result before a deadline.
+        return { outcome: "skipped", reason: derived.reason === "probe_timeout" ? "not_obtained" : derived.reason };
       }
       const validation = { resumeType: derived.resumeType, token: derived.token };
 
@@ -283,8 +329,10 @@ export class ClaimService {
               runtime, outcome: "preserved", resumeType: validation.resumeType, reason: "higher_rank_present", redacted: true,
             });
       } catch { /* best-effort */ }
+      return { outcome: wrote ? "captured" : "preserved" };
     } catch {
-      // best-effort — capture never fails or blocks the adoption (PRD Rule 7)
+      // No exception text or native token crosses the result boundary.
+      return { outcome: "error", reason: "capture_failed" };
     }
   }
 
@@ -403,6 +451,7 @@ export class ClaimService {
 
       return { ok: true, nodeId, sessionId };
     } catch (err) {
+      if (err instanceof SessionAddressConflict) return { ok: false, code: "address_conflict", error: err.message };
       return { ok: false, code: "claim_error", error: (err as Error).message };
     }
   }
@@ -526,11 +575,10 @@ export class ClaimService {
     const projectionDrift: string[] = [];
     const paneObservation = await this.observeBindingPane(sessionName);
     if (!paneObservation.ok) projectionDrift.push(paneObservation.detail);
+    const paneTarget = paneObservation.ok ? paneObservation.pane : sessionName;
     let paneCommand: string | null = null;
     try {
-      paneCommand = await this.tmuxAdapter.getPaneCommand(
-        paneObservation.ok ? paneObservation.pane : sessionName,
-      );
+      paneCommand = await this.tmuxAdapter.getPaneCommand(paneTarget);
     } catch { paneCommand = null; }
     if (nodeRow.runtime) {
       const expectation: Record<string, string[]> = {
@@ -542,7 +590,10 @@ export class ClaimService {
       if (!paneCommand) {
         projectionDrift.push(`runtime unverified: pane command unreadable; node declares runtime "${nodeRow.runtime}"`);
       } else if (expected && expected.length > 0 && !expected.includes(paneCommand)
-        && !await this.runtimeProvenInPane(nodeRow.runtime, paneObservation.ok ? paneObservation.pane : sessionName)) {
+        // #86: a native install's version label confirms claude-code only with its OS executable witness.
+        && !(nodeRow.runtime === "claude-code" && await witnessedClaudeVersionLabel(paneCommand,
+          { target: paneTarget, tmux: this.tmuxAdapter, listProcesses: this.listProcesses }))
+        && !await this.runtimeProvenInPane(nodeRow.runtime, paneTarget)) {
         // A script-launched runtime reads as its launcher (`sh`); only a pane whose process tree shows no such runtime is drift.
         projectionDrift.push(`runtime unverified: pane command "${paneCommand}" does not confirm runtime "${nodeRow.runtime}"`);
       }
@@ -599,10 +650,25 @@ export class ClaimService {
       // Pure reads only (sidecar file / pid-keyed log) — consistent with the
       // no-launch/no-input contract above; does NOT touch `continuity`
       // (FR-3 captures a token, it does not assert conversation continuity).
-      await this.captureResumeTokenOnAdoption({
+      const capture = await this.captureResumeTokenOnAdoption({
         rigId: nodeRow.rig_id, nodeId: nodeRow.id, sessionId, sessionName,
         runtime: nodeRow.runtime,
       });
+      const expectedType = resumeTypeForRuntime(nodeRow.runtime);
+      let status: ReconcileResumeMetadata["status"] = expectedType ? "unknown" : "not_applicable";
+      if (expectedType) {
+        try {
+          const row = this.db.prepare("SELECT resume_type, resume_token FROM sessions WHERE id=?").get(sessionId) as
+            { resume_type: string | null; resume_token: string | null } | undefined;
+          status = row?.resume_type === expectedType && validateResumeToken(nodeRow.runtime, row.resume_token).ok ? "recorded" : "missing";
+        } catch { /* Reporting cannot turn an already committed binding into failure. */ }
+      }
+      const resumeMetadata: ReconcileResumeMetadata = { capture, status };
+      if (status === "missing" || status === "unknown") {
+        resumeMetadata.guidance = `The seat is bound, but future resume metadata is ${status === "missing" ? "missing" : "unconfirmed"}. ` +
+          `After confirming the live conversation identity, pipe its verified token to rig seat set-resume-token ${shellQuote(sessionName)} --token-stdin --reason "verified live conversation". ` +
+          "The token must come from stdin, never a command argument. No prior token was copied.";
+      }
 
       return {
         ok: true,
@@ -615,9 +681,11 @@ export class ClaimService {
           sessionId,
           projectionDrift,
           continuity: "unverified",
+          resumeMetadata,
         },
       };
     } catch (err) {
+      if (err instanceof SessionAddressConflict) return { ok: false, code: "address_conflict", message: err.message };
       return { ok: false, code: "reconcile_error", message: (err as Error).message };
     }
   }
@@ -832,6 +900,7 @@ export class ClaimService {
 
       return { ok: true, nodeId, sessionId };
     } catch (err) {
+      if (err instanceof SessionAddressConflict) return { ok: false, code: "address_conflict", error: err.message };
       return { ok: false, code: "claim_error", error: (err as Error).message };
     }
   }

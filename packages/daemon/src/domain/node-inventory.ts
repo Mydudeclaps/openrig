@@ -1,3 +1,4 @@
+import { physicalSessionName } from "./session-registry.js";
 import fs from "node:fs";
 import type { CaptureObserver, ObservedBinding } from "./capture-observer.js";
 import type Database from "better-sqlite3";
@@ -13,7 +14,7 @@ import type { ContextUsageStore } from "./context-usage-store.js";
 import type { TranscriptStore } from "./transcript-store.js";
 import type { AgentActivityStore } from "./agent-activity-store.js";
 import type { SeatActivityService } from "./seat-activity-service.js";
-import { deriveDisplayActivity } from "./activity-taxonomy.js";
+import { deriveDisplayActivity, type ArbitratedSeatState, type EvidenceRungId } from "./activity-taxonomy.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { probeSessionActivity, mapPaneState } from "./session-transport.js";
 import { DEFAULT_STRUCTURAL_STALE_MS, type StructuralObservation } from "./seat-structural-activity-service.js";
@@ -66,6 +67,7 @@ interface InventoryRow {
   startup_status: string | null;
   resume_type: string | null;
   resume_token: string | null;
+  resume_provenance?: string | null;
   startup_completed_at: string | null;
   binding_attachment_type: string | null;
   binding_id: string | null;
@@ -440,9 +442,11 @@ function deriveHeldReason(db: Database.Database, rigId: string, nodeId: string, 
 
   // Superseded by a later rig-scoped restore event containing this node.
   // restore.completed/restore.subset_completed are rig-scoped (no top-level nodeId),
-  // so query by rig_id and parse payloads for node containment.
+  // so query by rig_id and parse payloads for node containment. The first type list
+  // is idx_events_restore_rig_seq's own condition, which lets the read use that index
+  // instead of every later event of the rig; the second keeps the two types read.
   const laterRestoreRows = db.prepare(
-    "SELECT payload FROM events WHERE rig_id = ? AND type IN ('restore.completed', 'restore.subset_completed') AND seq > ? ORDER BY seq DESC"
+    "SELECT payload FROM events WHERE rig_id = ? AND type IN ('restore.completed', 'restore.subset_completed', 'restore.outcome_reconciled') AND type IN ('restore.completed', 'restore.subset_completed') AND seq > ? ORDER BY seq DESC"
   ).all(rigId, heldRow.seq) as { payload: string }[];
   for (const row of laterRestoreRows) {
     try {
@@ -633,6 +637,7 @@ function runInventoryRowQuery(db: Database.Database, whereClause: string, orderC
       s.startup_status,
       s.resume_type,
       s.resume_token,
+      s.resume_provenance,
       s.startup_completed_at,
       b.attachment_type as binding_attachment_type,
       b.id as binding_id,
@@ -742,7 +747,7 @@ function buildInventoryEntry(
     attachmentType: (row.binding_attachment_type as NodeInventoryEntry["attachmentType"]) ?? null,
     nodeKind: deriveNodeKind(row.runtime),
     runtime: row.runtime,
-    ...(communityHarnessOf(row.session_community_harness, row.runtime) ? { communityHarness: communityHarnessLabel(row.runtime!) } : {}),
+    ...(communityHarnessOf(row.session_community_harness, row.runtime) ? { communityHarness: communityHarnessLabel(row.runtime!, undefined, { resumeType: row.resume_type, resumeToken: row.resume_token, resumeProvenance: row.resume_provenance ?? null }) } : {}),
     sessionStatus,
     storedSessionStatus: row.session_status,
     intentionallyStopped: row.intentionally_stopped === 1
@@ -1146,6 +1151,64 @@ export function getNodeDetailWithContext(
   return detail;
 }
 
+/** The rungs that can answer the needs-input signal (the ones `arbitrate` consults,
+ *  chrome > hooks > self-report). Sampling carries no needs-input evidence. */
+const NEEDS_INPUT_RUNGS: readonly EvidenceRungId[] = ["needs-input-chrome", "lifecycle-hooks", "self-report"];
+
+/**
+ * The shared per-seat and rig-rollup attention predicate. Clients render the
+ * served result rather than repeating this rule. A seat
+ * needs attention iff ANY of:
+ *   - lifecycle `attention_required`
+ *   - startup `attention_required`/`failed` — counted DIRECTLY from
+ *     startupStatus; `latestError` may legitimately be null here
+ *   - `needs_input`: the ARBITRATED seat state is the first answer when it has one
+ *     (`arbitratedNeedsInput` — the same oracle the per-seat row renders, pane chrome
+ *     included), and the hook store's live `needs_input` is the fallback when the
+ *     arbitrated signal is `null` (stale hooks arrive as `unknown` and contribute
+ *     nothing — never guessed). The rig total and the seat row must not disagree
+ *     about the same seat.
+ *   - a held seat (`heldReason` present)
+ *   - a recorded startup error (`latestError` present)
+ */
+export function seatNeedsAttention(
+  entry: NodeInventoryEntry,
+  activity: AgentActivity | null,
+  arbitratedNeedsInput: boolean | null = null,
+): boolean {
+  return entry.lifecycleState === "attention_required"
+    || entry.startupStatus === "attention_required"
+    || entry.startupStatus === "failed"
+    || (arbitratedNeedsInput ?? activity?.state === "needs_input")
+    || entry.heldReason != null
+    || entry.latestError != null;
+}
+
+/**
+ * #180 review — the arbitrated needs-input answer is TRI-STATE; collapsing it to
+ * `needsInput.count > 0` treats `count: 0` as a definite "no" even when no source said
+ * "no". `count: 0` is also the default when no authoritative rung reported needs-input:
+ * a Codex seat (hooks at `trial`), a generic/Pi/OMP seat (sampling floor only), a seat
+ * with no declaration, or a Claude seat whose declared rungs have not reported (after a
+ * daemon restart, or once its hook rung is downgraded). A live `PermissionRequest` in
+ * the hook store must still count there. Rules:
+ *   - count > 0                                    → true  (the service only reports a
+ *     positive count from an authoritative source)
+ *   - count is 0 AND needs-input evidence from an authoritative rung supplied it → false
+ *     (an observed clear legitimately supersedes a stale hook)
+ *   - otherwise                                    → null (let the hook store decide).
+ *     A declared rung is a capability, not an observation that the seat is clear.
+ */
+export function arbitratedNeedsInputSignal(
+  state: Pick<ArbitratedSeatState, "needsInput" | "needsInputEvidence"> | null,
+): boolean | null {
+  if (!state) return null;
+  if (state.needsInput.count > 0) return true;
+  const observedClear = state.needsInputEvidence != null
+    && NEEDS_INPUT_RUNGS.includes(state.needsInputEvidence.rung);
+  return observedClear ? false : null;
+}
+
 /**
  * Slice 15 — populate `terminalActive` + `hasAssignedWork` per node.
  *
@@ -1161,10 +1224,11 @@ export function getNodeDetailWithContext(
  */
 export function attachTerminalActivityAndWork(
   entries: NodeInventoryEntry[],
-  deps: { db: Database.Database; seatActivity?: SeatActivityService },
+  deps: { db: Database.Database; seatActivity?: SeatActivityService; agentActivity?: AgentActivityStore; now?: Date },
 ): NodeInventoryEntry[] {
   const seatActivity = deps.seatActivity ?? null;
   const assignedByDest = readAssignedWorkBySession(deps.db);
+  const now = deps.now ?? new Date();
   return entries.map((entry) => {
     const sessionMissing = identityVerdictConfirmsSessionMissing(entry.identityVerdict);
     let terminalActive: boolean | null | undefined = sessionMissing ? false : undefined;
@@ -1183,8 +1247,9 @@ export function attachTerminalActivityAndWork(
     let activityState: NodeInventoryEntry["activityState"] = sessionMissing ? null : undefined;
     // Capability-checked: a partial injected double without the S19 surface keeps the
     // pre-taxonomy shape (undefined) rather than faking a null oracle answer.
+    const arb = seatActivity && entry.canonicalSessionName && typeof seatActivity.getSeatStateBySession === "function"
+      ? seatActivity.getSeatStateBySession(entry.canonicalSessionName) : null;
     if (!sessionMissing && seatActivity && entry.canonicalSessionName && typeof seatActivity.getSeatStateBySession === "function") {
-      const arb = seatActivity.getSeatStateBySession(entry.canonicalSessionName);
       activityState = arb
         ? {
             activity: arb.activity,
@@ -1197,11 +1262,17 @@ export function attachTerminalActivityAndWork(
         : null;
     }
     const work = countAssignedWorkForEntry(entry, assignedByDest);
+    const arbitratedNeedsInput = arbitratedNeedsInputSignal(arb);
+    const hook = entry.canonicalSessionName
+      ? deps.agentActivity?.getLatestForNode({ sessionName: entry.canonicalSessionName, now }) ?? null : null;
     return {
       ...entry,
       terminalActive,
       lastActivityAt,
       activityState,
+      needsAttention: seatNeedsAttention(entry, hook, arbitratedNeedsInput),
+      arbitratedNeedsInput,
+      needsInputEvidence: arb?.needsInputEvidence ?? null,
       hasAssignedWork: work.assignedWorkCount > 0,
       ...work,
     };
@@ -1303,11 +1374,13 @@ export function readAssignedWorkBySession(db: Database.Database): Map<string, As
   }>;
   const out = new Map<string, AssignedWorkCounts>();
   for (const r of rows) {
-    out.set(r.destination_session, {
-      assignedWorkCount: r.assigned_count,
-      pendingWorkCount: r.pending_count,
-      inProgressWorkCount: r.in_progress_count,
-      blockedWorkCount: r.blocked_count,
+    const address = physicalSessionName(db, r.destination_session);
+    const prior = out.get(address);
+    out.set(address, {
+      assignedWorkCount: (prior?.assignedWorkCount ?? 0) + r.assigned_count,
+      pendingWorkCount: (prior?.pendingWorkCount ?? 0) + r.pending_count,
+      inProgressWorkCount: (prior?.inProgressWorkCount ?? 0) + r.in_progress_count,
+      blockedWorkCount: (prior?.blockedWorkCount ?? 0) + r.blocked_count,
     });
   }
   return out;

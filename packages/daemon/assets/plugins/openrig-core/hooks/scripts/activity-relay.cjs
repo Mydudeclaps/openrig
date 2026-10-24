@@ -173,6 +173,10 @@ function buildSessionIdentityPayload(providerPayload, env = process.env, now = (
 
   if ((!sessionName && !nodeId) || !runtime) return null;
 
+  // #1524 (a): whether the runtime sent transcript_path, and its raw value. Codex sends an explicit null for a
+  // thread it never persists; the daemon tells that apart from an absent key, an empty string or a malformed value.
+  const transcriptPathPresent = Object.prototype.hasOwnProperty.call(providerPayload, "transcript_path");
+
   return {
     eventFamily: "session_identity",
     sessionName,
@@ -185,6 +189,8 @@ function buildSessionIdentityPayload(providerPayload, env = process.env, now = (
     // The daemon finds the Claude that ran this hook from its parent chain.
     hookPid: process.pid,
     sessionId,
+    transcriptPathPresent,
+    ...(transcriptPathPresent ? { transcriptPath: providerPayload.transcript_path } : {}),
     occurredAt: now().toISOString(),
   };
 }
@@ -217,19 +223,20 @@ function uid() {
 // each event once either way. Anything unreadable, missing or different counts as "not registered": a seat is never silent.
 const SETTINGS_RELAY_TAIL = "state/claude-activity-hooks/activity-relay.cjs";
 
-// Keep this finite generated-command grammar in parity with parseManagedClaudeNodeCommand.
-// Bare-node legacy commands and a canonical quoted absolute Node path are recognised;
-// extra arguments and user wrappers are not the settings relay.
+// Keep this finite Node-command grammar in parity with parseManagedClaudeNodeCommand.
+// Canonical POSIX quotes and literal unquoted words only; no expansion or wrappers.
 function settingsRelayPath(command) {
   if (/[\r\n]/.test(command)) return null;
-  const m = /^(node|'(?:[^']|'"'"')*')[ \t]+('(?:[^']|'"'"')*')$/.exec(command.trim());
+  const token = /'(?:[^']|'"'"')*'|[-A-Za-z0-9_./:@%+=,]+/.source;
+  const m = new RegExp(`^(${token})[ \t]+(${token})$`).exec(command.trim());
   if (!m) return null;
-  const decode = token => token.slice(1, -1).split(`'"'"'`).join("'");
+  const decode = token => token.startsWith("'") ? token.slice(1, -1).split(`'"'"'`).join("'") : token;
   const quote = value => "'" + value.replace(/'/g, `'"'"'`) + "'";
-  const executable = m[1] === "node" ? "node" : decode(m[1]);
+  const executable = decode(m[1]);
   const relay = decode(m[2]);
-  if (quote(relay) !== m[2] || !path.isAbsolute(relay) || !relay.endsWith(`/${SETTINGS_RELAY_TAIL}`)) return null;
-  if (m[1] !== "node" && (quote(executable) !== m[1] || !path.isAbsolute(executable) || !/^node(?:\.exe)?$/i.test(path.basename(executable)))) return null;
+  if (m.slice(1).some(token => token.startsWith("'") && quote(decode(token)) !== token)) return null;
+  if (!path.isAbsolute(relay) || !relay.endsWith(`/${SETTINGS_RELAY_TAIL}`)) return null;
+  if (executable !== "node" && (!path.isAbsolute(executable) || !/^node(?:\.exe)?$/i.test(path.basename(executable)))) return null;
   return { executable, relay };
 }
 
@@ -271,10 +278,9 @@ function settingsRelayReports(hookEvent, providerPayload, env = process.env) {
 function pluginRunIsRedundant(providerPayload, argv = process.argv, env = process.env) {
   if (!argv.includes("--from-plugin")) return false;
   const hookEvent = firstString(providerPayload.hookEvent, providerPayload.hookEventName, providerPayload.hook_event_name, providerPayload.event, providerPayload.eventName);
-  // Codex: the plugin's run always reports. Whether Codex runs the daemon's managed relay for this event depends on hook
-  // state merged from every user layer (a selected profile included) and session flags, which this script can't see, so it
-  // never assumes so. With both routes active an event is reported twice; it is never lost.
-  if (firstString(env.OPENRIG_RUNTIME, env.RIGGED_RUNTIME) === "codex") return false;
+  // Codex activity has one producer: OpenRig's managed inline hooks. The plugin supplies refocus and skills, but its
+  // activity entries are no-ops. Do not infer merged native hook state here or bypass a person's inline-hook disable.
+  if (firstString(env.OPENRIG_RUNTIME, env.RIGGED_RUNTIME) === "codex") return true;
   return settingsRelayReports(hookEvent, providerPayload, env);
 }
 

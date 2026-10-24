@@ -65,6 +65,7 @@ function clearEnv(): () => void {
     "OPENRIG_FEED_SUBSCRIPTIONS_AUDIT_LOG",
     "OPENRIG_RUNTIME_CODEX_HOOKS_ENABLED",
     "OPENRIG_RUNTIME_READINESS_TIMEOUT_SECONDS",
+    "OPENRIG_POLICIES_CLAUDE_COMPACTION_PREPARATION_ROOT",
     "OPENRIG_POLICIES_CLAUDE_COMPACTION_ENABLED",
     "OPENRIG_POLICIES_CLAUDE_COMPACTION_THRESHOLD_PERCENT",
     "OPENRIG_POLICIES_CLAUDE_COMPACTION_PRE_COMPACT_INSTRUCTION",
@@ -128,6 +129,7 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
       "context.root",
       "context.system_world",
       "skills.root",
+      "skills.router_line.enabled",
       "onboarding.default_pack.enabled",
       "launch.non_interruptive",
       "health.context_pressure.warning_percent",
@@ -153,6 +155,7 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
       "runtime.codex.hooks_enabled",
       "runtime.readiness_timeout_seconds",
       // Slice 27 — Claude auto-compaction policy. SC-29 EXCEPTION #10.
+      "policies.claude_compaction.preparation_root",
       "policies.claude_compaction.enabled",
       "policies.claude_compaction.threshold_percent",
       "policies.claude_compaction.pre_compact_instruction",
@@ -171,19 +174,25 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
       "snapshots.periodic.retention_keep",
       // OPR.0.4.6.02 S1 — inner-tmux status-bar launch default (static bool).
       "terminal.status_bar",
+      "terminal.history_limit",
+      "terminal.inherit_tmux_environment",
       // Slice 15 (OPR.0.7.0.15) — compact command-output defaults switch.
       "output.compact",
       // Slice 15 P5 — the whoami peer bound under output.compact.
       "output.whoami_peers",
       // Slice 01 (OPR.0.7.0.1) — Codex usage windows switch.
       "provider.usage_windows",
+      // The providers chosen at rig setup --providers, which kernel boot honours.
+      "provider.selected",
       "bundle.services_enabled",
-      // Slice 18 (OPR.0.7.0.18) — the subscription move record switch.
-      "provider.subscription_moves",
       "usage.pi_cost_facts",
       "usage.pi_openrouter_charge",
       "transport.verify_input_box",
       "transport.local_user_guard",
+      // Slice 22 (OPR.0.7.2.22) — typed decisions, off by default.
+      "decisions.enabled",
+      "decisions.consumers",
+      "decisions.template_dir",
       // OPR.0.4.6.FS-1 W2 — queue-retention maintenance knobs.
       "retention.enabled",
       "retention.transitions_days",
@@ -218,6 +227,17 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
   it("defaults the advisor session to the kernel's advisor seat", () => {
     const store = new ConfigStore(configPath);
     expect(store.resolveWithSource("agents.advisor_session")).toMatchObject({ value: "advisor-lead@kernel", source: "default" });
+  });
+
+  it("defaults provider.selected to empty and accepts only claude, codex or both", () => {
+    const store = new ConfigStore(configPath);
+    expect(store.resolveWithSource("provider.selected")).toMatchObject({ value: "", source: "default" });
+    store.set("provider.selected", "codex");
+    expect(store.resolveWithSource("provider.selected")).toMatchObject({ value: "codex", source: "file" });
+    expect(store.resolve().provider.selected).toBe("codex");
+    for (const raw of ["gemini", "both", "claude,", "Claude", "claude codex"]) {
+      expect(() => store.set("provider.selected", raw)).toThrow(/provider\.selected/);
+    }
   });
 
   it("resolves context.system_world with visible default, file, and env provenance", () => {
@@ -655,6 +675,47 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
 
     store.reset();
     expect(existsSync(configPath)).toBe(false);
+  });
+
+  it("reset(key) removes a section it leaves empty", () => {
+    const store = new ConfigStore(configPath);
+    store.set("transport.local_user_guard", "true");
+    store.reset("transport.local_user_guard");
+    const raw = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(raw.transport).toBeUndefined();
+  });
+
+  it("reset(key) keeps the section when a sibling key remains", () => {
+    const store = new ConfigStore(configPath);
+    store.set("transport.local_user_guard", "true");
+    store.set("transport.verify_input_box", "true");
+    store.reset("transport.local_user_guard");
+    const raw = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(raw.transport).toEqual({ verifyInputBox: true });
+  });
+
+  it("reset(key) leaves unrelated unknown keys elsewhere in the file alone", () => {
+    const store = new ConfigStore(configPath);
+    store.set("transport.local_user_guard", "true");
+    const raw1 = JSON.parse(readFileSync(configPath, "utf8"));
+    raw1.someOtherTool = { leaveMeAlone: true };
+    writeFileSync(configPath, JSON.stringify(raw1, null, 2) + "\n");
+    store.reset("transport.local_user_guard");
+    const raw2 = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(raw2.someOtherTool).toEqual({ leaveMeAlone: true });
+    expect(raw2.transport).toBeUndefined();
+  });
+
+  it("reset(key) leaves a pre-existing unrelated empty object alone", () => {
+    const store = new ConfigStore(configPath);
+    store.set("transport.local_user_guard", "true");
+    const raw1 = JSON.parse(readFileSync(configPath, "utf8"));
+    raw1.unrelatedEmptySection = {};
+    writeFileSync(configPath, JSON.stringify(raw1, null, 2) + "\n");
+    store.reset("transport.local_user_guard");
+    const raw2 = JSON.parse(readFileSync(configPath, "utf8"));
+    expect(raw2.unrelatedEmptySection).toEqual({});
+    expect(raw2.transport).toBeUndefined();
   });
 
   it("resolveAllWithSource returns every valid key with source + default", () => {
@@ -1196,5 +1257,41 @@ describe("ConfigStore — GHOST-STAGE (d): write-canonical + verify-readback", (
     store.set("daemon.port", "9191");
     expect(store.get("daemon.port")).toBe(9191);
     expect((JSON.parse(readFileSync(join(home, "config.json"), "utf-8")) as { daemon?: { port?: number } }).daemon?.port).toBe(9191);
+  });
+});
+
+
+describe("compaction preparation root", () => {
+  let tmpDir: string, configPath: string;
+  let restoreEnv: () => void;
+  beforeEach(() => {
+    restoreEnv = clearEnv();
+    tmpDir = mkdtempSync(join(tmpdir(), "preparation-root-settings-"));
+    configPath = join(tmpDir, "config.json");
+  });
+  afterEach(() => { restoreEnv(); rmSync(tmpDir, { recursive: true, force: true }); });
+  const key = "policies.claude_compaction.preparation_root";
+  it("resolves file/env overrides consistently and resets to workspace-first preparation", () => {
+    const store = new ConfigStore(configPath);
+    const root = join(tmpDir, "maps with spaces");
+    expect(store.resolve().policies.claudeCompaction.preparationRoot).toBe("");
+    store.set(key, root);
+    expect(store.resolveWithSource(key)).toMatchObject({ value: root, source: "file" });
+    expect(new ConfigStore(configPath).resolve().policies.claudeCompaction.preparationRoot).toBe(root);
+    process.env.OPENRIG_POLICIES_CLAUDE_COMPACTION_PREPARATION_ROOT = join(root, "override");
+    try {
+      expect(store.resolveWithSource(key)).toMatchObject({ value: join(root, "override"), source: "env" });
+    } finally { delete process.env.OPENRIG_POLICIES_CLAUDE_COMPACTION_PREPARATION_ROOT; }
+    store.reset(key);
+    expect(store.resolve().policies.claudeCompaction.preparationRoot).toBe("");
+    store.set(key, "");
+    expect(store.resolve().policies.claudeCompaction.preparationRoot).toBe("");
+  });
+  it.each(["relative/maps", "~/maps", " /maps", "/maps\0invalid"])("rejects invalid root %j without replacing valid settings", (value) => {
+    const store = new ConfigStore(configPath);
+    const root = join(tmpDir, "maps");
+    store.set(key, root);
+    expect(() => store.set(key, value)).toThrow(/absolute path/);
+    expect(store.resolve().policies.claudeCompaction.preparationRoot).toBe(root);
   });
 });

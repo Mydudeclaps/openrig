@@ -500,70 +500,98 @@ export function providerCommand(depsOverride?: StatusDeps): Command {
       if (res.data.outcome === "failed_safely") process.exitCode = 1;
     });
 
-  // OPR.0.7.0.18 — the subscription move record. The agent that moves seats records each move it makes or attempts;
-  // it and the observatory read them back. Labels and references only, never credentials. Off unless the daemon's
-  // provider.subscription_moves is on.
+  // Slice 18 — subscription move reports: what the agent that moved a Codex home reports, kept as queue items tagged
+  // subscription-move. Reading them back answers "why did these seats move?"; the Fleet app reads the same route.
+  type MoveEntry = {
+    qitemId: string; reportedAt: string; reportedTo: string; followedBy: string[];
+    report: { host: string; home: string; from: string; to: string; reason: string; follows?: string; seats: Array<{ seat: string; result: string; missing?: string }>; peers?: Array<{ seat: string; note: string }> };
+  };
   const moves = cmd
     .command("moves")
-    .description("Recorded subscription moves, newest first (needs provider.subscription_moves on)")
-    .option("--home <home>", "Only moves of this Codex home")
-    .option("--seat <seat>", "Only moves that restarted or listed this seat")
-    .option("--limit <n>", "At most this many (default 50)")
+    .description("Recent subscription move reports on this daemon, newest first: from and to, why, and each seat's result")
+    .option("--seat <seat>", "Only reports that restarted or listed this seat, among the reports read")
+    .option("--limit <n>", "How many of the newest reports to read, before --seat filters them (default 50, at most 200)")
     .option("--json", "Output as parseable JSON")
-    .action(async (opts: { home?: string; seat?: string; limit?: string; json?: boolean }) => {
-      const qs = new URLSearchParams();
-      if (opts.home) qs.set("home", opts.home);
-      if (opts.seat) qs.set("seat", opts.seat);
-      if (opts.limit) qs.set("limit", opts.limit);
-      const q = qs.toString();
-      await read(`/api/provider/moves${q ? `?${q}` : ""}`, opts.json, "moves");
-    });
-  moves
-    .command("show <id>")
-    .description("One recorded move: seats and results, from and to, the reason, the readings and their age, peers (needs provider.subscription_moves on)")
-    .option("--json", "Output as parseable JSON")
-    .action(async (id: string, opts: { json?: boolean }, command: Command) => {
-      // `moves` has its own --json, which commander may take for the parent.
-      await read(`/api/provider/moves/${encodeURIComponent(id)}`, opts.json || command.parent?.opts().json, "move");
-    });
-  moves
-    .command("record")
-    .description("Record a move you made or attempted (JSON: home, host, from, to, reason, readings, seats, peers, supersedes; needs provider.subscription_moves on)")
-    .requiredOption("--file <path>", "The move as JSON, or - for stdin")
-    .option("--operator <name>", "Who is recording, when this shell has no seat identity (a seat identity wins)")
-    .option("--json", "Output as parseable JSON")
-    .addHelpText("after", `
-The JSON shape:
-  { "home": "<codex home>", "host": "<machine>", "from": "<subscription>", "to": "<subscription>",
-    "reason": "<why, in your words>",
-    "readings": [{ "subject": "<allowance>", "observedAt": "<ISO time observed>", "summary": "<what it said>" }],
-    "seats": [{ "seat": "<seat>", "result": "moved|unconfirmed|unknown", "missing": "<what's missing>", "evidence": "<verify outcome>" }],
-    "peers": [{ "seat": "<seat>", "note": "not restarted; account unverified" }],
-    "supersedes": "<an earlier move id>" }
-Record unconfirmed and partial moves too. Labels only: never put credentials in a record.
-The record is off by default. Turn it on with: rig config set provider.subscription_moves true`)
-    .action(async (opts: { file: string; operator?: string; json?: boolean }, command: Command) => {
-      const json = opts.json || command.parent?.opts().json;
-      let body: unknown;
-      try {
-        body = JSON.parse(opts.file === "-" ? fs.readFileSync(0, "utf8") : fs.readFileSync(opts.file, "utf8"));
-      } catch (error) {
-        console.error(`Could not read the move from ${opts.file}: ${(error as Error).message}`);
-        process.exitCode = 1;
-        return;
-      }
+    .action(async (opts: { seat?: string; limit?: string; json?: boolean }) => {
       const client = await getClient(getDeps());
       if (!client) {
         process.exitCode = 1;
         return;
       }
-      if (opts.operator && body !== null && typeof body === "object" && !Array.isArray(body)) {
-        body = { ...(body as Record<string, unknown>), operator: opts.operator };
+      const qs = new URLSearchParams();
+      if (opts.seat) qs.set("seat", opts.seat);
+      if (opts.limit) qs.set("limit", opts.limit);
+      const res = await client.get<{ moves: MoveEntry[]; unreadable: Array<{ qitemId: string; reason: string }>; truncated: boolean }>(
+        `/api/provider/moves${qs.toString() ? `?${qs.toString()}` : ""}`,
+      );
+      if (handleHttpError(res, "moves")) return;
+      if (opts.json) {
+        console.log(JSON.stringify(res.data));
+        return;
       }
-      const res = await client.post<{ move?: { id?: string } }>("/api/provider/moves", body);
-      if (handleHttpError(res, "record move")) return;
-      if (json) console.log(JSON.stringify(res.data));
-      else console.log(`Recorded ${res.data.move?.id ?? "the move"}`);
+      const { moves: entries, unreadable, truncated } = res.data;
+      if (entries.length === 0) console.log("No subscription move reports.");
+      for (const { qitemId, reportedAt, reportedTo, followedBy, report } of entries) {
+        console.log(`${reportedAt}  ${qitemId}  ${report.host} ${report.home}: ${report.from} → ${report.to} (to ${reportedTo})`);
+        console.log(`  why: ${report.reason}`);
+        for (const seat of report.seats) console.log(`  ${seat.seat}: ${seat.result}${seat.missing ? `; missing: ${seat.missing}` : ""}`);
+        for (const peer of report.peers ?? []) console.log(`  ${peer.seat}: ${peer.note}`);
+        if (report.follows) console.log(`  follows ${report.follows}`);
+        if (followedBy.length > 0) console.log(`  followed by ${followedBy.join(", ")}`);
+      }
+      for (const item of unreadable) console.log(`unreadable: ${item.qitemId}: ${item.reason}`);
+      if (truncated) console.log(`(only the newest ${opts.limit ?? 50} reports were read; older ones may exist: raise --limit)`);
+    });
+  moves
+    .command("report")
+    .description("File a report of a move you made or attempted, as a queue item to whoever asked (it moves nothing)")
+    .requiredOption("--file <path>", "The report as JSON, or - for stdin")
+    .requiredOption("--to <seat>", "Who gets the report: whoever asked for the move, or the person")
+    .option("--follows <qitemId>", "The earlier report this one follows up (sets the report's follows)")
+    .option("--evidence-ref <ref>", "The evidence a report to a person's seat names, e.g. the saved --verify output")
+    .option("--json", "Output as parseable JSON")
+    .addHelpText("after", `
+The report (version 1):
+  { "version": 1, "host": "<machine>", "home": "<CODEX_HOME>", "from": "<subscription label>", "to": "<subscription label>",
+    "reason": "<why, in your words>",
+    "policy": { "ref": "account-policy", "version": "<manifest version>" }   (or { "none": true })
+    "readings": [{ "subject": "<allowance>", "basis": "observed", "observedAt": "<when observed>", "summary": "<what it said>" },
+                 { "subject": "<allowance>", "basis": "expected", "expectedFullSince": "<the reset>", "summary": "..." }],
+    "seats": [{ "seat": "<seat>", "result": "moved",
+                "accountEvidence": { "state": "matched", "detail": "<Account line>", "at": "<time>" },
+                "toolTurn": { "state": "observed", "at": "<time>" } },
+              { "seat": "<seat>", "result": "unconfirmed", "missing": "<what wasn't seen>" }],
+    "peers": [{ "seat": "<seat>", "note": "not restarted; account unverified" }] }
+moved needs accountEvidence matched and toolTurn observed, as rig seat restart --verify reports them; until both are
+seen, report the seat unconfirmed (or unknown) with what's missing. An expected reading (slice 01's expectation after
+a reset) stays labelled expected. Labels and references only: a value in a recognized credential format is refused.
+A refused report records nothing and changes nothing about the move: correct it and file it again; never repeat the
+switch or restart because a report was refused.`)
+    .action(async (opts: { file: string; to: string; follows?: string; evidenceRef?: string; json?: boolean }, command: Command) => {
+      const json = opts.json || command.parent?.opts().json;
+      let report: unknown;
+      try {
+        report = JSON.parse(opts.file === "-" ? fs.readFileSync(0, "utf8") : fs.readFileSync(opts.file, "utf8"));
+      } catch {
+        console.error(`Could not read a JSON report from ${opts.file}. Nothing was recorded, and the move itself is unchanged.`);
+        process.exitCode = 1;
+        return;
+      }
+      if (opts.follows && report && typeof report === "object" && !Array.isArray(report)) report = { ...report, follows: opts.follows };
+      const client = await getClient(getDeps());
+      if (!client) {
+        process.exitCode = 1;
+        return;
+      }
+      const res = await client.post<{ qitemId?: string; errors?: string[] }>("/api/provider/moves", {
+        to: opts.to, report, ...(opts.evidenceRef ? { evidenceRef: opts.evidenceRef } : {}),
+      });
+      if (res.status < 400 && json) console.log(JSON.stringify(res.data));
+      else if (res.status < 400) console.log(`Filed ${res.data.qitemId} to ${opts.to}`);
+      else {
+        for (const error of res.data.errors ?? []) console.error(`- ${error}`);
+        handleHttpError(res, "move report");
+      }
     });
 
   return cmd;

@@ -1,4 +1,7 @@
-import { Hono } from "hono";
+import type { SessionRegistry } from "../domain/session-registry.js";
+import { Hono, type Context } from "hono";
+import { classifierOccupant } from "../domain/classification-sources.js";
+import type { ClassifierLeaseManager } from "../domain/classifier-lease-manager.js";
 import { streamSSE } from "hono/streaming";
 import type { EventBus } from "../domain/event-bus.js";
 import type {
@@ -17,12 +20,14 @@ import { type OutboxHandler } from "../domain/outbox-handler.js";
 import { aggregateAttention } from "../domain/feed/attention-aggregator.js";
 import type { AttentionItem } from "../domain/feed/attention-aggregator.js";
 import { loadHostRegistry, resolveHost } from "../domain/hosts/hosts-registry-reader.js";
+import { eligibleQueueBindings, ineligibleBindingDetail, loadLearnedHostBindings } from "../domain/hosts/learned-host-bindings.js";
 import { getSelfHostId, resolvesToLocalHost } from "../domain/hosts/fanout-contract.js";
 import { remoteJsonRequest } from "../domain/hosts/remote-daemon-http.js";
 import type { SettingsStore } from "../domain/user-settings/settings-store.js";
 import { deriveCurrentWork, deriveCurrentWorkChoice, deriveRole, deriveWorkCandidates, type RoleOrientation } from "../domain/current-work.js";
 import type { WhoamiService } from "../domain/whoami-service.js";
 import type Database from "better-sqlite3";
+import { HumanModeService } from "../domain/gateway/human-operating-modes.js";
 import type { HumanQuestion } from "../domain/human-questions.js";
 import { queryLimit, SQL_LIMIT_BOUND } from "./query-limit.js";
 
@@ -75,6 +80,22 @@ export function queueRoutes(): Hono {
   function getRepo(c: { get: (key: string) => unknown }): QueueRepository {
     return c.get("queueRepo" as never) as QueueRepository;
   }
+  /** Optional stream-application fence; ordinary queue calls have no new check. */
+  function classificationRefusal(c: Context, actor: string, binding: unknown): Response | null {
+    if (binding === undefined) return null;
+    const b = binding as { leaseId?: unknown; expectedOccupant?: unknown } | null;
+    if (!b || typeof b.leaseId !== "string" || !b.leaseId || typeof b.expectedOccupant !== "string" || !b.expectedOccupant)
+      return c.json({ error: "invalid_classification_binding" }, 400);
+    const db = c.get("db" as never) as Database.Database;
+    if (classifierOccupant(db, actor)?.generation !== b.expectedOccupant)
+      return c.json({ error: "occupant_changed" }, 409);
+    try {
+      (c.get("classifierLeaseManager" as never) as ClassifierLeaseManager).requireActiveHolder(actor, b.leaseId);
+      return null;
+    } catch (error) {
+      return c.json({ error: (error as { code?: string }).code ?? "no_active_lease" }, 409);
+    }
+  }
   function destinationAdvisory(c: { get: (key: string) => unknown }, sessionRef: string) {
     // This observation runs after the write commits. An unavailable lookup
     // must neither fail that write nor misreport membership as unmatched.
@@ -108,7 +129,12 @@ export function queueRoutes(): Hono {
     const parsedSource = parseSessionName(sourceSession);
     if (parsedSource.kind !== "canonical") return { ok: true };
     const rigName = parsedSource.rig;
-    const rigs = rigRepo.findRigsByName(rigName);
+    let rigs = rigRepo.findRigsByName(rigName);
+    if (rigs.length > 1) {
+      // An archived rig of the same name counts only when no active one has it
+      const activeRigs = rigRepo.findUnarchivedRigsByName(rigName);
+      if (activeRigs.length > 0) rigs = activeRigs;
+    }
     if (rigs.length === 0) return { ok: true };
     const rigId = rigs[0]!.id;
     const ws = rigRepo.getRigWorkspace(rigId);
@@ -257,8 +283,18 @@ export function queueRoutes(): Hono {
     });
     const reg = registryLoader();
     if (!reg.ok) return fail(reg.error, "registry");
-    const resolved = resolveHost(reg.registry, hostId);
-    if (!resolved.ok) return fail(resolved.error, "unknown-host");
+    // #1642: this daemon's own learned bindings (its home's host-bindings.json) let a host's self-id
+    // name one of its registry entries, but only bindings that still match their entry. Any other
+    // binding leaves the refusal in place, before anything is forwarded, with the reason it isn't used.
+    const bindingsLoader =
+      (c.get("hostBindingsLoader" as never) as (() => ReturnType<typeof loadLearnedHostBindings>) | undefined) ??
+      loadLearnedHostBindings;
+    const learned = bindingsLoader();
+    const resolved = resolveHost(reg.registry, hostId, eligibleQueueBindings(reg.registry, learned));
+    if (!resolved.ok) {
+      const unused = ineligibleBindingDetail(reg.registry, learned, hostId);
+      return fail(unused ? `${resolved.error} ${unused}` : resolved.error, "unknown-host");
+    }
     if (resolved.host.transport !== "http") {
       return fail(
         `host '${hostId}' is SSH-declared; cross-host queue writes require an http-transport registry entry (url; bearer optional)`,
@@ -356,6 +392,7 @@ export function queueRoutes(): Hono {
       nudge?: boolean;
       /** How the sender's identity was established, recorded on the source close as a local handoff records it. */
       identityProvenance?: string | null;
+      humanAlert?: boolean;
     },
     createSuccessor: (forwardBody: Record<string, unknown>) => Promise<{ ok: true; payload: unknown } | { ok: false; response: Response }> =
       (forwardBody) => forwardQueueWrite(c, hostId, "/api/queue/create", forwardBody),
@@ -412,6 +449,7 @@ export function queueRoutes(): Hono {
       ...(body.summary !== undefined ? { summary: body.summary } : {}),
       ...(body.evidenceRef !== undefined ? { evidenceRef: body.evidenceRef } : {}),
       ...(body.nudge !== undefined ? { nudge: body.nudge } : {}),
+      ...(body.humanAlert !== undefined ? { humanAlert: body.humanAlert } : {}),
     };
 
     // (3) Successor-create FIRST — origin-owns-the-record; failure leaves the
@@ -455,7 +493,8 @@ export function queueRoutes(): Hono {
   }
   function createSuccessorInProcess(c: { get: (key: string) => unknown; json: (body: unknown, status?: number) => Response }) {
     return async (forwardBody: Record<string, unknown>): Promise<{ ok: true; payload: unknown } | { ok: false; response: Response }> => {
-      const input = forwardBody as unknown as QueueCreateInput;
+      // wakeTrigger is internal (a row OpenRig creates itself); a forwarded body never carries it.
+      const { wakeTrigger: _internal, ...input } = forwardBody as unknown as QueueCreateInput;
       const refusal = createInputRefusal(c, input.sourceSession, input);
       if (refusal) return { ok: false, response: refusal };
       try {
@@ -474,6 +513,7 @@ export function queueRoutes(): Hono {
     const body = await c.req.json<{
       qitemId?: string;
       sourceSession?: string;
+      classificationBinding?: unknown;
       destinationSession?: string;
       body?: string;
       priority?: QueuePriority;
@@ -483,6 +523,7 @@ export function queueRoutes(): Hono {
       chainOfRecord?: string[];
       targetRepo?: string;
       humanIntent?: "decision" | "update" | null;
+      humanAlert?: boolean;
       humanDetail?: string | null;
       replyTo?: string | null;
       humanQuestions?: HumanQuestion[] | null; // shape validated by the repository (invalid_human_questions)
@@ -521,6 +562,8 @@ export function queueRoutes(): Hono {
     // before the first forward (Q-a) so every retry carries the same id. No
     // local row is ever written on the cross-host path.
     if (typeof body.hostId === "string" && !resolvesToLocalHost(body.hostId, getSelfHostId())) {
+      if (body.classificationBinding !== undefined)
+        return c.json({ error: "invalid_classification_binding", message: "Classifier-bound effects belong to this daemon's local queue." }, 400);
       const mintedId = body.qitemId ?? newQitemId();
       const { hostId: _dropped, ...rest } = body;
       const forwardBody: Record<string, unknown> = {
@@ -537,6 +580,8 @@ export function queueRoutes(): Hono {
     }
 
     try {
+      const fence = classificationRefusal(c, sourceSession, body.classificationBinding);
+      if (fence) return fence;
       const item = await getRepo(c).create({
         qitemId: body.qitemId,
         sourceSession,
@@ -549,6 +594,7 @@ export function queueRoutes(): Hono {
         chainOfRecord: body.chainOfRecord,
         targetRepo: body.targetRepo,
         humanIntent: body.humanIntent,
+        humanAlert: body.humanAlert,
         humanDetail: body.humanDetail,
         replyTo: body.replyTo,
         humanQuestions: body.humanQuestions,
@@ -610,7 +656,8 @@ export function queueRoutes(): Hono {
   // Closure vocabulary:
   //   - handed_off_to    delivered to next stage; acceptance pending
   //                      that stage's verdict on its own qitem
-  //   - blocked_on       waiting on a named blocker (closureTarget)
+  //   - blocked_on       active state=blocked park record, never state=done;
+  //                      rig queue block <id> --on <child> waits on a qitem
   //   - denied           the source seat refuses the work
   //   - canceled         work no longer needed (no follow-on)
   //   - no-follow-on     completed in place; no further routing
@@ -624,6 +671,7 @@ export function queueRoutes(): Hono {
     const qitemId = c.req.param("qitemId");
     const body = await c.req.json<{
       actorSession?: string;
+      classificationBinding?: unknown;
       state?: QueueState;
       reopen?: boolean;
       transitionNote?: string;
@@ -645,6 +693,8 @@ export function queueRoutes(): Hono {
     const actorSession = identity.session;
 
     try {
+      const fence = classificationRefusal(c, actorSession, body.classificationBinding);
+      if (fence) return fence;
       const item = getRepo(c).update({
         qitemId,
         actorSession,
@@ -687,6 +737,7 @@ export function queueRoutes(): Hono {
       summary?: string | null;
       evidenceRef?: string | null;
       nudge?: boolean;
+      humanAlert?: boolean;
       // OPR.0.4.6.MH3 FR-1: the out-of-band host envelope (BR-1). Absent /
       // "" / "local" = today's local transactional path, byte-identical.
       hostId?: string;
@@ -718,6 +769,7 @@ export function queueRoutes(): Hono {
       summary: body.summary,
       evidenceRef: body.evidenceRef,
       nudge: body.nudge,
+      humanAlert: body.humanAlert,
       // The source close is request-authored, so it carries the same stamp the local path records.
       identityProvenance: resolveRecordedProvenance(c, identity),
     };
@@ -744,6 +796,7 @@ export function queueRoutes(): Hono {
         summary: body.summary,
         evidenceRef: body.evidenceRef,
         nudge: (body as { nudge?: boolean }).nudge,
+        humanAlert: body.humanAlert,
         identityProvenance: resolveRecordedProvenance(c, identity), // P21 §4 era-stamp: transport:v1 if the header proved it here, else claimed:v1 (resolveRecordedProvenance degrades)
       });
       const advisory = destinationAdvisory(c, result.created.destinationSession);
@@ -771,6 +824,7 @@ export function queueRoutes(): Hono {
       targetRepo?: string;
       summary?: string | null;
       evidenceRef?: string | null;
+      humanAlert?: boolean;
       // OPR.0.4.6.MH3 FR-1: the out-of-band host envelope (BR-1).
       hostId?: string;
     }>().catch(() => ({} as never));
@@ -799,6 +853,7 @@ export function queueRoutes(): Hono {
       summary: body.summary,
       evidenceRef: body.evidenceRef,
       nudge: body.nudge,
+      humanAlert: body.humanAlert,
       // The source close is request-authored, so it carries the same stamp the local path records.
       identityProvenance: resolveRecordedProvenance(c, identity),
     };
@@ -825,6 +880,7 @@ export function queueRoutes(): Hono {
         summary: body.summary,
         evidenceRef: body.evidenceRef,
         nudge: body.nudge,
+        humanAlert: body.humanAlert,
         identityProvenance: resolveRecordedProvenance(c, identity), // P21 §4 era-stamp: transport:v1 if the header proved it here, else claimed:v1 (resolveRecordedProvenance degrades)
       });
       const advisory = destinationAdvisory(c, result.created.destinationSession);
@@ -832,6 +888,42 @@ export function queueRoutes(): Hono {
     } catch (err) {
       return errorResponse(c, err);
     }
+  });
+
+  // A decision made on the person's behalf, inside the decision room of the mode they have on. Recorded by the agent that
+  // asked, on the ask's own row, beside the person's answers and never as one; refused when there's no room to decide in.
+  app.post("/:qitemId/delegated-decision", async (c) => {
+    const qitemId = c.req.param("qitemId");
+    const body = await c.req.json<{ applicationId?: unknown; choices?: unknown; reason?: unknown; reversible?: unknown; actor?: string }>().catch(() => ({} as never));
+    const identity = requireSenderIdentity(c, { verb: "record a delegated decision", bodyClaim: body.actor ?? null });
+    if (!identity.ok) return identity.response;
+    if (typeof body.applicationId !== "string" || !body.applicationId.trim()) {
+      return c.json({ error: "application_required", message: "pass the applicationId from reading the person's decision room, so the decision is judged against that room" }, 400);
+    }
+    if (typeof body.reversible !== "boolean") {
+      return c.json({ error: "reversible_required", message: "say whether this decision can be undone (reversible: true or false)" }, 400);
+    }
+    const db = c.get("db" as never) as Database.Database | undefined;
+    const repo = getRepo(c);
+    const modes = db ? new HumanModeService({ db }) : null;
+    const choices = Array.isArray(body.choices)
+      ? body.choices.filter((ch): ch is { questionId?: string | null; chosen: string } => typeof ch === "object" && ch !== null && typeof (ch as { chosen?: unknown }).chosen === "string")
+      : [];
+    const result = repo.recordDelegatedDecision({
+      qitemId,
+      actorSession: identity.session,
+      expectedApplicationId: body.applicationId.trim(),
+      // Read inside the recorder's transaction, so a mode ending meanwhile can't have a decision recorded under it.
+      currentApplication: (entityId) => {
+        const current = modes?.current(entityId);
+        return current ? { applicationId: current.applicationId, entityId: current.entityId, modeName: current.modeName, decisionRoom: current.settings.decisionRoom } : null;
+      },
+      choices,
+      reason: typeof body.reason === "string" ? body.reason : "",
+      reversible: body.reversible,
+    });
+    if (result.status === "refused") return c.json({ error: result.reason, message: result.message }, result.reason === "not-found" ? 404 : 409);
+    return c.json({ ok: true, item: result.item });
   });
 
   // POST /:qitemId/fallback
@@ -970,6 +1062,15 @@ export function queueRoutes(): Hono {
     const rig = c.req.query("rig") || undefined;
     const activeOnly = c.req.query("activeOnly") === "1";
     const attention = c.req.query("attention") === "1";
+    // Follow-through reads: a handoff's successor, and items updated since a time. Rows store ts_updated as
+    // toISOString(), so the time is normalized to that form before it's compared.
+    const handedOffFrom = c.req.query("handedOffFrom") || undefined;
+    const updatedSinceRaw = c.req.query("updatedSince") || undefined;
+    const updatedSinceMs = updatedSinceRaw === undefined ? undefined : Date.parse(updatedSinceRaw);
+    if (updatedSinceMs !== undefined && Number.isNaN(updatedSinceMs)) {
+      return c.json({ error: "updated_since_invalid", message: `updatedSince must be an ISO-8601 time (got "${updatedSinceRaw}")` }, 400);
+    }
+    const updatedSince = updatedSinceMs === undefined ? undefined : new Date(updatedSinceMs).toISOString();
 
     // Trim each name so "pending, in-progress" matches like "pending,in-progress". A blank name
     // stays in the filter (it matches no row), so a filter of only commas or spaces stays explicit.
@@ -990,6 +1091,8 @@ export function queueRoutes(): Hono {
         compact,
         rig,
         activeOnly,
+        handedOffFrom,
+        updatedSince,
       });
       return c.json(items);
     }
@@ -1016,10 +1119,14 @@ export function queueRoutes(): Hono {
       destinationSession,
       sourceSession,
       targetRepo,
+      handedOffFrom,
+      updatedSince,
     });
     // Defense-in-depth: refine with the JS predicate so the SQL
-    // LIKE superset cannot leak a malformed destination through.
-    const filtered = items.filter(isAttentionItem);
+    // LIKE superset cannot leak a malformed destination through. An ask to a registered person addressed as a seat or
+    // an alias is a member by its classification, as listAttention selected it.
+    const repo = getRepo(c);
+    const filtered = items.filter((item) => isAttentionItem(item) || repo.isCurrentHumanAsk(item.qitemId));
     return c.json(filtered);
   });
 
@@ -1281,7 +1388,8 @@ export function queueRoutes(): Hono {
     if (!senderSession) return c.json({ error: "senderSession is required" }, 400);
     const parsed = queryLimit(c);
     if (!parsed.ok) return parsed.response;
-    return c.json(getOutbox(c).listForSender(senderSession, parsed.limit));
+    const sessions = c.get("sessionRegistry" as never) as SessionRegistry | undefined;
+    return c.json(getOutbox(c).listForSender(senderSession, parsed.limit, sessions?.sessionAddresses(senderSession)));
   });
 
   return app;
