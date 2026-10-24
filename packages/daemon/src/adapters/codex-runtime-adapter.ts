@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import os from "node:os";
+import { isDeepStrictEqual } from "node:util";
 import Database from "better-sqlite3";
 import { parse as parseToml } from "smol-toml";
 import type { TmuxAdapter } from "./tmux.js";
@@ -377,6 +378,12 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       const planned = planOwnedCodexContentApproval({ configPath, content, layers: currentLayers, shipped, installed: cachedDir, freshGrant });
       if (!planned) return;
       for (const [key, hash] of Object.entries(planned.hashes)) content = upsertCodexHookTrust(content, key, hash, "trusted_content_hash");
+      // The line writer must not alter examples in strings or duplicate quoted keys.
+      try {
+        const expected = parseToml(before) as { hooks: { state: Record<string, Record<string, unknown>> } };
+        for (const [key, hash] of Object.entries(planned.hashes)) expected.hooks.state[key]!.trusted_content_hash = hash;
+        if (!isDeepStrictEqual(parseToml(content), expected)) return;
+      } catch { return; } // Leave native review and owner bytes intact for unsupported TOML spellings.
       if (this.fs.readFile(configPath) !== before) return; // A concurrent native choice wins.
       if (content !== before) this.fs.writeFile(configPath, content);
       recordOwnedCodexApproval(configPath, planned.approval);
