@@ -135,6 +135,18 @@ part of OpenRig.
 - `rig slack status` shows what is still missing, without contacting Slack.
 - `rig slack verify` checks the granted baseline scopes and channel membership with Slack.
 
+## Several people
+
+Register each person with `rig gateway human add`. When a second person is added, the first becomes the default person;
+`rig gateway human set <id> default yes` moves it, and `rig gateway human list` marks it. The default person gets what's
+addressed to no one in particular: an escalation, the notices digest, a pairing approval. With several people and no
+default, those say there's no one to send to rather than pick the first.
+
+Each person answers their own asks: in Slack, or in the TUI opened as them with `rig tui --as <id>`. The TUI says who it's
+answering as and that it's a choice made in that terminal, not a verified identity. When someone else answers, approves or
+resolves an ask, it's kept on the row as their correspondence, in their name, and the ask stays open for the person asked.
+Asks post to the shared channel with a mention, so other people in it can read them; there's no private-message route.
+
 ## One channel per rig or seat (optional)
 
 Every ask to a person posts to Slack by default: that's their Slack subscription's `every-ask` preset. A person who wants

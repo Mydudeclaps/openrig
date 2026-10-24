@@ -37,8 +37,14 @@ rig gateway human show <entityId> --json
 
 Use the returned `address` (`<entityId>@external`), not a username, remembered
 seat, connector handle, or guessed kernel address. Where several humans exist,
-use the decision ownership in Project World. An absent or ambiguous registration
-needs a named registration correction, not a fallback address.
+use the decision ownership in Project World; `list` marks the default person, who
+gets what's addressed to no one in particular. Each person answers their own asks,
+in Slack or in their own TUI (`rig tui --as <person>`). When someone else answers,
+approves or resolves your ask, it's kept on the row as their correspondence, in
+their name, never as the asked person's answer, and the ask stays open for the
+person you asked. Slack delivery is a shared channel with a mention, not a private
+message (`show` says so). An absent or ambiguous registration needs a named
+registration correction, not a fallback address.
 
 Check readiness: configured, enabled, active, ready, reason, and next action.
 `indeterminate` is not ready. Follow the reported next inspection; do not enable
