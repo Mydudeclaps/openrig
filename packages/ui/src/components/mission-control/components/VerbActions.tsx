@@ -120,6 +120,8 @@ export function VerbActions({
   // explicit reset; held across mutation state transitions so the
   // operator sees what failed instead of a silent revert.
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // Set when the server kept the act as correspondence on someone else's ask: the card stays pending and says so.
+  const [notice, setNotice] = useState<string | null>(null);
 
   const needsDestination = activeVerb === "route" || activeVerb === "handoff";
   const needsAnnotation = activeVerb === "annotate";
@@ -164,7 +166,16 @@ export function VerbActions({
         // path doesn't reset the selection (silent-revert symptom).
         // Optimistic outcome fires on success so ActionOutcomePanel
         // renders without waiting for the audit-log roundtrip.
-        onSuccess: () => {
+        onSuccess: (result) => {
+          // Someone else's ask: nothing was approved or closed, so show the server's message and keep the controls,
+          // rather than an outcome built from the requested verb.
+          if (result?.correspondence) {
+            reset();
+            setNotice(result.correspondence.message);
+            onSettled?.();
+            return;
+          }
+          setNotice(null);
           onOptimisticOutcome?.({
             verb,
             actorSession,
@@ -357,6 +368,15 @@ export function VerbActions({
           </div>
         </div>
       )}
+      {notice ? (
+        <div
+          data-testid="mc-verb-correspondence"
+          role="status"
+          className="border border-outline-variant bg-background/40 px-3 py-2 font-body text-[12px] leading-relaxed text-on-surface"
+        >
+          {notice}
+        </div>
+      ) : null}
       {errorMessage ? (
         <div
           data-testid="mc-verb-error"

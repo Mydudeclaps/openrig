@@ -39,6 +39,8 @@ export interface MissionControlActionResult {
   notifyAttempted: boolean;
   notifyResult: string | null;
   auditedAt: string;
+  /** Someone else's ask: the server kept this as the actor's correspondence and changed nothing. `message` says so. */
+  correspondence?: { askedPerson: string; message: string };
 }
 
 async function postAction(input: MissionControlActionInput): Promise<MissionControlActionResult> {

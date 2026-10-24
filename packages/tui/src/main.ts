@@ -443,7 +443,8 @@ async function run(): Promise<void> {
       } else if (action.act === "answer") {
         const { act: _act, type: _type, ...input } = action;
         const result = await client.missionControlAction(input);
-        view.dispatch({ type: "notice", message: action.verb === "approve"
+        view.dispatch({ type: "notice", message: result.correspondence ? result.correspondence.message
+          : action.verb === "approve"
           ? `Approved ${action.qitemId} as ${action.actorSession}: the request is closed on its own row.`
           : result.answer?.outcome === "recorded" ? `Recorded on ${action.qitemId}. Still to answer: ${result.answer.unanswered.join("; ")}`
           : `Answered ${action.qitemId} as ${action.actorSession}: the answer went back to the asker, and the request is closed.` });
