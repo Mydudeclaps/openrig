@@ -189,26 +189,6 @@ export function gatewayCommand(deps: GatewayCommandDeps = {}): Command {
         addHumanFragment: typeof AddHumanFragment;
         parseBindingSpec: (spec: string) => { ok: true; binding: Record<string, unknown> } | { ok: false; error: string };
       };
-      // Fix-r1 F1 (R2 blocking, A1/R5): the add VERB is the single-human boundary. A second
-      // DISTINCT human is refused BEFORE any parse or write — the several-fragment state A1
-      // describes as hand-authored must never be produced by the product's own surface.
-      // Fail closed: an unverifiable registry refuses too (never add into an unknown state).
-      const existing = registry.listHumans();
-      if (!existing.ok) {
-        console.error(`refused: cannot verify the single-human boundary — ${existing.error}`);
-        process.exitCode = 1;
-        return;
-      }
-      if (existing.humans.length > 0 && !existing.humans.some((h) => h.entityId === entityId)) {
-        const ids = existing.humans.map((h) => h.entityId).join(", ");
-        console.error(
-          `refused: a human is already configured (${ids}). OpenRig supports one configured human, so \`rig gateway human add\` manages one; ` +
-          `to register someone else, remove the existing one first (\`rig gateway human remove <entityId>\`). Fragments hand-authored under ${registry.humansDir()} ` +
-          `are displayed as found, with an advisory, but no command manages several.`,
-        );
-        process.exitCode = 1;
-        return;
-      }
       const bindings: Record<string, unknown>[] = [];
       for (const spec of opts.binding) {
         const b = parseBindingSpec(spec);
@@ -236,7 +216,9 @@ export function gatewayCommand(deps: GatewayCommandDeps = {}): Command {
             return { value: res, after: { digest }, effect: before.ok && registry.channelStateDigest(before.record.connectorBindings.map(({ inboundResolvable: _derived, ...binding }) => binding)) === digest ? "no-op" : "applied" };
           },
         });
-        console.log(JSON.stringify({ ok: true, entityId, path: result.value.path, receipt: result.receipt }));
+        console.log(JSON.stringify({ ok: true, entityId, path: result.value.path, receipt: result.receipt,
+          ...(result.value.madeDefault ? { madeDefault: result.value.madeDefault,
+            note: `${result.value.madeDefault} is now the default person (asks that name no one keep going to them); change it with rig gateway human set <id> default yes` } : {}) }));
       } catch (error) { console.error(`refused: ${(error as Error).message}`); process.exitCode = 1; }
     })
     .addHelpText("after", `
@@ -259,7 +241,7 @@ Example:
 
   human
     .command("list")
-    .description("Show the configured human (OpenRig supports one; extra hand-authored fragments are listed with an advisory)")
+    .description("Show the registered people, marking the default (who an ask goes to when nothing names a person)")
     .option("--json", "Complete record(s) as JSON")
     .action(async (opts: { json?: boolean }) => {
       const { listHumans } = await import("@openrig/daemon/gateway-human-registry");
@@ -274,7 +256,7 @@ Example:
       if (res.humans.length === 0) { console.log("no human configured yet — register one: rig gateway human add <entityId> --display-name … --binding … --delivery-class …"); return; }
       for (const h of humans) {
         const inbound = h.bindings.inboundResolvable ? "" : "  [outbound-only]";
-        console.log(`${h.entityId}  "${h.displayName}"  class=${h.deliveryClass}  ${h.availability}  bindings=${h.bindings.count} (primary ${h.bindings.primary.kind}:${h.bindings.primary.connectorRef})  delivery=${h.deliveryReadiness.state}${inbound}`);
+        console.log(`${h.entityId}${h.default ? " (default)" : ""}  "${h.displayName}"  class=${h.deliveryClass}  ${h.availability}  bindings=${h.bindings.count} (primary ${h.bindings.primary.kind}:${h.bindings.primary.connectorRef})  delivery=${h.deliveryReadiness.state}${inbound}`);
         if (!h.deliveryReadiness.ready) console.log(`  delivery: ${h.deliveryReadiness.reason}${h.deliveryReadiness.nextAction ? `; next: ${h.deliveryReadiness.nextAction}` : ""}`);
         console.log(`  ${"unknown" in h.quiet ? `quiet: unknown (${h.quiet.unknown})` : describeQuiet(h.quiet)}`);
       }
@@ -530,6 +512,8 @@ Examples:
       console.log(`  delivery-class: ${r.prefs.deliveryClass.value} (${r.prefs.deliveryClass.source})`);
       console.log(`  away: ${r.prefs.away.value} (${r.prefs.away.source})`);
       console.log(`  slack-subscription: ${r.slackSubscription.value} (${r.slackSubscription.source})`);
+      console.log(`  slack-delivery: ${r.slackDelivery.where}`);
+      console.log(`  default: ${r.default ? "yes (asks that name no one go to this person)" : "no"}`);
       r.connectorBindings.forEach((b, i) => {
         console.log(`  binding.${i}: ${b.kind}:${b.connectorRef} role=${b.role}${b.handle ? ` handle=${b.handle}` : " [outbound-only]"}`);
       });
@@ -539,7 +523,7 @@ Examples:
 
   human
     .command("set <entityId> <field> <value>")
-    .description("Edit one field through the verb (same validation as add; re-projection immediate). Fields: display-name, delivery-class, away, availability (available|focus|away|off, or unset), slack-subscription (the person's Slack subscription: every-ask, the default, posts every ask to Slack too; urgent-only posts only asks created with --alert, the rest wait on Steering and the TUI; or unset), binding.<n>")
+    .description("Edit one field through the verb (same validation as add; re-projection immediate). Fields: display-name, delivery-class, away, availability (available|focus|away|off, or unset), slack-subscription (the person's Slack subscription: every-ask, the default, posts every ask to Slack too; urgent-only posts only asks created with --alert, the rest wait on Steering and the TUI; or unset), default (yes|no: the person an ask goes to when nothing names one), binding.<n>")
     .option("--reason <reason>", "Reason recorded with connector binding changes", "update human binding")
     .option("--actor <actor>", "Named operator when outside a managed seat")
     .action(async (entityId: string, field: string, value: string, opts: { reason: string; actor?: string }) => {

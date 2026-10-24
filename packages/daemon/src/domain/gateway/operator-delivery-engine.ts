@@ -10,6 +10,7 @@ import { DispatchBuffer } from "./dispatch-buffer.js";
 import type { DispatchResult } from "./dispatcher.js";
 import type { LoadResult } from "./human-registry.js";
 import { loadHumanRegistry } from "./human-registry.js";
+import { defaultHumanFor } from "../workflow-human-destination.js";
 import { loadConfig } from "./slack/config.js";
 import { quietHoldFor } from "./human-quiet-windows.js";
 import { OUTBOUND_OP } from "./slack/outbound-driver.js";
@@ -81,9 +82,11 @@ export function makeOperatorDeliveryEngine(deps: {
         return { decision: "unavailable:human-registry", resolved: false, dispatched: false };
       }
       if (!reg.ok) return { decision: "unavailable:human-registry", resolved: false, dispatched: false };
-      const human = reg.entities[0];
+      // The escalation goes to the default person, never simply the first file: with several people and none chosen,
+      // it's undeliverable and says so.
+      const human = defaultHumanFor(reg.entities);
       if (!human) {
-        return { decision: "undeliverable:no-registered-human", resolved: false, dispatched: false };
+        return { decision: reg.entities.length ? "undeliverable:no-default-human" : "undeliverable:no-registered-human", resolved: false, dispatched: false };
       }
       const cfg = loadConfig(deps.home);
       const decision = decideDelivery({

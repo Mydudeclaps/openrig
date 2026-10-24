@@ -36,7 +36,7 @@ export const ENTITY_ID_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/;
 export const ADDRESS_DOMAIN = "external";
 
 // Closed key sets — a typo'd field must fail LOUD, never silently degrade behavior.
-const ALLOWED_FRAGMENT_KEYS = new Set(["entityId", "class", "displayName", "address", "connectorBindings", "prefs", "subscriptions"]);
+const ALLOWED_FRAGMENT_KEYS = new Set(["entityId", "class", "displayName", "address", "connectorBindings", "prefs", "subscriptions", "default"]);
 const ALLOWED_BINDING_KEYS = new Set(["kind", "connectorRef", "secretsRef", "role", "handle"]);
 // A connector handle (M1 A6 v3 schema 9e468b2f): the platform-native id of the human ON that
 // connector (e.g. a Slack user id). Constrained so it can never forge a session ref (no ':' / '@'
@@ -145,6 +145,9 @@ export interface HumanFragment {
   prefs: HumanPrefs;
   /** Attention subscriptions (one per connector for now); none means the default Slack subscription. */
   subscriptions?: AttentionSubscription[];
+  /** The default person: who an ask goes to when nothing names a person (workflow gates, Mission Control's queue,
+   *  escalations). At most one person carries it. Add sets it on the existing person when a second one is added. */
+  default?: true;
 }
 
 export type ValidateResult =
@@ -162,7 +165,10 @@ export function validateHumanFragment(raw: unknown): ValidateResult {
   if (!isObj(raw)) return { ok: false, error: "human fragment must be a mapping" };
   const uk = unknownKey(raw, ALLOWED_FRAGMENT_KEYS);
   if (uk) return { ok: false, error: `unknown fragment key "${uk}" — allowed: ${[...ALLOWED_FRAGMENT_KEYS].join(", ")} (a typo must not silently degrade)` };
-  const { entityId, class: cls, displayName, address, connectorBindings, prefs, subscriptions: rawSubscriptions } = raw;
+  const { entityId, class: cls, displayName, address, connectorBindings, prefs, subscriptions: rawSubscriptions, default: rawDefault } = raw;
+  if (rawDefault !== undefined && typeof rawDefault !== "boolean") {
+    return { ok: false, error: `default must be true or false, not "${String(rawDefault)}"` };
+  }
 
   if (typeof entityId !== "string" || !ENTITY_ID_PATTERN.test(entityId)) {
     return { ok: false, error: `entityId "${String(entityId)}" must be a lowercase slug (a-z0-9._- , no leading/trailing separator)` };
@@ -262,7 +268,8 @@ export function validateHumanFragment(raw: unknown): ValidateResult {
 
   return {
     ok: true,
-    fragment: { entityId, class: "human", displayName, address, connectorBindings: bindings, prefs: validatedPrefs, ...(subscriptions ? { subscriptions } : {}) },
+    fragment: { entityId, class: "human", displayName, address, connectorBindings: bindings, prefs: validatedPrefs, ...(subscriptions ? { subscriptions } : {}),
+      ...(rawDefault === true ? { default: true as const } : {}) },
   };
 }
 
@@ -295,6 +302,8 @@ function projectionBody(entities: readonly HumanFragment[]): string {
 function validateEntityCollection(entities: readonly HumanFragment[]): string | undefined {
   const entityIds = new Set<string>();
   const handleOwner = new Map<string, string>();
+  const defaults = entities.filter((entity) => entity.default === true).map((entity) => entity.entityId);
+  if (defaults.length > 1) return `more than one default person (${defaults.join(", ")}) — mark one with rig gateway human set <id> default yes`;
   for (const entity of entities) {
     if (entityIds.has(entity.entityId)) {
       return `duplicate human entityId "${entity.entityId}" — one fragment owns one identity`;
@@ -406,7 +415,7 @@ export function writeProjection(home: string = getOpenRigHome()): { ok: true; pa
 }
 
 export type AddHumanResult =
-  | { ok: true; path: string; fragment: HumanFragment }
+  | { ok: true; path: string; fragment: HumanFragment; madeDefault?: string }
   | { ok: false; error: string };
 
 /** The verb-add writer: validate (add-time) -> atomic write the ONE fragment file ->
@@ -441,6 +450,18 @@ export function addHumanFragment(
       return { ok: false, error: `${b.kind} handle "${b.handle}" is already registered to human "${owner}" — a handle maps to exactly one human (registration conflict)` };
     }
   }
+  const others = existing.entities.filter((e) => e.entityId !== v.fragment.entityId);
+  if (v.fragment.default === true && others.some((e) => e.default === true)) {
+    return { ok: false, error: `another person is already the default (${others.find((e) => e.default === true)!.entityId}) — add without default, then rig gateway human set <id> default yes` };
+  }
+  // A second person never becomes "the person" by accident: when the one existing person isn't marked yet, they become
+  // the default before the newcomer is written, so whatever reached them before still does.
+  let madeDefault: string | undefined;
+  if (others.length === 1 && !others[0]!.default && v.fragment.default !== true) {
+    const marked = markDefault(others[0]!.entityId, home);
+    if (!marked.ok) return { ok: false, error: `cannot keep ${others[0]!.entityId} as the default person before adding another: ${marked.error}` };
+    madeDefault = others[0]!.entityId;
+  }
   const w = atomicWrite(file, stringifyYaml(v.fragment));
   if (!w.ok) return { ok: false, error: w.error };
   // A new or replaced record may author any availability: it's a change of its own.
@@ -448,7 +469,26 @@ export function addHumanFragment(
   if (!change.ok) return { ok: false, error: `fragment written but ${change.error}` };
   const proj = writeProjection(home);
   if (!proj.ok) return { ok: false, error: `fragment written but re-projection failed: ${proj.error}` };
-  return { ok: true, path: file, fragment: v.fragment };
+  return { ok: true, path: file, fragment: v.fragment, ...(madeDefault ? { madeDefault } : {}) };
+}
+
+/** Write `default: true` into one person's fragment (raw, so their authored shape survives) and take it off everyone
+ *  else's. Each write is the same validated atomic fragment write the verbs use; the caller re-projects. */
+function markDefault(entityId: string, home: string): { ok: true } | { ok: false; error: string } {
+  for (const id of knownEntityIds(home)) {
+    const f = readFragment(id, home);
+    if (!f.ok) return f;
+    const want = id === entityId;
+    if ((f.raw.default === true) === want) continue;
+    const raw = { ...f.raw };
+    if (want) raw.default = true;
+    else delete raw.default;
+    const v = validateHumanFragment(raw);
+    if (!v.ok) return { ok: false, error: v.error };
+    const w = atomicWrite(f.path, stringifyYaml(raw));
+    if (!w.ok) return w;
+  }
+  return { ok: true };
 }
 
 // ── S12 lifecycle beyond add: list / show / set / remove (OPR.0.5.5.12) ──
@@ -484,16 +524,18 @@ export interface HumanSummary {
   availability: NonNullable<HumanPrefs["availability"]>;
   bindings: HumanBindingsSummary;
   fragmentPath: string;
+  /** true for the default person (see HumanFragment.default). */
+  default: boolean;
 }
 
 export type ListHumansResult =
   | { ok: true; humans: HumanSummary[]; advisory?: string }
   | { ok: false; error: string };
 
-/** Amendment A1 (founder R5): the human surface is SINGLE-HUMAN. Several fragments render
- *  honestly, but enumeration is display, never management — the advisory names the boundary. */
+/** Several named people are supported (decision-20261024-0028, superseding A1's single-human surface). With several
+ *  and no default marked or selected, nothing that needs "the person" can guess: the advisory says how to choose. */
 export const MULTI_HUMAN_ADVISORY =
-  "several human fragments exist; OpenRig supports one configured human, so they are displayed as found and no command manages several";
+  "several people are registered and none is the default, so anything that needs one person (a workflow gate, Mission Control's queue, an escalation) won't pick one: run rig gateway human set <id> default yes";
 
 /** A field value with its provenance: authored in the fragment, or filled by a default. */
 export interface ProvenancedValue<T> {
@@ -512,6 +554,10 @@ export interface EffectiveHumanRecord {
   };
   /** The Slack subscription's preset filter (`every-ask` unless authored). */
   slackSubscription: ProvenancedValue<SubscriptionPreset>;
+  /** Where this person's Slack posts land, said plainly: a shared channel, never private (there's no DM route yet). */
+  slackDelivery: { private: false; where: string };
+  /** true for the default person (see HumanFragment.default). */
+  default: boolean;
   connectorBindings: Array<HumanConnectorBinding & { inboundResolvable: boolean }>;
 }
 
@@ -589,9 +635,10 @@ export function listHumans(home: string = getOpenRigHome()): ListHumansResult {
         inboundResolvable: e.connectorBindings.some((b) => b.handle !== undefined),
       },
       fragmentPath: fragmentPathFor(e.entityId, home),
+      default: e.default === true,
     };
   });
-  return humans.length > 1 ? { ok: true, humans, advisory: MULTI_HUMAN_ADVISORY } : { ok: true, humans };
+  return humans.length > 1 && !humans.some((h) => h.default) ? { ok: true, humans, advisory: MULTI_HUMAN_ADVISORY } : { ok: true, humans };
 }
 
 /** Read one fragment RAW (for authored-vs-default provenance) + validated. */
@@ -630,13 +677,20 @@ export function showHuman(entityId: string, home: string = getOpenRigHome()): Sh
         },
       },
       slackSubscription: (({ preset, source }) => ({ value: preset, source }))(slackSubscriptionFor(f.fragment)),
+      slackDelivery: { private: false, where: SLACK_DELIVERY_WHERE },
+      default: f.fragment.default === true,
       connectorBindings: f.fragment.connectorBindings.map((b) => ({ ...b, inboundResolvable: b.handle !== undefined })),
     },
   };
 }
 
+/** A person's Slack posts go to the asking rig's mapped channel (or the default channel), with a mention when the post
+ *  interrupts. Anyone in that channel can read them. */
+export const SLACK_DELIVERY_WHERE =
+  "the asking rig's mapped Slack channel (or the default channel), with a mention when the post interrupts; the channel is shared, so anyone in it can read the ask (there's no private message route)";
+
 const SETTABLE_FIELDS_TEACHING =
-  "settable fields: display-name, delivery-class, away, availability (available|focus|away|off, or unset), slack-subscription (every-ask|urgent-only, or unset for every-ask), binding.<n> (binding.<n> takes a full kind:connectorRef:secretsRef:role[:handle=<id>] spec)";
+  "settable fields: display-name, delivery-class, away, availability (available|focus|away|off, or unset), slack-subscription (every-ask|urgent-only, or unset for every-ask), default (yes|no: the person asks go to when nothing names one), binding.<n> (binding.<n> takes a full kind:connectorRef:secretsRef:role[:handle=<id>] spec)";
 
 /** Cross-fragment handle-uniqueness: the same pre-write check add runs (one platform id =
  *  one human), extracted so set enforces it identically. */
@@ -706,6 +760,23 @@ export function setHumanField(
   // stays unauthored — show's provenance depends on the authored shape surviving edits.
   const raw = f.raw;
   const rawPrefs = isObj(raw.prefs) ? (raw.prefs as Record<string, unknown>) : {};
+
+  if (field === "default") {
+    // yes moves the default here (taking it off whoever had it); no clears it from this person.
+    if (value !== "yes" && value !== "no") return { ok: false, error: `default takes yes or no — ${SETTABLE_FIELDS_TEACHING}` };
+    if (value === "yes") {
+      const marked = markDefault(entityId, home);
+      if (!marked.ok) return marked;
+    } else if (raw.default === true) {
+      delete raw.default;
+      const w = atomicWrite(f.path, stringifyYaml(raw));
+      if (!w.ok) return { ok: false, error: w.error };
+    }
+    const proj = writeProjection(home);
+    if (!proj.ok) return { ok: false, error: `fragment written but re-projection failed: ${proj.error}` };
+    const after = readFragment(entityId, home);
+    return after.ok ? { ok: true, path: after.path, fragment: after.fragment } : after;
+  }
 
   if (field === "display-name") {
     if (value.length === 0) return { ok: false, error: "display-name must be a non-empty string" };
@@ -952,7 +1023,7 @@ export function loadHumanRegistry(home: string = getOpenRigHome(), opts: { readO
  * Identity comes from the registry entity, never from a domain/suffix allow-list. */
 export function resolveRegisteredHumanAddress(
   sessionRef: string | null | undefined,
-  entities: readonly HumanFragment[],
+  entities: readonly Pick<HumanFragment, "entityId" | "address">[],
 ): string | null {
   if (!sessionRef) return null;
   const parsed = parseSessionName(sessionRef);
@@ -963,4 +1034,19 @@ export function resolveRegisteredHumanAddress(
       : null;
   if (!identity) return null;
   return entities.find((entity) => entity.entityId === identity)?.address ?? null;
+}
+
+/** Who "the person" is when nothing names one: the explicitly selected person (`workspace.operator_seat_name`, when it
+ *  names a registered person), else the person marked default, else the only person. With several people and neither,
+ *  there's no answer, never a guess (the first file isn't a choice). */
+export function selectDefaultHuman(
+  entities: readonly Pick<HumanFragment, "entityId" | "address" | "default">[],
+  selected?: string | null,
+): { address: string; basis: "selected" | "default" | "only-person" } | null {
+  const chosen = resolveRegisteredHumanAddress(selected?.trim() || null, entities);
+  if (chosen) return { address: chosen, basis: "selected" };
+  const marked = entities.filter((entity) => entity.default === true);
+  if (marked.length === 1) return { address: marked[0]!.address, basis: "default" };
+  if (entities.length === 1) return { address: entities[0]!.address, basis: "only-person" };
+  return null;
 }

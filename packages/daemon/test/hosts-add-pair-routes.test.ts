@@ -259,6 +259,13 @@ describe("pair-request — the target-side issuance handshake (FR-6)", () => {
     expect(repo.list({ limit: 100 })[0]?.destinationSession).toBe("blair@external");
   });
 
+  it("with several people and one marked default, an unnamed pairing approval goes to the default person", async () => {
+    const target = buildApp(repo, BEARER, () => ({ ok: true, entities: [human, { ...human, entityId: "blair", address: "blair@external", default: true as const }] }));
+    const response = await target.request("/api/hosts/pair-request", { method: "POST", body: "{}" });
+    expect(response.status).toBe(200);
+    expect(repo.list({ limit: 100 })[0]?.destinationSession).toBe("blair@external");
+  });
+
   it("issuance mints the ONE human approval moment: a human-routed qitem with code + summary + evidence_ref", async () => {
     const create = vi.spyOn(repo, "create");
     const { code, approvalQitemId } = await issue();

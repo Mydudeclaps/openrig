@@ -13,7 +13,7 @@ import { RigRepository } from "../src/domain/rig-repository.js";
 import { PodRepository } from "../src/domain/pod-repository.js";
 import { WorkflowRuntime } from "../src/domain/workflow-runtime.js";
 import { resolveWorkflowHumanDestination } from "../src/domain/workflow-human-destination.js";
-import { addHumanFragment, writeProjection, projectionPath, type HumanFragment } from "../src/domain/gateway/human-registry.js";
+import { addHumanFragment, setHumanField, writeProjection, projectionPath, type HumanFragment } from "../src/domain/gateway/human-registry.js";
 import { makeEnsureStuckExceptionItem } from "../src/domain/workflow-exception-escalation.js";
 import { workflowRoutes } from "../src/routes/workflow.js";
 
@@ -96,7 +96,11 @@ describe.each(["serial", "dependency"])("workflow registered-human selection at 
 
   it("an explicit existing setting selects among humans and is re-read for the next episode", () => {
     add("owner-one"); add("owner-two");
-    expect(() => resolveWorkflowHumanDestination()).toThrow(/explicitly select/);
+    // Adding the second person kept the first as the default, so the workflow still reaches them.
+    expect(resolveWorkflowHumanDestination()).toBe("owner-one@external");
+    // With the default cleared, several people and no choice is refused, never the first file.
+    expect(setHumanField("owner-one", "default", "no").ok).toBe(true);
+    expect(() => resolveWorkflowHumanDestination()).toThrow(/a default when several exist/);
     vi.stubEnv("OPENRIG_WORKSPACE_OPERATOR_SEAT_NAME", "owner-two@external");
     expect(resolveWorkflowHumanDestination()).toBe("owner-two@external");
     vi.stubEnv("OPENRIG_WORKSPACE_OPERATOR_SEAT_NAME", "owner-one@external");
@@ -106,7 +110,7 @@ describe.each(["serial", "dependency"])("workflow registered-human selection at 
   });
 
   it.each(["missing", "ambiguous", "registry-unavailable"])("%s selection returns 409 and rolls back the failed close without a phantom row", async (state) => {
-    if (state === "ambiguous") { add("owner-one"); add("owner-two"); }
+    if (state === "ambiguous") { add("owner-one"); add("owner-two"); expect(setHumanField("owner-one", "default", "no").ok).toBe(true); }
     if (state === "registry-unavailable") { add("owner-one"); writeFileSync(projectionPath(), "not a registry"); }
     const i = await start();
     const app = new Hono();

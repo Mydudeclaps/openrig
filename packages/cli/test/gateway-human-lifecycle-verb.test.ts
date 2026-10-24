@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer, type Server } from "node:http";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { createProgram } from "../src/index.js";
 import { gatewayCommand, daemonQueueRows, type HumanRowsLookup } from "../src/commands/gateway.js";
 import { humansDir, addHumanFragment, loadHumanRegistry } from "@openrig/daemon/gateway-human-registry";
@@ -188,18 +188,18 @@ describe("rig gateway human lifecycle verbs (S12)", () => {
     }
   });
 
-  it("A1 advisory receipt: with several hand-authored fragments list --json renders all + the one-human advisory", async () => {
-    // Fix-r1 F1: the SECOND human arrives by hand-authoring (the registry surface), never
-    // through the add verb — the verb is the single-human boundary.
-    seedSecondHuman("ana");
+  it("list --json renders several people, and the advisory appears only when none is the default", async () => {
+    seedSecondHuman("ana"); // through add: mike becomes the default
+    const { setHumanField } = await import("@openrig/daemon/gateway-human-registry");
+    expect(setHumanField("mike", "default", "no").ok).toBe(true);
     logSpy.mockClear();
     const p = program();
     p.exitOverride();
     await p.parseAsync(["node", "rig", "gateway", "human", "list", "--json"]);
     const out = JSON.parse(logSpy.mock.calls.at(-1)![0] as string) as { ok: boolean; humans: unknown[]; advisory?: string };
     expect(out.ok).toBe(true);
-    expect(out.humans).toHaveLength(2); // honest display
-    expect(out.advisory).toContain("one configured human"); // never a management surface
+    expect(out.humans).toHaveLength(2);
+    expect(out.advisory).toContain("none is the default");
   });
 
   it("show --json carries authored-vs-default provenance and the fragment path", async () => {
@@ -261,28 +261,27 @@ describe("rig gateway human lifecycle verbs (S12)", () => {
     expect(existsSync(join(humansDir(home), "mike.yaml"))).toBe(true);
   });
 
-  // ── fix-r1 F1: the add verb IS the single-human boundary ──
+  // ── several named people (decision-20261024-0028, superseding A1's single-human add) ──
 
-  it("F1: a second DISTINCT add REFUSES with teaching (existing human named, remove and hand-authoring pointed at) and writes ZERO fragment bytes", async () => {
-    const dirBefore = readdirSync(humansDir(home)).sort();
-    const mikeBytes = readFileSync(join(humansDir(home), "mike.yaml"), "utf8");
+  it("a second DISTINCT add registers them, keeps the existing person as the default, and says so", async () => {
+    const mikeBefore = readFileSync(join(humansDir(home), "mike.yaml"), "utf8");
     const p = program();
     p.exitOverride();
-    try { await p.parseAsync([
+    await p.parseAsync([
       "node", "rig", "gateway", "human", "add", "ana",
       "--display-name", "Ana",
       "--binding", "slack:main:vault://slack/ana:primary",
       "--delivery-class", "A",
-    ]); } catch { /* exitCode path */ }
-    expect(process.exitCode).toBe(1);
-    const err = errSpy.mock.calls.map((c) => String(c[0])).join("\n");
-    expect(err).toContain("mike");        // the existing human, named
-    expect(err).toContain("gateway human remove"); // how to register someone else
-    expect(err).not.toMatch(/\d+\.\d+\.\d+/);     // no promise of a release that manages several
-    expect(err).toContain("hand-author"); // the sanctioned several-fragment path
-    // Zero new fragment bytes: directory unchanged, existing fragment byte-identical.
-    expect(readdirSync(humansDir(home)).sort()).toEqual(dirBefore);
-    expect(readFileSync(join(humansDir(home), "mike.yaml"), "utf8")).toBe(mikeBytes);
+    ]);
+    expect(process.exitCode).toBeUndefined();
+    const out = JSON.parse(logSpy.mock.calls.at(-1)![0] as string) as { ok: boolean; madeDefault?: string; note?: string };
+    expect(out).toMatchObject({ ok: true, madeDefault: "mike" });
+    expect(out.note).toContain("default person");
+    expect(existsSync(join(humansDir(home), "ana.yaml"))).toBe(true);
+    // mike's fragment gains only the default mark.
+    expect(readFileSync(join(humansDir(home), "mike.yaml"), "utf8")).toBe(mikeBefore + "default: true\n");
+    const loaded = loadHumanRegistry(home);
+    expect(loaded.ok && loaded.entities.map((e) => [e.entityId, e.default === true])).toEqual([["ana", false], ["mike", true]]);
   });
 
   it("F1 companion: re-add of the SAME human with --replace stays allowed (boundary blocks distinct humans only)", async () => {

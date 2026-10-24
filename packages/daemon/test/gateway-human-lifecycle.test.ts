@@ -14,6 +14,7 @@ import {
   projectionPath,
   projectHumans,
   loadHumanRegistry,
+  selectDefaultHuman,
   type InflightItem,
 } from "../src/domain/gateway/human-registry.js";
 import { DispatchBuffer } from "../src/domain/gateway/dispatch-buffer.js";
@@ -101,7 +102,8 @@ describe("gateway human lifecycle (S12, amended A1: single-human surface): list 
   });
 
   it("A1 advisory receipt: several fragments render HONESTLY plus the one-human advisory (display, never management)", () => {
-    seedAna(home); // hand-authored second human — the amendment's multi-fragment case
+    seedAna(home); // a second person, through add: mike (already there) becomes the default
+    expect(setHumanField("mike", "default", "no", home).ok).toBe(true); // and with no default, the advisory says how to choose
     const res = listHumans(home);
     expect(res.ok).toBe(true);
     if (!res.ok) return;
@@ -111,8 +113,8 @@ describe("gateway human lifecycle (S12, amended A1: single-human surface): list 
     expect(ana.away).toBe(true);
     expect(ana.bindings.count).toBe(2);
     expect(ana.bindings.inboundResolvable).toBe(true);
-    expect(res.advisory).toContain("one configured human");
-    expect(res.advisory).not.toMatch(/\d+\.\d+\.\d+/); // no promise of a release that manages several
+    expect(res.advisory).toContain("none is the default");
+    expect(res.advisory).toContain("rig gateway human set <id> default yes");
   });
 
   it("list is a READ: it does not touch the projection file (byte receipt)", () => {
@@ -366,5 +368,75 @@ describe("gateway human lifecycle (S12, amended A1: single-human surface): list 
     const archiveDir = join(humansDir(home), ".archive");
     const archived = readdirSync(archiveDir).filter((f) => f.includes("mike") && f.endsWith(".yaml"));
     expect(archived.length).toBe(2);
+  });
+});
+
+describe("several named people: the default person, and delivery said plainly", () => {
+  let home: string;
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), "rig-named-people-")); seedMike(home); });
+  afterEach(() => rmSync(home, { recursive: true, force: true }));
+
+  it("adding a second person keeps the first as the default, so whatever reached them still does", () => {
+    const ana = addHumanFragment({ entityId: "ana", class: "human", displayName: "Ana", address: "ana@external",
+      connectorBindings: [{ kind: "slack", connectorRef: "main", secretsRef: "vault://slack/ana", role: "primary", handle: "U0ANA" }],
+      prefs: { deliveryClass: "B" } }, home);
+    expect(ana).toMatchObject({ ok: true, madeDefault: "mike" });
+    const list = listHumans(home);
+    expect(list.ok && list.humans.map((h) => [h.entityId, h.default])).toEqual([["ana", false], ["mike", true]]);
+    expect(list.ok && list.advisory).toBeFalsy();
+    const loaded = loadHumanRegistry(home);
+    expect(loaded.ok && selectDefaultHuman(loaded.entities)).toEqual({ address: "mike@external", basis: "default" });
+    // A third person changes nothing about who the default is.
+    expect(addHumanFragment({ entityId: "bo", class: "human", displayName: "Bo", address: "bo@external",
+      connectorBindings: [{ kind: "slack", connectorRef: "main", secretsRef: "vault://slack/bo", role: "primary" }],
+      prefs: { deliveryClass: "C" } }, home)).toMatchObject({ ok: true });
+    const again = loadHumanRegistry(home);
+    expect(again.ok && again.entities.filter((e) => e.default).map((e) => e.entityId)).toEqual(["mike"]);
+  });
+
+  it("set default yes moves the default; no clears it; anything else is refused with the fields", () => {
+    seedAna(home);
+    expect(setHumanField("ana", "default", "yes", home).ok).toBe(true);
+    let loaded = loadHumanRegistry(home);
+    expect(loaded.ok && loaded.entities.filter((e) => e.default).map((e) => e.entityId)).toEqual(["ana"]);
+    expect(setHumanField("ana", "default", "no", home).ok).toBe(true);
+    loaded = loadHumanRegistry(home);
+    expect(loaded.ok && loaded.entities.some((e) => e.default)).toBe(false);
+    expect(loaded.ok && selectDefaultHuman(loaded.entities)).toBeNull(); // several, none chosen: no guess
+    const bad = setHumanField("ana", "default", "maybe", home);
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.error).toContain("default takes yes or no");
+  });
+
+  it("two people both marked default is a registry error, and default must be true or false", () => {
+    seedAna(home);
+    writeFileSync(join(humansDir(home), "ana.yaml"), readFileSync(join(humansDir(home), "ana.yaml"), "utf8") + "default: true\n");
+    const proj = projectHumans(home);
+    expect(proj.ok).toBe(false);
+    if (!proj.ok) expect(proj.error).toContain("more than one default person");
+    writeFileSync(join(humansDir(home), "ana.yaml"), readFileSync(join(humansDir(home), "ana.yaml"), "utf8").replace("default: true\n", "default: maybe\n"));
+    const bad = projectHumans(home);
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.error).toContain("default must be true or false");
+  });
+
+  it("the default person is the selected one, else the marked one, else the only one", () => {
+    const one = [{ entityId: "mike", address: "mike@external" }];
+    const two = [{ entityId: "mike", address: "mike@external" }, { entityId: "ana", address: "ana@external", default: true as const }];
+    expect(selectDefaultHuman(one)).toEqual({ address: "mike@external", basis: "only-person" });
+    expect(selectDefaultHuman(two)).toEqual({ address: "ana@external", basis: "default" });
+    expect(selectDefaultHuman(two, "mike@external")).toEqual({ address: "mike@external", basis: "selected" });
+    expect(selectDefaultHuman(two, "someone@external")).toEqual({ address: "ana@external", basis: "default" }); // unregistered: ignored
+    expect(selectDefaultHuman([one[0]!, { entityId: "ana", address: "ana@external" }])).toBeNull();
+    expect(selectDefaultHuman([])).toBeNull();
+  });
+
+  it("show says where Slack posts land (a shared channel, never private) and whether this is the default person", () => {
+    seedAna(home);
+    const mike = showHuman("mike", home);
+    expect(mike.ok && mike.record).toMatchObject({ default: true, slackDelivery: { private: false } });
+    expect(mike.ok && mike.record.slackDelivery.where).toContain("shared");
+    const ana = showHuman("ana", home);
+    expect(ana.ok && ana.record.default).toBe(false);
   });
 });

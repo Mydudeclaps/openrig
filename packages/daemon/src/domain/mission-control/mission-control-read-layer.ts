@@ -21,7 +21,7 @@
 // are the primary read path. Filesystem/CLI fallbacks are for graceful
 // degradation only.
 
-import { loadHumanRegistry } from "../gateway/human-registry.js";
+import { loadHumanRegistry, selectDefaultHuman } from "../gateway/human-registry.js";
 import type Database from "better-sqlite3";
 import type { QueueRepository, QueueItem, QueueState } from "../queue-repository.js";
 import type { ViewProjector } from "../view-projector.js";
@@ -137,7 +137,8 @@ export class MissionControlReadLayer {
   getDefaultOperatorSession(): string {
     if (this.defaultOperatorSession) return this.defaultOperatorSession;
     const registry = loadHumanRegistry();
-    return registry.ok && registry.entities.length === 1 ? registry.entities[0]!.address : "";
+    // The configured operator wins above; otherwise the person marked default, or the only one, never the first of several.
+    return registry.ok ? selectDefaultHuman(registry.entities)?.address ?? "" : "";
   }
 
   async readView(
