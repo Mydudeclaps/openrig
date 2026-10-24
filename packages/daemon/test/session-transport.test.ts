@@ -2744,7 +2744,16 @@ describe("SessionTransport", () => {
     expect(sent).toEqual(["make test"]);
   });
 
-  it("a terminal seat known only by its composed name (binding, no session row): exact text for a person; a watchdog notice types as before", async () => {
+  it("an urgent send to a terminal seat types the exact text without the urgent line, and keeps the mark", async () => {
+    seedTerminalSeat();
+    const sent: string[] = [];
+    const transport = createTransport(mockTmux({ getPaneCommand: async () => "zsh", sendText: async (_t, text) => { sent.push(text); return { ok: true }; } }));
+    const result = await transport.send("infra-ui@term-rig", H_ENVELOPE, { exactText: "make test", actorSession: "dev-impl@my-rig", urgent: { by: "dev-impl@my-rig" } });
+    expect(result).toMatchObject({ ok: true, envelopeOmitted: true, urgent: { by: "dev-impl@my-rig" } });
+    expect(sent).toEqual(["make test"]);
+  });
+
+  it("a terminal seat known only by its composed name (binding, no session row): exact text for a person; a watchdog notice carries only its marker (with no delivery guard here, it types as given)", async () => {
     const rig = rigRepo.createRig("term-rig");
     const node = rigRepo.addNode(rig.id, "infra.logs", { role: "logs", runtime: "terminal" });
     sessionRegistry.updateBinding(node.id, { tmuxSession: "infra-logs@term-rig" });

@@ -1640,6 +1640,9 @@ export interface SendOpts {
    *  (`runtime: terminal`), send() types this instead of `text`, so the shell never runs the
    *  envelope lines. Agent recipients keep `text`. */
   exactText?: string;
+  /** Internal: send() is typing `exactText` to a terminal seat, so its bytes stay exactly as given: no urgent line, which
+   *  the shell would run. An urgent mark still admits the input and stays in the result. Never accepted from HTTP. */
+  typedExactly?: true;
 }
 
 const CALLER_CANCELLED = "caller_cancelled";
@@ -2199,7 +2202,7 @@ export class SessionTransport {
     if (opts?.exactText !== undefined && !opts.dangerouslyInteract) {
       const { exactText, ...rest } = opts;
       if (!isBoundTerminalSeat(this.db, sessionName)) return this.send(sessionName, text, rest);
-      return { ...(await this.send(sessionName, exactText, { ...rest, stampISO: undefined })), envelopeOmitted: true };
+      return { ...(await this.send(sessionName, exactText, { ...rest, stampISO: undefined, typedExactly: true })), envelopeOmitted: true };
     }
     const observe = () => { try { return this.compactionObserver?.(sessionName) ?? null; } catch { return null; } };
     const before = observe();
@@ -2216,8 +2219,9 @@ export class SessionTransport {
     // Shown on delivery, and kept with a held message: who marked it urgent.
     console.info(`[transport] urgent send to ${sessionName}, marked by ${opts.urgent.by}`);
     // An explicit prompt answer is typed as keys, and a submit-only retry types no text at all: the label's letters would
-    // act as keystrokes (a menu shortcut, say). Their bytes stay exactly as given; the mark stays in the result and the log.
-    const rawKeys = opts.dangerouslyInteract === true || opts.submitOnly === true;
+    // act as keystrokes (a menu shortcut, say). A terminal seat's exact text would run the label as a command. Their bytes
+    // stay exactly as given; the mark stays in the result and the log.
+    const rawKeys = opts.dangerouslyInteract === true || opts.submitOnly === true || opts.typedExactly === true;
     const result = await this.sendClassified(sessionName, rawKeys ? text : withUrgentLine(text, opts.urgent.by), opts);
     return { ...result, urgent: opts.urgent };
   }
