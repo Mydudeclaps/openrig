@@ -35,6 +35,11 @@ export interface AttentionRead {
   sources: Array<{ source: string; state: "available" | "unavailable" | "partial"; detail: string }>;
   detail: AttentionDetail | null;
   detailError: string | null;
+  /** Who this Feed answers as: the person chosen where it's read (`rig tui --as`), else the default person. A local
+   *  choice, never a verified identity. Answer acts are offered only on that person's own asks. `person` is null when
+   *  the choice names no registered person, or several people are registered and none is the default. Absent when no
+   *  person is registered (or the registry can't be read): asks are then answered as their recipient, as before. */
+  viewer?: { person: string | null; basis: "chosen-here" | "default" | "none"; chosen?: string };
 }
 
 // Consumers must use the same lexical human classification as queue selection.

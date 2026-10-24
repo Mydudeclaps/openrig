@@ -13,6 +13,8 @@ export interface DaemonClientOptions {
   baseUrl?: string;
   fetchImpl?: typeof fetch;
   headers?: Record<string, string> | (() => Record<string, string>);
+  /** The person this TUI answers as (`rig tui --as`); the Feed falls back to the default person. A local choice. */
+  asPerson?: string;
 }
 
 export class StartupRequestError extends Error {
@@ -69,16 +71,18 @@ export class DaemonClient {
   private readonly fetchImpl: typeof fetch;
   private optionalFetchImpl: typeof fetch;
   private readonly headerSource: Record<string, string> | (() => Record<string, string>);
+  private readonly asPerson: string | undefined;
 
   constructor(options: DaemonClientOptions = {}) {
     this.baseUrl = (options.baseUrl ?? process.env["OPENRIG_URL"] ?? "http://127.0.0.1:7433").replace(/\/$/, "");
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.optionalFetchImpl = this.fetchImpl;
     this.headerSource = options.headers ?? {};
+    this.asPerson = options.asPerson?.trim() || undefined;
   }
 
   forPage(page: PageRead, signal: AbortSignal): DaemonClient {
-    const client = new DaemonClient({ baseUrl: this.baseUrl, headers: this.headerSource,
+    const client = new DaemonClient({ baseUrl: this.baseUrl, headers: this.headerSource, asPerson: this.asPerson,
       fetchImpl: page.fetch(this.fetchImpl, signal) });
     client.optionalFetchImpl = page.fetch(this.fetchImpl, signal, true);
     return client;
@@ -390,7 +394,8 @@ export class DaemonClient {
    * lookup: blockedOn is a qitem POINTER, so the blocking agent is that qitem's
    * owner (destinationSession). NOT a new endpoint. */
   humanAttention(item?: string | null) {
-    return this.get(`/api/attention${item ? `?item=${encodeURIComponent(item)}` : ""}`);
+    const query = new URLSearchParams({ ...(item ? { item } : {}), ...(this.asPerson ? { as: this.asPerson } : {}) }).toString();
+    return this.get(`/api/attention${query ? `?${query}` : ""}`);
   }
   queueItem(qitemId: string, options: { optional?: boolean } = {}) {
     return this.get(`/api/queue/${encodeURIComponent(qitemId)}`, options.optional ? this.optionalFetchImpl : this.fetchImpl);
@@ -404,7 +409,7 @@ export class DaemonClient {
   /** The mission-control write Steering uses to answer a request (POST /api/mission-control/action). */
   missionControlAction(input: { verb: "approve" | "answer"; qitemId: string; actorSession: string; questionId?: string; optionId?: string; decision?: string }) {
     return this.post("/api/mission-control/action", input) as Promise<{ verb: string; qitemId: string; closedQitem: unknown;
-      answer?: { outcome: "recorded" | "answered"; unanswered: string[] } }>;
+      answer?: { outcome: "recorded" | "answered"; unanswered: string[] }; correspondence?: { askedPerson: string; message: string } }>;
   }
   attentionAggregate() {
     return this.get(`/api/queue/attention-aggregate`);

@@ -44,6 +44,7 @@ export function tuiCommand(io: FrontDoorIo & {
   const cmd = new Command("tui")
     .description("open the status dashboard, not agent chat (--shared is the OpenRig view fallback)")
     .option("--shared", "dashboard-only fallback if the OpenRig view window cannot open; detach with Ctrl-b d")
+    .option("--as <person>", "answer requests in the Feed as this registered person (id or address); without it, the default person. A choice made in this terminal, not a verified identity; requests to other people are shown but not answered here")
     .addHelpText("after", "\nThe dashboard shows status and navigation; it is not the operator's or advisor's conversation.\nTo show the person the OpenRig TUI and operator (after install, or whenever they want their agents): rig terminal open saved:kernel --window. The agent runs it on the daemon desktop; it opens a new terminal tab/window with herdr, otherwise plain tmux. Herdr needs a terminal the person can see; changing this dashboard to :terminals does not open one. Over headless SSH, give the exact connection/attach command for a new terminal/tab, as in the getting-started guide. Check the result and visible content, or say what cannot be verified; on a desktop, do not finish by printing a command for the person to type. Only if the window cannot open, rig tui --shared is the dashboard-only fallback. Explain the failure; not every failure prints an operator attach command. Use the getting-started guide to derive the current operator binding if the person chooses manual attachment. Existing herdr/cmux workspaces can still use --provider without --window.\nThe shared dashboard keeps its view when you detach. On an older kernel, or after quitting the TUI, run rig tui in that terminal once. No agent or terminal is started by --shared.");
 
   cmd
@@ -70,7 +71,7 @@ export function tuiCommand(io: FrontDoorIo & {
     });
 
   cmd
-    .action(async (opts: { shared?: boolean }) => {
+    .action(async (opts: { shared?: boolean; as?: string }) => {
       const stdoutIsTTY = io.stdoutIsTTY ?? process.stdout.isTTY === true;
       if (!stdoutIsTTY || (opts.shared && !(io.stdinIsTTY ?? process.stdin.isTTY === true))) {
         // Same TTY-awareness on stdout as the bare-`rig` front door — degrade, never
@@ -85,6 +86,7 @@ export function tuiCommand(io: FrontDoorIo & {
       }
       if (opts.shared) {
         const err = io.err ?? ((line: string) => process.stderr.write(line + "\n"));
+        if (opts.as) err("--as applies to a TUI opened here; the shared dashboard keeps the person it was opened with.");
         const exit = io.exit ?? ((code: number) => process.exit(code));
         try {
           const target = await (io.sharedTarget ?? sharedTuiTarget)();
@@ -98,6 +100,7 @@ export function tuiCommand(io: FrontDoorIo & {
         }
         return;
       }
+      if (opts.as) process.env["OPENRIG_TUI_AS"] = opts.as;
       await openMissionControl(io);
     });
 

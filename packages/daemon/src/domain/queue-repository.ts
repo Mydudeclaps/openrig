@@ -1925,6 +1925,11 @@ export class QueueRepository {
     return registry.ok && resolveRegisteredHumanAddress(destination, registry.entities) !== null;
   }
 
+  /** The registered people this queue resolves against. */
+  humanRegistry(): LoadResult {
+    return this.loadHumanRegistryFn();
+  }
+
   /** The asked person, when a different registered person is acting on what was asked of them; else null. An agent, the
    *  asked person under another spelling, and an ask to no registered person aren't someone else. */
   askedSomeoneElse(actorSession: string, askedSession: string | null | undefined): string | null {

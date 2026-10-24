@@ -5,6 +5,8 @@ import type { AttentionRead, AttentionItem } from "../attention-surface.js";
 import type { QueueRepository } from "../domain/queue-repository.js";
 import { isHumanSeatSessionRef } from "../domain/session-name.js";
 import { unansweredQuestions } from "../domain/human-questions.js";
+import { resolveRegisteredHumanAddress } from "../domain/gateway/human-registry.js";
+import { defaultHumanFor } from "../domain/workflow-human-destination.js";
 import type { HealthProjectionService } from "../domain/health-detectors.js";
 import type { OperatingPostureService } from "../domain/rig-mode/operating-posture.js";
 import { listProjects, insideProject, projectMission, type ProjectRead } from "../domain/workspace/project-read.js";
@@ -38,6 +40,20 @@ export function attentionRoutes(): Hono {
       const asked = new Set(rows.slice(0, 1000).filter(q => queue.isCurrentHumanAsk(q.qitemId)).map(q => q.qitemId));
       const quiet = new Set(rows.slice(0, 1000).filter(q => asked.has(q.qitemId) && queue.humanAskWithoutAlert(q.qitemId)).map(q => q.qitemId));
       const current = rows.slice(0, 1000).filter(q => isHumanSeatSessionRef(q.destinationSession) || asked.has(q.qitemId) || q.state === "blocked" && isHumanSeatSessionRef(q.blockedOn ?? ""));
+      // The person this Feed answers as: the one chosen where it's read, else the default person. It's a local choice, not
+      // a verified identity, so it's served for the reader to show. An ask to another registered person isn't theirs to
+      // answer here; an ask to no registered person (a bare human seat) stays answerable, as before.
+      const registry = queue.humanRegistry();
+      const people = registry.ok ? registry.entities : [];
+      const chosen = c.req.query("as")?.trim();
+      const viewerPerson = chosen
+        ? resolveRegisteredHumanAddress(chosen, people) ?? people.find(p => p.entityId === chosen)?.address ?? null
+        : defaultHumanFor(people)?.address ?? null;
+      if (people.length) result.viewer = { person: viewerPerson, basis: chosen ? "chosen-here" : viewerPerson ? "default" : "none", ...(chosen ? { chosen } : {}) };
+      const answersHere = (recipient: string) => {
+        const person = resolveRegisteredHumanAddress(recipient, people);
+        return !person || person === viewerPerson;
+      };
       // Whether the request went to Slack: its own receipt first, then whether it was ever to be sent.
       const slackLine = (qitemId: string): string => {
         const delivery = queue.deliveryOutcomeFor(qitemId);
@@ -61,7 +77,7 @@ export function attentionRoutes(): Hono {
           // mission control's answer (a choice, their own words, or sending a complete set's recorded answers back), which
           // Approve would close without returning. They can also open the asker's terminal (Chat). A row parked on them is
           // resolved another way, so it carries neither.
-          ...(toPerson && q.state === "pending" ? { answer: { verb: questions ? "answer" as const : "approve" as const, actorSession: q.destinationSession } } : {}),
+          ...(toPerson && q.state === "pending" && answersHere(q.destinationSession) ? { answer: { verb: questions ? "answer" as const : "approve" as const, actorSession: q.destinationSession } } : {}),
           ...(toPerson ? { asker: q.sourceSession } : {}),
           ...(questions ? { humanQuestions: questions, humanAnswers: q.humanAnswers ?? {} } : {}),
           summary: q.summary || q.body.trim().split(/\r?\n/).find(Boolean) || "Request summary unavailable", urgency: q.priority, unblocks, at: q.tsUpdated, scope: p ? `project ${p.id}` : "instance · project unknown", project: p ? { id: p.id, root: p.root } : null, source: `/api/queue/${encodeURIComponent(q.qitemId)}` };

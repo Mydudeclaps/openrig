@@ -241,7 +241,7 @@ the sections that were not read are `null`.
 
 | Invocation | Aliases | Declared options |
 |---|---|---|
-| `rig tui` | — | `--shared` |
+| `rig tui` | — | `--shared`, `--as <person>` |
 | `rig tui commands` | — | `--json` |
 
 ### package

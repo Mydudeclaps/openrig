@@ -36,6 +36,7 @@ const registryWith = (preset?: "every-ask" | "urgent-only") => ({
   ok: true as const,
   entities: [{
     entityId: HUMAN, class: "human" as const, displayName: "Founder", address: `${HUMAN}@external`,
+    default: true as const,
     connectorBindings: [{ kind: "slack" as const, connectorRef: "primary", secretsRef: "env:SLACK_BOT_TOKEN", role: "primary" as const, handle: "UFOUNDER" }],
     prefs: { deliveryClass: "B" as const, availability: "available" as const },
     ...(preset ? { subscriptions: [{ destination: { connector: "slack" as const }, filter: { preset } }] } : {}),
@@ -298,11 +299,11 @@ describe("an ask to a person is on Steering and the TUI; Slack gets it by their 
   });
 
   /** The TUI itself over these readers: its daemon client, its Feed model, and an act's write as its driver loop sends it. */
-  async function tui(app: Hono) {
+  async function tui(app: Hono, asPerson?: string) {
     const { DaemonClient } = await import("../../tui/src/daemon-client.js");
     const { attentionLines, replyAct } = await import("../../tui/src/attention/attention-model.js");
     const { createViewState, emptySnapshot } = await import("../../tui/src/state.js");
-    const client = new DaemonClient({ baseUrl: "http://tui.test", fetchImpl: ((input: string, init?: RequestInit) => app.request(String(input), init)) as typeof fetch });
+    const client = new DaemonClient({ baseUrl: "http://tui.test", asPerson, fetchImpl: ((input: string, init?: RequestInit) => app.request(String(input), init)) as typeof fetch });
     const open = async (row: QueueItem) => {
       const id = `queue:${row.qitemId}`;
       const read = await client.humanAttention(id) as AttentionRead;
@@ -371,8 +372,10 @@ describe("an ask to a person is on Steering and the TUI; Slack gets it by their 
     expect(replies(typed)[0]).toMatchObject({ destinationSession: "orch-lead@r" });
     expect(replies(typed)[0]!.body).toContain(words);
     expect(resolved(typed)).toBe(1);
-    // An ask to a registered person's alias, with no questions: their words close it the same way.
-    expect(await t.reply(alias, "Call it Delta")).toMatchObject({ answer: { outcome: "answered" } });
+    // An ask to the other registered person, by their alias, isn't answered from the default person's TUI; opened as them,
+    // their words close it the same way.
+    expect((await t.open(alias)).read.items.find((i) => i.id === `queue:${alias.qitemId}`)?.answer).toBeUndefined();
+    expect(await (await tui(readers(), "operator-admin")).reply(alias, "Call it Delta")).toMatchObject({ answer: { outcome: "answered" } });
     expect(repo.getById(alias.qitemId)).toMatchObject({ state: "done" });
     expect(replies(alias)[0]!.body).toContain("Call it Delta");
     expect(resolved(alias)).toBe(1);

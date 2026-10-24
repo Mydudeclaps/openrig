@@ -45,6 +45,7 @@ export function attentionLines(state: ViewState, snap: FleetSnapshot, width: num
   const read = snap.attentionRead;
   const lines: ContentLine[] = [{ text: "FEED · Instance / All humans" }];
   if (!read) return wrapDetailLines([...lines, { text: "Unavailable: Feed sources have not answered." }, ...snap.readErrors.map(text => ({ text }))], width);
+  if (read.viewer) lines.push({ text: viewerLine(read.viewer) });
   if (state.attentionOpen) {
     const d = read.detail;
     lines.push(listItem("Back", { type: "back" }));
@@ -117,6 +118,18 @@ export function replyAct(read: AttentionRead | null | undefined, openId: string 
     return { type: "notice", message: "reply answers the open request addressed to a person: open it in the Feed, then reply <your words>." };
   }
   return { type: "act", act: "answer", qitemId: item.id.slice("queue:".length), verb: "answer", actorSession: item.answer.actorSession, decision: text.trim() };
+}
+
+/** Who this Feed answers as. It's chosen here, never verified, so it says so; another person's asks aren't answered here. */
+function viewerLine(viewer: NonNullable<AttentionRead["viewer"]>): string {
+  if (viewer.person) {
+    return `Answering as ${viewer.person}, ${viewer.basis === "chosen-here" ? "chosen with rig tui --as" : "the default person"}: a choice made in this terminal, `
+      + "not a verified identity. Requests to other people are shown, not answered here; open the TUI as them with rig tui --as <person>.";
+  }
+  return viewer.chosen
+    ? `${viewer.chosen} isn't a registered person (rig gateway human list), so requests to people aren't answered here.`
+    : "Several people are registered and none is the default, so requests to people aren't answered here: open the TUI as one "
+      + "with rig tui --as <person>, or mark a default with rig gateway human set <id> default yes.";
 }
 
 /** A question's recorded answer, by own key only (a question id like "constructor" isn't an answer). */
