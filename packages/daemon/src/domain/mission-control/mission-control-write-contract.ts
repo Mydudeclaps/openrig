@@ -105,6 +105,9 @@ export interface MissionControlActionResult {
   auditedAt: string;
   /** For `answer`: recorded with questions still open, or answered (returned to the asker, and the ask closed). */
   answer?: { outcome: "recorded" | "answered"; unanswered: string[] };
+  /** A different person acted on what was asked of `askedPerson`: kept on the row as their correspondence, never as the
+   *  asked person's answer, so nothing was answered, closed or unparked. `message` says so to the caller. */
+  correspondence?: { askedPerson: string; message: string };
 }
 
 interface WriteContractDeps {
@@ -147,6 +150,11 @@ export class MissionControlWriteContract {
     }
 
     const source = this.requireMutableQitem(input.qitemId);
+    const approvedForSomeoneElse = input.verb === "approve" && source.humanIntent !== "update"
+      ? this.queueRepo.askedSomeoneElse(input.actorSession, source.destinationSession) : null;
+    if (approvedForSomeoneElse) {
+      return this.recordCorrespondence(input, source, approvedForSomeoneElse, input.reason?.trim() ? `approved: ${input.reason.trim()}` : "approved");
+    }
 
     if ((input.verb === "route" || input.verb === "handoff") && !input.destinationSession) {
       throw new MissionControlWriteContractError(
@@ -402,6 +410,8 @@ export class MissionControlWriteContract {
         { qitemId: input.qitemId, state: source.state, blockedOn: source.blockedOn },
       );
     }
+    const parkedOnSomeoneElse = this.queueRepo.askedSomeoneElse(input.actorSession, source.blockedOn);
+    if (parkedOnSomeoneElse) return this.recordCorrespondence(input, source, parkedOnSomeoneElse, decision);
 
     const evaluatedAt = this.now().toISOString();
     const beforeSnapshot = snapshotQitem(source);
@@ -508,6 +518,19 @@ export class MissionControlWriteContract {
         `qitem ${input.qitemId} is ${ask.state}, not waiting on an answer (it may already be answered), so nothing was recorded or sent.`,
         { qitemId: input.qitemId, state: ask.state });
     }
+    const askedSomeoneElse = ask.humanIntent === "update" ? null : this.queueRepo.askedSomeoneElse(input.actorSession, ask.destinationSession);
+    if (askedSomeoneElse) {
+      const choice = input.questionId !== undefined || input.optionId !== undefined;
+      const words = choice
+        ? formatHumanAnswers((ask.humanQuestions ?? []).filter((q) => q.id === input.questionId), { [input.questionId ?? ""]: input.optionId ?? "" })[0]
+          ?? `chose ${input.optionId ?? "nothing"} for ${input.questionId ?? "no question"}`
+        : input.decision?.trim() ?? "";
+      if (!words) {
+        throw new MissionControlWriteContractError("decision_required",
+          "verb=answer needs a choice (questionId and optionId) or the person's words (decision)", { verb: input.verb });
+      }
+      return this.recordCorrespondence(input, ask, askedSomeoneElse, words);
+    }
     if (ask.destinationSession !== input.actorSession || ask.humanIntent === "update" || !this.queueRepo.isPersonAddress(ask.destinationSession)) {
       throw new MissionControlWriteContractError("answer_not_recorded",
         `qitem ${input.qitemId} isn't an ask to ${input.actorSession}, so ${input.actorSession} can't answer it.`, { qitemId: input.qitemId });
@@ -575,6 +598,41 @@ export class MissionControlWriteContract {
         { qitemId: input.qitemId, replyQitemId: replyId });
     }
     return this.recordAnswer(input, before, decision, { outcome: "answered", unanswered: [] }, replyId);
+  }
+
+  /**
+   * A different registered person answering, approving or resolving what was asked of someone else speaks for
+   * themselves. Their words go on the row as a note in their own name, and the caller is told so. The row keeps its
+   * state, its answers and its reply id, and emits no resolution, so the asked person can still answer it as usual.
+   */
+  private recordCorrespondence(input: MissionControlActionInput, item: QueueItem, askedPerson: string, words: string): MissionControlActionResult {
+    const note = `Correspondence from ${input.actorSession}, not ${askedPerson}'s answer: ${words}`;
+    const waiting = item.state === "blocked" ? `still parked on ${askedPerson}` : `still waiting for ${askedPerson}'s answer`;
+    const message = `Recorded as correspondence from ${input.actorSession}, not as ${askedPerson}'s answer. It's kept on ${input.qitemId} `
+      + `in your name; nothing was answered, closed or unparked, and ${input.qitemId} is ${waiting}.`;
+    const evaluatedAt = this.now().toISOString();
+    const before = snapshotQitem(item);
+    let actionEntry: ReturnType<MissionControlActionLog["record"]> | null = null;
+    try {
+      this.eventBus.withNotifyEnvelope((register) => {
+        register(this.queueRepo.updateWithinTransaction({ qitemId: input.qitemId, actorSession: input.actorSession,
+          transitionNote: note, identityProvenance: input.identityProvenance ?? null }).persistedEvent);
+        const after = this.queueRepo.getById(input.qitemId);
+        actionEntry = this.actionLog.record({ actionVerb: "annotate", qitemId: input.qitemId, actorSession: input.actorSession,
+          actedAt: evaluatedAt, beforeState: before, afterState: after ? snapshotQitem(after) : null, annotation: note,
+          auditNotes: { ...(input.auditNotes ?? {}), correspondence: { requestedVerb: input.verb, askedPerson } },
+          identityProvenance: input.identityProvenance ?? null });
+        register(this.eventBus.persistWithinTransaction({ type: "mission_control.action_executed",
+          actionId: actionEntry.actionId, actionVerb: "annotate", qitemId: input.qitemId, actorSession: input.actorSession }));
+      });
+    } catch (err) {
+      if (err instanceof MissionControlActionLogError) {
+        throw new MissionControlWriteContractError(err.code, err.message, err.details);
+      }
+      throw err;
+    }
+    return { actionId: actionEntry!.actionId, verb: input.verb, qitemId: input.qitemId, closedQitem: this.queueRepo.getById(input.qitemId),
+      createdQitemId: null, notifyAttempted: false, notifyResult: null, auditedAt: evaluatedAt, correspondence: { askedPerson, message } };
   }
 
   /** The audit row and event for one answer (its queue writes are the repository's own). */
