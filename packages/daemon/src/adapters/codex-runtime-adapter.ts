@@ -67,7 +67,7 @@ const codexHookTrust = createRequire(import.meta.url)("../../assets/plugins/open
 
 import { listNativeProcesses, observeCodexPaneProcess, observeCodexForkProcess, verifyCodexPaneProcess, verifyPaneIdleShell, type NativeProcessRow } from "../domain/native-process-lineage.js";
 import { recordSeatSkillWrite, seatPluginSkillsLossNote, seatProjectionComplete, seatSkillWriteRefusal } from "../domain/seat-skill-storage.js";
-import { codexPluginContentHash, planOwnedCodexContentApproval, recordOwnedCodexApproval } from "../domain/codex-owned-plugin-trust.js";
+import { planOwnedCodexContentApproval, recordOwnedCodexApproval } from "../domain/codex-owned-plugin-trust.js";
 
 // Shared by all probes of ONE launch, never reset by a delayed screen or an
 // ambiguous transport result. A separately requested launch gets a new attempt.
@@ -377,11 +377,21 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
     if (typeof version !== "string" || !/^[0-9A-Za-z._-]+$/.test(version)) return report("skipped", "the vendored plugin's Codex manifest has no usable version");
 
     const shipped = nodePath.resolve(import.meta.dirname, "../../assets/plugins/openrig-core");
-    const matchesShipped = (dir: string) => {
-      try { return codexPluginContentHash(dir, true) === codexPluginContentHash(shipped, true); }
-      catch { return false; }
+    const ownFiles: string[] = [];
+    const collect = (dir: string, relative = "hooks") => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const child = nodePath.join(relative, entry.name);
+        if (entry.isDirectory()) collect(nodePath.join(dir, entry.name), child);
+        else ownFiles.push(child);
+      }
     };
-    if (!matchesShipped(pluginDir)) return report("skipped", "vendored files differ from this daemon's shipped plugin; existing choices are left alone");
+    collect(nodePath.join(shipped, "hooks"));
+    ownFiles.push(".codex-plugin/plugin.json");
+    const matchesShipped = (dir: string) => ownFiles.every(relative => {
+      try { return fs.readFileSync(nodePath.join(dir, relative)).equals(fs.readFileSync(nodePath.join(shipped, relative))); }
+      catch { return false; }
+    });
+    if (!matchesShipped(pluginDir)) return report("skipped", "vendored hook files differ from this daemon's shipped plugin; existing choices are left alone");
 
     const codexHome = nodePath.dirname(this.resolveCodexConfigPath(home));
     const readLayers = (): CodexConfigLayerRead[] => codexReadableConfigLayers(codexHome, this.codexSystemConfigDir).map((layer) => {

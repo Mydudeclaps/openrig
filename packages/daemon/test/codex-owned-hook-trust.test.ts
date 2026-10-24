@@ -247,15 +247,15 @@ it("R2 keeps an unrelated multiline instruction containing table examples exact"
   expect(f.read().developer_instructions).toBe(before);
   expect(fs.existsSync(path.join(f.home, ".openrig-core-hook-trust.json"))).toBe(false);
 });
-it("an unshipped vendored file leaves the older plugin installed without attempting an upgrade", async () => {
+it("an unshipped vendored file permits the upgrade but leaves content approval under native review", async () => {
   const f = await legacyUpgrade(), before = fs.readFileSync(f.file, "utf8"), calls = f.calls.length;
   const older = path.join(path.dirname(f.cache), "previous-version");
   fs.renameSync(f.cache, older);
   fs.writeFileSync(path.join(f.plugin, "unshipped-file"), "fixture extra");
-  expect(await f.adapter().ensureCodexCorePlugin()).toMatchObject({ outcome: "skipped" });
-  expect(f.calls).toHaveLength(calls);
+  expect(await f.adapter().ensureCodexCorePlugin()).toMatchObject({ outcome: "installed" });
+  expect(f.calls).toHaveLength(calls + 1);
   expect(fs.existsSync(older)).toBe(true);
-  expect(fs.existsSync(f.cache)).toBe(false);
+  expect(fs.readFileSync(path.join(f.cache, "unshipped-file"), "utf8")).toBe("fixture extra");
   expect(fs.readFileSync(f.file, "utf8")).toBe(before);
   expect(fs.existsSync(path.join(f.home, ".openrig-core-hook-trust.json"))).toBe(false);
 });
