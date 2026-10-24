@@ -225,3 +225,37 @@ it("uses the native bundle fingerprint and legacy identity recipes", () => {
   expect(codexPluginContentHash(root, true)).not.toBe(codexPluginContentHash(root));
   expect(path.basename(codexLegacyPluginTrustPath("/home/operator/.codex/config.toml"))).toBe("5107db44b2124b5303069076c8cbcc824811a62710c30a9188b2f8465e5e7cb4");
 });
+
+// Independent review controls. All homes and plugin copies belong to fixture().
+it("R2 preserves a quoted content-approval key without invalidating TOML", async () => {
+  const f = await legacyUpgrade();
+  const previous = fs.readFileSync(f.baseline, "utf8");
+  fs.writeFileSync(f.file, fs.readFileSync(f.file, "utf8").replace(/^(trusted_hash = .*\n)/gm, `$1"trusted_content_hash" = "${previous}"\n`));
+  expect(Object.values(f.read().hooks.state).every((s: any) => s.trusted_content_hash === previous)).toBe(true);
+  const before = fs.readFileSync(f.file, "utf8");
+  await f.adapter().ensureCodexCorePlugin();
+  expect(() => f.read()).not.toThrow();
+  expect(fs.readFileSync(f.file, "utf8")).toBe(before);
+  expect(fs.existsSync(path.join(f.home, ".openrig-core-hook-trust.json"))).toBe(false);
+});
+it("R2 keeps an unrelated multiline instruction containing table examples exact", async () => {
+  const f = await legacyUpgrade();
+  const sample = Object.keys(f.read().hooks.state).map(key => `[hooks.state.${JSON.stringify(key)}]`).join("\n");
+  fs.writeFileSync(f.file, `developer_instructions = '''\n${sample}\n'''\n` + fs.readFileSync(f.file, "utf8"));
+  const before = f.read().developer_instructions;
+  await f.adapter().ensureCodexCorePlugin();
+  expect(f.read().developer_instructions).toBe(before);
+  expect(fs.existsSync(path.join(f.home, ".openrig-core-hook-trust.json"))).toBe(false);
+});
+it("an unshipped vendored file leaves the older plugin installed without attempting an upgrade", async () => {
+  const f = await legacyUpgrade(), before = fs.readFileSync(f.file, "utf8"), calls = f.calls.length;
+  const older = path.join(path.dirname(f.cache), "previous-version");
+  fs.renameSync(f.cache, older);
+  fs.writeFileSync(path.join(f.plugin, "unshipped-file"), "fixture extra");
+  expect(await f.adapter().ensureCodexCorePlugin()).toMatchObject({ outcome: "skipped" });
+  expect(f.calls).toHaveLength(calls);
+  expect(fs.existsSync(older)).toBe(true);
+  expect(fs.existsSync(f.cache)).toBe(false);
+  expect(fs.readFileSync(f.file, "utf8")).toBe(before);
+  expect(fs.existsSync(path.join(f.home, ".openrig-core-hook-trust.json"))).toBe(false);
+});
