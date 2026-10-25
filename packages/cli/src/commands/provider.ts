@@ -617,7 +617,10 @@ a CLAUDE_CODE_OAUTH_TOKEN the seat still receives outranks that login, and the r
         if (message) console.log(message);
         if (seat?.home) {
           console.log(`home: ${seat.home}${seat.loginChanged ? ` (now "${seat.account}")` : ""}`);
-          if (seat.undo) console.log(`to switch the home back: ${seat.undo}`);
+          if (seat.undo) {
+            console.log(`to restore the home's saved credential bytes: ${seat.undo}`);
+            console.log("undo restores saved credential bytes only; sign-in is unverified. Saved credentials may expire, be revoked, or be superseded by refresh elsewhere. Restart the affected seat and use the existing account verification; fresh sign-in may be required.");
+          }
         } else if (seat) {
           console.log(`Claude token: ${seat.tokenFile ? `"${seat.account}", read from ${seat.tokenFile}` : "the config dir's stored login"}${seat.loginChanged
             ? seat.tokenApplied === false ? " (reference saved; the token didn't take effect)" : " (set)" : ""}`);
