@@ -39,6 +39,8 @@ export interface Node {
   /** OPR.0.7.0.7: the seat's explicit effort choice (rig seat set-effort); null = none. */
   effortChoice?: string | null;
   codexConfigProfile?: string | null;
+  /** A Claude seat's own subscription credential, as a reference (operator label and token-file path); null = none. */
+  claudeTokenRef?: { label: string; tokenFile: string } | null;
   /** OPR.0.4.8.3 Seam B: attached permission_policy REF (builtin:<name> or spec-relative custom
    *  path), or null when none is attached (= the floor). */
   permissionPolicy?: string | null;

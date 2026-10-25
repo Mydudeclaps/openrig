@@ -12,6 +12,7 @@ import { parseClaudePermissionModes } from "./permission-drift.js";
 import { validateNativePermissionSelection } from "./native-permission-selection.js";
 import { seatLaunchAdditionsForLaunch } from "./seat-launch-additions.js";
 import { effectiveRuntimeHome } from "./seat-runtime-home.js";
+import { claudeSeatTokenStep, readClaudeSeatTokenRef } from "./claude-seat-token.js";
 
 export interface ClaudeLaunchTarget {
   nodeId: string;
@@ -246,6 +247,10 @@ export class ClaudeManagedLaunch {
     const otherwise = (key: string) => selectedKeys.includes(key) ? "" : ` else unset ${key};`;
     const terminal = terminalKeys.map(key => `if [ -n "\${${key}-}" ]; then export ${key};${otherwise(key)} fi`);
     terminal.push(`if [ -n "$${WAYLAND_DISPLAY_VAR}" ]; then export WAYLAND_DISPLAY="$${WAYLAND_DISPLAY_VAR}";${otherwise("WAYLAND_DISPLAY")} fi`);
+    // A seat's own subscription token (rig provider switch --seat) is read from its file as Claude starts, after the
+    // environment is reduced, so the value never passes through OpenRig; an unreadable file stops the launch.
+    const tokenRef = readClaudeSeatTokenRef(this.db, target.nodeId);
+    const tokenStep = tokenRef ? `${claudeSeatTokenStep(tokenRef, shellQuote)} && ` : "";
     return Object.freeze({ assertCurrent, configDir: context.configDir, executable: context.executable, executableIsScript: context.executableIsScript, command: (args: readonly string[], launchEnv: Readonly<Record<string, string>> = {}) => {
       assertCurrent();
       const launch = Object.entries(launchEnv).map(([key, value]) => `export ${shellQuote(`${key}=${value}`)}`);
@@ -258,7 +263,7 @@ export class ClaudeManagedLaunch {
       const clear = `__openrig_remove=$(/usr/bin/env -0 | /usr/bin/env -i ${shellQuote(process.execPath)} -e ${shellQuote(removalArgs)}) && eval "$__openrig_remove"`;
       return `${WAYLAND_DISPLAY_ASSIGNMENT}; cd ${shellQuote(cwd)} && {
 ${[...assignments, ...forwarded, ...seatForwarded, ...projectForwarded, ...terminal, ...launch].join("\n")}
-${clear} && exec /usr/bin/env "$@" ${[shellQuote(context.executable), ...args.map(shellQuote)].join(" ")}
+${clear} && ${tokenStep}exec /usr/bin/env "$@" ${[shellQuote(context.executable), ...args.map(shellQuote)].join(" ")}
 }`;
     } });
   }
