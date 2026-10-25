@@ -144,7 +144,10 @@ export class NodeLauncher {
       return guard.lifecycle([node.id], () => this.launchNode(rigId, logicalId, opts));
     }
 
-    if (node.binding !== null) {
+    // A kept pane keeps its binding through the takeover, so the delivery guard can still resolve it.
+    const keptBinding = opts?.keepPane !== undefined && node.binding?.tmuxPane === opts.keepPane
+      && node.binding?.tmuxSession === (opts.sessionName ?? deriveSessionName(rig.rig.name, logicalId));
+    if (node.binding !== null && !keptBinding) {
       return { ok: false, code: "already_bound", message: `Node ${logicalId} is already bound` };
     }
 
@@ -288,7 +291,9 @@ export class NodeLauncher {
       persistedEvent = txn();
     } catch (err) {
       // DB failed — best-effort tmux cleanup
-      await this.tmuxAdapter.killSession(sessionName);
+      // Only a session this launch created is removed. A kept pane is the person's own, with its scrollback, so it's left
+      // for recovery.
+      if (!opts?.keepPane) await this.tmuxAdapter.killSession(sessionName);
       return {
         ok: false,
         code: "db_error",
