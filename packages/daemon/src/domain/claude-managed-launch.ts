@@ -13,6 +13,7 @@ import { validateNativePermissionSelection } from "./native-permission-selection
 import { seatLaunchAdditionsForLaunch } from "./seat-launch-additions.js";
 import { effectiveRuntimeHome } from "./seat-runtime-home.js";
 import { claudeSeatTokenStep, readClaudeSeatTokenRef } from "./claude-seat-token.js";
+import { OUTRANKING_TOKEN_ENV, projectRootForLocalSettings, settingsFileConflicts, type CredentialConflict, type CredentialPrecedence } from "./claude-credential-precedence.js";
 
 export interface ClaudeLaunchTarget {
   nodeId: string;
@@ -120,6 +121,44 @@ export class ClaudeManagedLaunch {
       throw new Error("Claude managed launch context is unresolved: an absolute seat cwd and Claude node are required.");
     }
     return row;
+  }
+
+  /** What would outrank the seat's own subscription token at its next managed launch: names its launch environment
+   *  carries, and the settings files it loads. Managed settings (a file, MDM or the server) aren't read; the restarted
+   *  seat's /status is the evidence for those. */
+  async credentialPrecedence(nodeId: string): Promise<CredentialPrecedence> {
+    const target = this.target(nodeId);
+    const cwd = target.cwd!;
+    const conflicts: CredentialConflict[] = [];
+    for (const name of OUTRANKING_TOKEN_ENV) {
+      if (this.sessionEnv[name]) {
+        conflicts.push({ name, source: "the daemon's environment, which every managed Claude launch receives",
+          remedy: `unset ${name} where the daemon starts, or take it out of recovery.provider_auth_env_allowlist; either reaches every seat` });
+      }
+    }
+    const declared = await this.seatEnvKeys(nodeId, target.session ?? undefined);
+    for (const name of OUTRANKING_TOKEN_ENV) {
+      if (declared.includes(name)) {
+        conflicts.push({ name, source: "this seat's env: (member or rig) or a one-off launch name", remedy: `remove ${name} from this seat's env: in its rig spec` });
+      }
+    }
+    const checked = ["the launch environment"];
+    const notChecked = ["managed settings (a managed-settings.json file, MDM or the server)"];
+    const root = projectRootForLocalSettings(cwd);
+    const files: Array<[string, string]> = [
+      [path.join(this.configPaths(cwd, nodeId).configDir, "settings.json"), "user"],
+      [path.join(cwd, ".claude", "settings.json"), "project"],
+      [path.join(root ?? cwd, ".claude", "settings.local.json"), "project local"],
+      // Claude Code also reads a local file an earlier version left in the starting directory.
+      ...(root && root !== path.resolve(cwd) ? [[path.join(cwd, ".claude", "settings.local.json"), "project local"] as [string, string]] : []),
+    ];
+    for (const [file, scope] of files) {
+      const found = settingsFileConflicts(file, scope);
+      conflicts.push(...found.conflicts);
+      if (found.checked) checked.push(found.checked);
+      if (found.notChecked) notChecked.push(found.notChecked);
+    }
+    return { conflicts, checked, notChecked };
   }
 
   /** Bootstrap shares prepare's stored-node cwd when the binding omits it. */
