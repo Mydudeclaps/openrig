@@ -39,7 +39,7 @@ describe("the Feed shows one person's queue, or everyone's, and acts with the pr
     }, home)).toMatchObject({ ok: true });
   };
   const askTo = (destinationSession: string, summary: string) =>
-    repo.create({ sourceSession: "orch-lead@r", destinationSession, body: `${summary} body`, summary, nudge: false });
+    repo.create({ sourceSession: "orch-lead@r", destinationSession, body: `${summary} body`, summary, evidenceRef: "/fixture/ask", nudge: false });
   async function read(query = ""): Promise<AttentionRead> {
     const app = new Hono();
     app.use("*", async (c, next) => { c.set("queueRepo" as never, repo as never); await next(); });

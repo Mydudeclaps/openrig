@@ -63,7 +63,7 @@ The person at the terminal is the **primary user**: the default person, or, with
 person at the terminal unnamed. Whatever the TUI shows, its acts are theirs.
 - **Opening:** with a chosen default, the TUI opens on that person's Feed. With none chosen, including a one-person
   install that never chose one, it opens on the topology, as before.
-- **Whose queue:** `view <person>` shows one person's asks, `view all` everyone's, and `view default` the default
+- **Whose queue:** `whose <person>` shows one person's asks, `whose all` everyone's, and `whose default` the default
   person's. The Feed's first line says whose queue it shows and who acts.
 - **Acting on someone else's ask** (answer, approve or resolve from the TUI) records both: the primary user as the actor,
   and the person asked in the audit notes and the transition. The asking seat reads, for example, "Answered by

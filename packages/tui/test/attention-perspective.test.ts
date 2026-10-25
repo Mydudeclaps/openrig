@@ -14,7 +14,7 @@ const perspective = (viewing: string | null, basis: NonNullable<AttentionRead["p
 const read = (p?: AttentionRead["perspective"]): AttentionRead =>
   ({ scope: "instance", readAt: "2026-10-25T10:00:00Z", items: [], sources: [{ source: "queue", state: "available", detail: "fixture" }], detail: null, detailError: null, ...(p ? { perspective: p } : {}) });
 
-it("the view command chooses whose queue the Feed reads, and the Feed says who acts", async () => {
+it("the whose command chooses whose queue the Feed reads, and the Feed says who acts", async () => {
   const views: Array<string | null> = [];
   const client = new DaemonClient({ baseUrl: "http://fixture", fetchImpl: (async (url) => {
     const u = new URL(String(url));
@@ -35,7 +35,7 @@ it("the view command chooses whose queue the Feed reads, and the Feed says who a
   expect(views.at(-1)).toBe("default");
   expect(title()).toBe("FEED · Viewing mike@external · you act as mike@external");
 
-  view.dispatch(parseCommand("view sarah")); await refresh();
+  view.dispatch(parseCommand("whose sarah")); await refresh();
   expect(view.get()).toMatchObject({ section: "needs", attentionView: "sarah" });
   expect(views.at(-1)).toBe("sarah");
   // Viewing Sarah is not acting as Sarah.
@@ -45,11 +45,11 @@ it("the view command chooses whose queue the Feed reads, and the Feed says who a
   view.dispatch(parseCommand(":topology")); view.dispatch(parseCommand("attention")); await refresh();
   expect(views.at(-1)).toBe("sarah");
 
-  view.dispatch(parseCommand("view all")); await refresh();
+  view.dispatch(parseCommand("whose all")); await refresh();
   expect(views.at(-1)).toBe("all");
   expect(title()).toBe("FEED · Viewing everyone · you act as mike@external");
 
-  view.dispatch(parseCommand("view default")); await refresh();
+  view.dispatch(parseCommand("whose default")); await refresh();
   expect(view.get().attentionView).toBeNull();
   expect(views.at(-1)).toBe("default");
 });

@@ -49,7 +49,7 @@ describe("the primary user acts on anyone's ask, recorded as themselves on that 
     }, home)).toMatchObject({ ok: true });
   };
   const ask = (to: string, extra: Record<string, unknown> = {}) => repo.create({ sourceSession: ASKER, destinationSession: to, body: "Ship the draft?",
-    summary: "Ship the draft?", humanIntent: "decision", nudge: false, ...extra } as never);
+    summary: "Ship the draft?", humanIntent: "decision", evidenceRef: "/fixture/ask", nudge: false, ...extra } as never);
   async function act(body: Record<string, unknown>, headers: Record<string, string> = {}) {
     const response = await app.request("/api/mission-control/action", { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body) });
     return { status: response.status, body: await response.json() as Record<string, unknown> };
