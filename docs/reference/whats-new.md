@@ -5,8 +5,7 @@ This note is for an agent on an install that was just upgraded to 0.7.2. It list
 `rig context get onboarding-width/public-what-you-can-do.md`. Each release replaces this file, so
 `rig context get reference/whats-new.md` describes the installed version once the upgraded daemon is running. Without
 a running daemon, read `$OPENRIG_HOME/reference/whats-new.md`. The daemon refreshes that copy when it starts, so right
-after an upgrade it can still hold the previous version's note. The capability map hasn't been
-updated for 0.7.2 yet, so this note is where 0.7.2's new commands are listed.
+after an upgrade it can still hold the previous version's note.
 
 ## After the upgrade
 
