@@ -44,7 +44,18 @@ export function verifyPromptState(proof) {
   assert.match(waiting.send.stdout + waiting.send.stderr, /target_needs_input/);
   assert.ok(!waiting.pane.includes(waiting.marker), 'send typed into real prompt');
   assert.ok(waiting.wake.fired, 'refused wake never attempted');
-  assert.match(waiting.wake.delivery, /needs_input|refused|retained|held|failed/i);
+  assert.equal(waiting.wake.delivery, 'failed');
+  const attempt = waiting.wake.attempt;
+  assert.ok(attempt?.historyId && waiting.wake.jobId, 'missing watchdog refusal attempt');
+  assert.equal(attempt.jobId, waiting.wake.jobId);
+  assert.equal(attempt.deliveryTargetSession, proof.claude);
+  assert.equal(attempt.outcome, 'refused');
+  assert.equal(attempt.deliveryStatus, 'failed');
+  assert.ok(attempt.deliveryMessage.includes(waiting.wake.id), 'attempt belongs to another queue row');
+  const reason = attempt.evaluationNotes?.deliveryReason;
+  assert.ok(typeof reason === 'string' && reason.startsWith(`Refused: '${proof.claude}' is at an interactive prompt (`));
+  assert.match(reason, /interactive prompt \((?:selection_prompt|permission_prompt)\)/);
+  assert.ok(reason.endsWith('No text was sent.'));
   assert.ok(!waiting.wake.pane.includes(waiting.wake.id), 'wake typed into real prompt');
 }
 
@@ -160,9 +171,14 @@ export async function runPromptState(rigBin, frames, proof = {}) {
       const read = async () => {
         const transitions = await jsonCli('queue', 'transitions', id, '--full');
         const fired = entries(transitions).find(row => row.wake?.phase === 'fired');
-        return { id, fired: Boolean(fired), delivery: fired?.wake?.deliveryStatus ?? '', pane: await capture(claude) };
+        const jobId = fired?.wake?.ref;
+        const history = !expectDelivery && jobId ? (await get(`/api/watchdog/${encodeURIComponent(jobId)}/status`)).recentHistory : [];
+        // A fresh generated one-shot timer must have exactly one matching attempt, not an unrelated delivery error.
+        const matches = history.filter(row => row.jobId === jobId && row.deliveryTargetSession === claude && row.deliveryMessage?.includes(id));
+        return { id, fired: Boolean(fired), jobId, attempt: matches.length === 1 ? matches[0] : null,
+          delivery: fired?.wake?.deliveryStatus ?? '', pane: await capture(claude) };
       };
-      const observed = await until(read, row => expectDelivery ? row.pane.includes(id) : row.fired && row.delivery,
+      const observed = await until(read, row => expectDelivery ? row.pane.includes(id) : row.fired && row.delivery && row.attempt,
         'timer wake not observed', 35_000);
       await cli(['queue', 'update', id, '--state', 'done', '--closure-reason', 'no-follow-on'], claude);
       return observed;

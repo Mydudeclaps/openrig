@@ -25,12 +25,15 @@ function promptStateProof() {
     rig: { attentionCount: attention ? 1 : 0 },
     table: 'SESSION ATTN REASON\n' + codex + (attention ? ' yes selection_prompt' : ' no working'),
   });
-  return { stage: 'complete', hookEvents: 0, runtimes: ['codex', 'claude-code'], codex,
+  return { stage: 'complete', hookEvents: 0, runtimes: ['codex', 'claude-code'], codex, claude: 'dev-claude@prompt-state',
     attention: seen(true), clear: seen(false),
     working: ['quoted-selector', 'quoted-permission'].map(kind => ({ kind, marker: kind,
       send: { code: 0 }, pane: kind, wake: { id: 'wake-' + kind, pane: 'wake-' + kind } })),
     waiting: { marker: 'must-not-type', send: { code: 1, stdout: 'target_needs_input', stderr: '' },
-      pane: 'real prompt', wake: { id: 'must-not-wake', fired: true, delivery: 'retained:target_needs_input', pane: 'real prompt' } },
+      pane: 'real prompt', wake: { id: 'must-not-wake', fired: true, delivery: 'failed', pane: 'real prompt', jobId: 'watchdog-waiting',
+        attempt: { historyId: 'attempt-waiting', jobId: 'watchdog-waiting', deliveryTargetSession: 'dev-claude@prompt-state',
+          outcome: 'refused', deliveryStatus: 'failed', deliveryMessage: 'Wake must-not-wake',
+          evaluationNotes: { deliveryReason: "Refused: 'dev-claude@prompt-state' is at an interactive prompt (selection_prompt). No text was sent." } } } },
   };
 }
 
@@ -369,6 +372,13 @@ test('prompt-state result rejects every escaped regression and missing control',
     p => { p.waiting.pane += p.waiting.marker; },
     p => { p.waiting.wake.fired = false; },
     p => { p.waiting.wake.delivery = 'ok'; },
+    p => { p.waiting.wake.attempt = null; },
+    p => { p.waiting.wake.attempt.outcome = 'failed'; p.waiting.wake.attempt.evaluationNotes.deliveryReason = 'transport unavailable'; },
+    p => { p.waiting.wake.delivery = 'retained'; p.waiting.wake.attempt.outcome = 'skipped'; },
+    p => { p.waiting.wake.attempt.evaluationNotes = null; },
+    p => { p.waiting.wake.attempt.jobId = 'another-job'; },
+    p => { p.waiting.wake.attempt.deliveryTargetSession = 'another-seat'; },
+    p => { p.waiting.wake.attempt.deliveryMessage = 'another-queue-row'; },
     p => { p.waiting.wake.pane += p.waiting.wake.id; },
   ];
   for (const mutate of mutations) {

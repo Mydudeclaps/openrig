@@ -111,7 +111,7 @@ DOCKER_HOST=ssh://your-test-executor bash scripts/run-pr-scenarios.sh \
 Leave `DOCKER_CONTEXT` unset when selecting `DOCKER_HOST`, so a saved context cannot
 override the explicitly selected executor. This does not change Docker configuration.
 Use a fresh output directory for each retained run. Without `--mode` the selected
-seeded case runs healthy / lost-baton / healthy. Without `--case` all eight cases run,
+seeded case runs healthy / lost-baton / healthy. Without `--case` all nine cases run,
 fifteen container runs by default: the `fixture` and `library` seeded pairs (healthy /
 lost-baton / healthy each), the `refocus-parked` seeded pair (healthy / seeded /
 healthy), and the six passing-only cases (healthy once each). A single healthy run
@@ -183,10 +183,12 @@ history above its current empty composer and running timer: unique sends and
 actual parked-row timer wakes must reach its pane. A real waiting dialog must
 refuse a send and an attempted wake without either marker being typed.
 
-The report retains each served value, delivered nonce, wake transition and current
+The report retains each served value, delivered nonce, wake transition, matching watchdog refusal attempt and current
 pane, including the stage if incomplete. Product state is never set through a DB
 write or a mocked observation. These are controlled pane layouts and OpenRig's
 coordination path, not native prompt-layout or model behavior evidence. Historical
 fail-before arms are author evidence: #1946 against32633a3d-era installed bytes,
 and #1955 againstdb863940's parent, with named product assertion failures. Setup,
-missing wake attempts, unrelated errors and timeouts do not count as RED.
+missing wake attempts, unrelated errors and setup timeouts do not count as RED.
+A labelled product-assertion timeout retaining the served values (the #1946
+attention disagreement) counts as RED after successful adoption/readiness.
