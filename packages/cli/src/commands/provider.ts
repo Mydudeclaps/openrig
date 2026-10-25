@@ -599,7 +599,7 @@ account email, so the label is yours, not an observed account.`)
         // The daemon may still be switching: a timeout is neither a failure nor a reason to send it again.
         res = { status: 200, data: { outcome: "unknown", reasons: ["switch_outcome_unknown"],
           message: `The CLI timed out waiting for the daemon. The switch may still be running, or queued behind another switch on the same Codex home; a queued switch hasn't changed anything yet. `
-            + `It has restarted the seat once rig seat restart ${opts.seat} --keep-conversation --plan shows a lastRestart that started after ${startedAt}. `
+            + `It has restarted the seat once rig seat restart ${opts.seat} --keep-conversation --plan shows a lastRestart that finished after ${startedAt}. `
             + `Until then an eligible plan, or an older lastRestart, doesn't mean it ended, so don't run the switch again: a second one would queue behind it. `
             + `For a Claude seat, rig seat status ${opts.seat} shows its token reference and whether it runs.` } };
       }
