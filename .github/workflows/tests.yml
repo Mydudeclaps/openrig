@@ -38,6 +38,11 @@ jobs:
           assert '#1955 quoted-selector: working send refused' in r.get('error',''), r.get('error')
           assert r['promptState']['stage']=='working-quoted-text'
           assert r['promptState']['runtimes']==['codex','claude-code']
+          assert r['promptState']['paneHeight']==45
+          screen=r['promptState']['working'][0]['before'].splitlines()
+          assert len(screen)==45, 'incomplete visible screen'
+          last=max(i for i,line in enumerate(screen) if line.strip())
+          assert screen[last].startswith('⏵⏵ accept edits on') and len(screen)-last-1>=20, 'not a top-layout composer'
           pathlib.Path('dist/pr-scenarios/EXPECTED-FAILURE.json').write_text(json.dumps({'source': 'a528913135a112a596d31ac5851308f4788a6acc', 'assertion': '#1955 quoted-selector: working send refused', 'stage': 'working-quoted-text', 'qualified': True}, indent=2)+'\n')
           PYCODE
       - uses: actions/upload-artifact@v4
