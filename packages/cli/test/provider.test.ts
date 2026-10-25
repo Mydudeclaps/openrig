@@ -247,5 +247,9 @@ describe("rig provider switch --seat tells the person what follows", () => {
     expect(exitCode).toBe(1);
     expect(logs[0]).toBe("unknown: switch_outcome_unknown");
     expect(logs.join("\n")).toContain("rig seat restart s1 --keep-conversation --plan");
+    // A switch still queued behind another on the home hasn't restarted anything, so an eligible plan isn't the end of it.
+    expect(logs.join("\n")).toContain("queued behind another switch on the same Codex home");
+    expect(logs.join("\n")).toMatch(/lastRestart that started after \d{4}-\d{2}-\d{2}T/);
+    expect(logs.join("\n")).toContain("don't run the switch again");
   });
 });
