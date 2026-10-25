@@ -35,6 +35,15 @@ export interface AttentionRead {
   sources: Array<{ source: string; state: "available" | "unavailable" | "partial"; detail: string }>;
   detail: AttentionDetail | null;
   detailError: string | null;
+  /** Whose queue this Feed shows (`view`), and who acts on it. A view, never an identity: acts on what it shows carry the
+   *  primary user's authority, the person at the terminal, whoever's queue it is. `requested` names a view that matched no
+   *  registered person. Absent when no person is registered. */
+  perspective?: {
+    viewing: string | null;
+    basis: "all" | "default" | "chosen-here" | "unknown";
+    requested?: string;
+    actingAs: { person: string | null; authority: "primary-user" };
+  };
 }
 
 // Consumers must use the same lexical human classification as queue selection.
