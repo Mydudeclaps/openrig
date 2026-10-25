@@ -260,13 +260,14 @@ export class ProviderServiceImpl implements ProviderService {
       if (!waited) return this.switchOnHome(input, seatRestart, checked.home, checked.peers);
       // It waited behind another switch on this home, so the seat may have changed meanwhile: check it again first.
       const now = await this.seatPrecheck(input, seatRestart);
+      const nowHome = now.ok ? now.home : now.verdict.seat?.home;
+      if (nowHome !== undefined && nowHome !== checked.home) {
+        return { outcome: "failed_safely", reasons: ["seat_home_changed"],
+          message: `${input.seat} now runs on ${nowHome}, not ${checked.home}, the home this switch waited on. Nothing changed; run the switch again for its current home.` };
+      }
       if (!now.ok) {
         const { reasons, message } = now.verdict;
         return { outcome: "failed_safely", reasons: reasons as [string, ...string[]], ...(message ? { message } : {}) };
-      }
-      if (now.home !== checked.home) {
-        return { outcome: "failed_safely", reasons: ["seat_home_changed"],
-          message: `${input.seat} now runs on ${now.home}, not ${checked.home}, the home this switch waited on. Nothing changed; run the switch again for its current home.` };
       }
       return this.switchOnHome(input, seatRestart, now.home, now.peers);
     });
