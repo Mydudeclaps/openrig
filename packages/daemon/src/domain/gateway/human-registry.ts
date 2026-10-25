@@ -384,7 +384,7 @@ export function resolveSlackHandle(
   };
 }
 
-function atomicWrite(path: string, body: string): { ok: true } | { ok: false; error: string } {
+export function atomicWrite(path: string, body: string): { ok: true } | { ok: false; error: string } {
   try {
     mkdirSync(dirname(path), { recursive: true });
     const tmp = `${path}.tmp-${process.pid}`;
@@ -487,13 +487,8 @@ export interface HumanSummary {
 }
 
 export type ListHumansResult =
-  | { ok: true; humans: HumanSummary[]; advisory?: string }
+  | { ok: true; humans: HumanSummary[] }
   | { ok: false; error: string };
-
-/** Amendment A1 (founder R5): the human surface is SINGLE-HUMAN. Several fragments render
- *  honestly, but enumeration is display, never management — the advisory names the boundary. */
-export const MULTI_HUMAN_ADVISORY =
-  "several human fragments exist; OpenRig supports one configured human, so they are displayed as found and no command manages several";
 
 /** A field value with its provenance: authored in the fragment, or filled by a default. */
 export interface ProvenancedValue<T> {
@@ -591,7 +586,8 @@ export function listHumans(home: string = getOpenRigHome()): ListHumansResult {
       fragmentPath: fragmentPathFor(e.entityId, home),
     };
   });
-  return humans.length > 1 ? { ok: true, humans, advisory: MULTI_HUMAN_ADVISORY } : { ok: true, humans };
+  // Several people are a supported registry (0.7.3): the default and their placement live in gateway/participants.yaml.
+  return { ok: true, humans };
 }
 
 /** Read one fragment RAW (for authored-vs-default provenance) + validated. */
