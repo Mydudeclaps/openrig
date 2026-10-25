@@ -46,13 +46,14 @@ export interface SeatSwitchReport {
   account: string;
   /** Whether the home's active login is now `account`. */
   loginChanged: boolean;
-  /** The outgoing login, saved in the same home first; null when the home had no active login. */
+  /** The outgoing login, saved in the same home first under a name of its own; null when the home had no active login. */
   savedBefore: string | null;
   /** The command that switches the home back. */
   undo: string | null;
   restart?: { outcome: string; message: string; recoveryCommand?: string; remainingStep?: string };
-  /** Seats on the same home: they share its login, so they pick up the change at their next start. */
-  peers: PeerReport[];
+  /** The other Codex seats. One on the same home shares its login: it keeps its current one only until its next token
+   *  refresh, then stops until it's restarted, so `step` is that restart. */
+  peers: Array<PeerReport & { step?: string }>;
   next?: string;
 }
 

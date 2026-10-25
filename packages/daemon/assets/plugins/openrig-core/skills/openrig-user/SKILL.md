@@ -1027,8 +1027,11 @@ yet: say so instead of improvising.
 2. **Check:** `rig provider precheck --seat <seat> --to-account <name>` shows the home, what the seat is doing, and every
    peer on that home. A refusal says what's missing, and nothing changes.
 3. **Move:** `rig provider switch --seat <seat> --to-account <name>`. It saves the home's current login as
-   `before-switch-<time>`, activates the chosen one, and restarts the seat in place on the same conversation. Peers on
-   the home aren't restarted: they share its login and pick it up at their next start.
+   `before-switch-<time>`, activates the chosen one, and restarts the seat in place on the same conversation. If the
+   current login can't be saved first, nothing changes. Peers on the home aren't restarted. Each keeps its current login
+   only until its next token refresh, when Codex stops it with "signed in to another account". Run the printed
+   `rig seat restart <peer> --keep-conversation` for each to move it too. Don't sign in again in that home: that replaces
+   the login you just switched to.
 4. **Confirm:** after the seat completes a real tool-using turn, run the printed
    `rig seat restart <seat> --keep-conversation --verify --expect-account <its Account line>`. Until then the move is
    unconfirmed. An uncertain restart is reported; never restart it a second time.

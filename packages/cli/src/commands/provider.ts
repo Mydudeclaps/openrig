@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { Command } from "commander";
-import { DaemonClient } from "../client.js";
+import { DaemonClient, DaemonTimeoutError } from "../client.js";
 import { getDaemonStatus, getDaemonUrl , daemonStatusGuard} from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
@@ -20,15 +20,22 @@ export const USAGE_ACROSS_HOSTS_READ_TIMEOUT_MS = 20_000;
 // deadline: 50 s + 15 s + a 10 s margin = 75 s.
 export const USAGE_ACROSS_HOSTS_REFRESH_TIMEOUT_MS = 75_000;
 
-type Peer = { logicalId: string; sessionName: string | null; effect: string };
+type Peer = { logicalId: string; sessionName: string | null; home?: "same" | "different" | "unknown"; effect: string; step?: string };
 type SeatView = { home?: string; activity?: string; peers: Peer[] };
 type SwitchReport = { home: string; account: string; loginChanged: boolean; undo: string | null; peers: Peer[];
   restart?: { recoveryCommand?: string }; next?: string };
 
+// A switch waits as long as `rig seat restart` does: the seat's in-place restart runs inside it.
+const SWITCH_TIMEOUT_MS = 120_000;
+
 function printSeat(seat: SeatView): void {
   if (seat.home) console.log(`home: ${seat.home}`);
   if (seat.activity) console.log(`seat activity: ${seat.activity}`);
-  for (const peer of seat.peers) console.log(`peer on this home: ${peer.sessionName ?? peer.logicalId}: ${peer.effect}`);
+  for (const peer of seat.peers) {
+    const where = peer.home === "same" ? "peer on this home" : peer.home === "different" ? "seat on another home" : "seat, home unknown";
+    console.log(`${where}: ${peer.sessionName ?? peer.logicalId}: ${peer.effect}`);
+    if (peer.step) console.log(`  then: ${peer.step}`);
+  }
 }
 
 export function providerCommand(depsOverride?: StatusDeps): Command {
@@ -514,9 +521,12 @@ export function providerCommand(depsOverride?: StatusDeps): Command {
     .addHelpText("after", `
 The daemon plans the seat's in-place restart first (rig seat restart --plan), so a refusal changes nothing. It then saves the
 home's current login as before-switch-<time>, activates the chosen one there (rig auth switch), and restarts the seat in place
-with the same conversation, pane and launch settings. Every seat on that home shares its login, so peers are listed: they're
-not restarted, and pick up the login at their next start. The account isn't verified until the seat completes a tool turn:
-run the printed rig seat restart --keep-conversation --verify --expect-account. An uncertain restart is reported, never retried.
+with the same conversation, pane and launch settings. If the current login can't be saved first, nothing changes. Every seat
+on that home shares its login. Peers aren't restarted: each keeps its current login only until its next token refresh, when
+Codex stops it with "signed in to another account" until it's restarted, so the report prints rig seat restart <peer>
+--keep-conversation for each. Signing in again there would replace the login you just switched to. One switch runs at a
+time per home. The account isn't verified until the seat completes a tool turn: run the printed rig seat restart
+--keep-conversation --verify --expect-account. An uncertain restart is reported, never retried.
 
 Limits of this first increment:
 - Codex seats only. A Claude seat is refused (rebind_unsupported_for_runtime).
@@ -528,11 +538,20 @@ Limits of this first increment:
         process.exitCode = 1;
         return;
       }
-      const res = await client.post<{ outcome?: string; reasons?: string[]; message?: string; seat?: SwitchReport }>("/api/provider/switch", {
-        seat: opts.seat,
-        toAccount: opts.toAccount,
-        forceUnsafe: opts.forceUnsafe ?? false,
-      });
+      type SwitchResponse = { status: number; data: { outcome?: string; reasons?: string[]; message?: string; seat?: SwitchReport } };
+      let res: SwitchResponse;
+      try {
+        res = await client.post<SwitchResponse["data"]>("/api/provider/switch", {
+          seat: opts.seat,
+          toAccount: opts.toAccount,
+          forceUnsafe: opts.forceUnsafe ?? false,
+        }, { timeoutMs: SWITCH_TIMEOUT_MS });
+      } catch (err) {
+        if (!(err instanceof DaemonTimeoutError)) throw err;
+        // The daemon may still be switching: a timeout is neither a failure nor a reason to send it again.
+        res = { status: 200, data: { outcome: "unknown", reasons: ["switch_outcome_unknown"],
+          message: `The CLI timed out waiting for the daemon; the switch may still be in progress. Check before running it again: rig seat restart ${opts.seat} --keep-conversation --plan refuses with restart_in_progress while the seat restarts, then shows its result as lastRestart.` } };
+      }
       if (handleHttpError(res, "switch")) return;
       if (opts.json) console.log(JSON.stringify(res.data));
       else {
