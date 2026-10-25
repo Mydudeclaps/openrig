@@ -909,6 +909,27 @@ describe("native resume probe", () => {
     ).toBe("model_selection_gate");
   });
 
+  it.each([
+    ["banner", [
+      "╭───────────────────────────────────────╮",
+      "│ >_ OpenAI Codex (v0.124.0)            │",
+      "╰───────────────────────────────────────╯",
+      "",
+      "› 1. Switch to gpt-5.1-codex-mini Optimized for codex. Cheaper,",
+      "  2. Switch to gpt-5.4-codex Stronger for complex tasks.",
+      "  3. Keep current model",
+      "",
+      "  gpt-5.4 default · ~/code/openrig",
+    ]],
+    ["structural", ["› 1. gpt-5.1-codex-mini", "  2. gpt-5.4-codex", "", "  gpt-5.4 default · ~/code/openrig"]],
+    ["» header", ["OpenAI Codex (v0.153.4)", "» 1. gpt-6-astra", "  2. gpt-6-sol", "  gpt-6-astra ultra · ~/Documents/openrig"]],
+  ])("keeps the %s Codex model chooser drawn high in a tall pane a gate", (_shape, rows) => {
+    const paneContent = `${rows.join("\n")}\n${Array<string>(45).fill("").join("\n")}`;
+
+    expect(assessNativeResumeProbe({ runtime: "codex", paneCommand: "codex", paneContent }))
+      .toMatchObject({ status: "inconclusive", code: "model_selection_gate" });
+  });
+
   it("classifies Codex as resumed when an old update banner remains in scrollback but the live TUI is present", () => {
     expect(
       assessNativeResumeProbe({
@@ -1093,6 +1114,18 @@ describe("native resume probe", () => {
       const result = assessNativeResumeProbe({ runtime: "claude-code", paneCommand: "claude", paneContent });
 
       expect(result).toMatchObject({ status: "attention_required", code: "claude_resume_selection_prompt" });
+    });
+
+    // A fresh `claude --resume` draws its chooser at the top of the pane; in a tall pane, blank rows fill the rest.
+    it.each([
+      ["numbered", "Claude Code v2.1.89\n\nChoose a conversation to resume:\n\n  1. project-foo (modified 2h ago)\n  2. project-bar (modified yesterday)\n\nEnter a number, or press q to cancel."],
+      ["› arrow", "Choose the conversation to resume:\n\n› 1. recent project\n  2. older project"],
+      ["two-choice resume-mode", "How would you like to resume?\n\n❯ Resume from summary\n  Resume full session as-is"],
+    ])("classifies the %s chooser drawn high in a tall pane as attention_required", (_shape, chooser) => {
+      const paneContent = `${chooser}\n${Array<string>(45).fill("").join("\n")}`;
+
+      expect(assessNativeResumeProbe({ runtime: "claude-code", paneCommand: "claude", paneContent }))
+        .toMatchObject({ status: "attention_required", code: "claude_resume_selection_prompt" });
     });
 
     it("does not classify a prose mention of only one current chooser option", () => {

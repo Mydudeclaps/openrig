@@ -340,8 +340,9 @@ function looksLikeClaudeTrustPrompt(paneContent: string): boolean {
 function looksLikeClaudeResumeSelectionPrompt(paneContent: string): boolean {
   // Current Claude chooser (observed 2026-09-04) asks which fidelity to
   // resume with. Require the heading, both option rows, and a selection cursor;
-  // prose containing the labels is intentionally insufficient.
-  const recentLines = paneContent.split("\n").slice(-30);
+  // prose containing the labels is intentionally insufficient. A chooser drawn
+  // at the top of a tall pane sits above blank rows, so count from the last drawn row.
+  const recentLines = paneContent.trimEnd().split("\n").slice(-30);
   const currentChooserHeading = recentLines.some((line) => line.trim() === "How would you like to resume?");
   const currentChooserOptions = recentLines.filter((line) =>
     /^\s*(?:[❯›]\s+)?(?:Resume from summary|Resume full session as-is)\s*$/.test(line)
@@ -580,7 +581,8 @@ function looksLikeCodexHookReviewPrompt(paneContent: string): boolean {
 }
 
 function looksLikeCodexModelSelectionPrompt(paneContent: string): boolean {
-  const recentLines = paneContent.split("\n").slice(-20);
+  // A chooser drawn at the top of a tall pane sits above blank rows, so count from the last drawn row.
+  const recentLines = paneContent.trimEnd().split("\n").slice(-20);
   const numberedModelOptions = recentLines.filter((line) => (
     /^\s*(?:[›»]\s*)?\d+\.\s+/.test(line)
     && /\bgpt-[\w.-]+\b/i.test(line)
