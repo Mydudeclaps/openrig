@@ -1046,14 +1046,17 @@ the file's path and your label, never the token.
 2. **Check:** `rig provider precheck --seat <seat> --to-account <label> --token-file <absolute path>`. It refuses, changing
    nothing, if the file wouldn't apply, the seat isn't running, or something Claude Code ranks above the token is set (a cloud
    provider, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, an `apiKeyHelper`). It names each one and how to remove it for that
-   seat. Managed settings can't be read; the seat's `/status` shows what it actually uses.
+   seat. When the token applies, the launch unsets those names for Claude's process, so the pane shell's own exports can't
+   outrank it. Managed settings can't be read; the seat's `/status` shows what it actually uses.
 3. **Move:** `rig provider switch --seat <seat> --to-account <label> --token-file <absolute path>`. It takes a snapshot that
-   resumes the seat's conversation, sets the reference, stops the seat and launches it from that snapshot. The conversation
-   continues in a new tmux session at the same address, but work in flight when it stopped doesn't carry over. Seats sharing
-   the config dir keep their own login. `--stored-login` moves the seat back.
+   resumes the seat's conversation, sets the reference, and relaunches the seat from that snapshot in its own pane: the pane
+   and its scrollback stay, but work in flight when Claude ended doesn't carry over. Seats sharing the config dir keep their
+   own login. `--stored-login` moves the seat back; if the seat still receives a `CLAUDE_CODE_OAUTH_TOKEN`, Claude uses that
+   instead of the stored login, and the report names it.
 4. **Confirm:** after the seat completes a real tool-using turn, its `/status` shows token auth, with no account email. The
    label is yours, not an account Claude observed: say so. A token session can't use claude.ai connectors or Remote Control.
-   A relaunch that didn't resume is reported with its recovery command; never run the switch again for it.
+   The token is in Claude's environment, so the tools, hooks and MCP servers it starts inherit it; don't have it print its
+   environment. A relaunch that didn't resume reads unknown, with its recovery command; never run the switch again for it.
    `rig seat status <seat>` shows the reference, and says when its file won't apply at the next launch.
 
 ### Manage subscriptions across a fleet (when the person asks you to)

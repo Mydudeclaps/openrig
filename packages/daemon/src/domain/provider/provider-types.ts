@@ -158,6 +158,8 @@ export interface ClaudeSwitchView {
   tokenFile: string | null;
   checked: string[];
   notChecked: string[];
+  /** A move back to the stored login: the token the seat would still use instead, and where it comes from. */
+  instead?: string;
 }
 
 export type PrecheckResult =

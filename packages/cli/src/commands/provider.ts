@@ -23,7 +23,7 @@ export const USAGE_ACROSS_HOSTS_REFRESH_TIMEOUT_MS = 75_000;
 type Peer = { logicalId: string; sessionName: string | null; home?: "same" | "different" | "unknown"; effect: string; step?: string };
 type SeatView = { home?: string; activity?: string; peers: Peer[] };
 type SwitchReport = { home?: string; account: string; tokenFile?: string; conversation?: string | null; loginChanged: boolean; undo: string | null; peers: Peer[];
-  restart?: { recoveryCommand?: string }; next?: string };
+  restart?: { recoveryCommand?: string; remainingStep?: string }; next?: string; warnings?: string[]; tokenApplied?: boolean };
 
 // A switch waits as long as `rig seat restart` does: the seat's in-place restart runs inside it.
 const SWITCH_TIMEOUT_MS = 120_000;
@@ -48,8 +48,9 @@ function targetAccount(opts: AccountOpts): { toAccount: string; tokenFile?: stri
   return { toAccount: opts.toAccount, ...(opts.tokenFile !== undefined ? { tokenFile: opts.tokenFile } : {}) };
 }
 
-function printClaude(claude: { label: string; tokenFile: string | null; checked: string[]; notChecked: string[] }): void {
+function printClaude(claude: { label: string; tokenFile: string | null; checked: string[]; notChecked: string[]; instead?: string }): void {
   console.log(`Claude token: ${claude.tokenFile ? `"${claude.label}", read from ${claude.tokenFile} when Claude starts` : "none (the config dir's stored login)"}`);
+  if (claude.instead) console.log(`instead of the stored login, the seat would use ${claude.instead}`);
   if (claude.checked.length) console.log(`checked for anything that outranks it: ${claude.checked.join("; ")}`);
   if (claude.notChecked.length) console.log(`not checked (the seat's /status shows what it uses): ${claude.notChecked.join("; ")}`);
 }
@@ -566,13 +567,18 @@ A Claude seat keeps its config dir and gets its own subscription token: --to-acc
 to a 0600 file holding the token>. Only the path is kept, as the seat's reference; the launch reads the file as Claude starts,
 so the token never passes through OpenRig. First the daemon checks that the file would apply and that nothing Claude Code ranks
 above the token is set (a cloud provider, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY, an apiKeyHelper), and refuses with each one
-and its remedy if it is. It takes a snapshot and checks that the snapshot resumes the seat's conversation. Then it sets the
-reference, stops the seat (rig seat stop) and launches it from that snapshot (rig launch <rig> <seat> --snapshot-id), which
-resumes the same conversation in a new tmux session at the same address. Work in flight when it stopped doesn't carry over.
+and its remedy if it is. When the token applies, the launch also unsets those names for Claude's process, so the pane shell's
+own exports can't outrank it. It takes a snapshot and checks that the snapshot resumes the seat's conversation. Then, holding
+the seat so no other stop, launch or switch runs on it in between, it sets the reference and relaunches the seat from that
+snapshot in its own pane: Claude ends there, the pane and its scrollback stay, and restore resumes the same conversation in it.
+Work in flight when it stopped doesn't carry over. Only a refusal before Claude was touched reads as unchanged; a relaunch that
+doesn't report a resumed conversation reads unknown, with the snapshot's recovery command, and isn't retried.
 Seats sharing the config dir keep their own login: Claude Code reads the token from that one process's environment and doesn't
-save it. A token-authenticated seat can make model requests but can't use claude.ai connectors or Remote Control; its local MCP
-servers still work. --stored-login moves it back to the config dir's stored login. Claude's /status shows token auth with no
-account email, so the label is yours, not an observed account.`)
+save it. That environment is Claude's, so the tools, hooks and MCP servers it starts inherit the token, and one that prints its
+environment writes it into the transcript. A token-authenticated seat can make model requests but can't use claude.ai
+connectors or Remote Control; its local MCP servers still work. --stored-login moves it back to the config dir's stored login;
+a CLAUDE_CODE_OAUTH_TOKEN the seat still receives outranks that login, and the report says which token it will use. Claude's
+/status shows token auth with no account email, so the label is yours, not an observed account.`)
     .action(async (opts: AccountOpts & { seat: string; forceUnsafe?: boolean; json?: boolean }) => {
       const target = targetAccount(opts);
       if (!target) {
@@ -599,9 +605,9 @@ account email, so the label is yours, not an observed account.`)
         // The daemon may still be switching: a timeout is neither a failure nor a reason to send it again.
         res = { status: 200, data: { outcome: "unknown", reasons: ["switch_outcome_unknown"],
           message: `The CLI timed out waiting for the daemon. The switch may still be running, or queued behind another switch on the same Codex home; a queued switch hasn't changed anything yet. `
-            + `It has restarted the seat once rig seat restart ${opts.seat} --keep-conversation --plan shows a lastRestart that finished after ${startedAt}. `
+            + `For a Codex seat, it has restarted the seat once rig seat restart ${opts.seat} --keep-conversation --plan shows a lastRestart that finished after ${startedAt}. `
             + `Until then an eligible plan, or an older lastRestart, doesn't mean it ended, so don't run the switch again: a second one would queue behind it. `
-            + `For a Claude seat, rig seat status ${opts.seat} shows its token reference and whether it runs.` } };
+            + `For a Claude seat, rig seat status ${opts.seat} shows its token reference and whether it runs; a second switch would wait for this one.` } };
       }
       if (handleHttpError(res, "switch")) return;
       if (opts.json) console.log(JSON.stringify(res.data));
@@ -613,12 +619,15 @@ account email, so the label is yours, not an observed account.`)
           console.log(`home: ${seat.home}${seat.loginChanged ? ` (now "${seat.account}")` : ""}`);
           if (seat.undo) console.log(`to switch the home back: ${seat.undo}`);
         } else if (seat) {
-          console.log(`Claude token: ${seat.tokenFile ? `"${seat.account}", read from ${seat.tokenFile}` : "the config dir's stored login"}${seat.loginChanged ? " (set)" : ""}`);
+          console.log(`Claude token: ${seat.tokenFile ? `"${seat.account}", read from ${seat.tokenFile}` : "the config dir's stored login"}${seat.loginChanged
+            ? seat.tokenApplied === false ? " (reference saved; the token didn't take effect)" : " (set)" : ""}`);
+          for (const warning of seat.warnings ?? []) console.log(`warning: ${warning}`);
           if (seat.conversation) console.log(`conversation: ${seat.conversation}`);
           if (seat.undo) console.log(`to switch back: ${seat.undo}`);
         }
         if (seat) {
           if (seat.restart?.recoveryCommand) console.log(`recovery: ${seat.restart.recoveryCommand}`);
+          if (!seat.home && seat.restart?.remainingStep) console.log(seat.restart.remainingStep);
           printSeat({ peers: seat.peers });
           if (seat.next) console.log(`next: ${seat.next}`);
         }

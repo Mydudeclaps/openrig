@@ -127,11 +127,11 @@ export class ClaudeManagedLaunch {
   /** The launch step that gives the seat's Claude its own subscription token (`rig provider switch --seat`), and the
    *  launch's warning when the file won't apply (checked without reading it); null for a seat without a reference.
    *  Launches without an explicit permission mode use it too, through the seat launch environment. */
-  seatTokenLaunch(nodeId: string): { ref: ClaudeSeatTokenRef; step: string; warnings: readonly string[] } | null {
+  seatTokenLaunch(nodeId: string, opts: { removeOnFailure?: boolean } = {}): { ref: ClaudeSeatTokenRef; step: string; warnings: readonly string[] } | null {
     const ref = readClaudeSeatTokenRef(this.db, nodeId);
     if (!ref) return null;
     const problem = claudeSeatTokenFileProblem(ref);
-    return { ref, step: claudeSeatTokenStep(ref, shellQuote), warnings: Object.freeze(problem ? [this.tokenNotApplied(nodeId, ref, problem)] : []) };
+    return { ref, step: claudeSeatTokenStep(ref, shellQuote, opts), warnings: Object.freeze(problem ? [this.tokenNotApplied(nodeId, ref, problem)] : []) };
   }
 
   /** Where a launch that didn't apply the seat's token is recorded (the daemon's event log); unset, it's only reported. */
@@ -146,27 +146,34 @@ export class ClaudeManagedLaunch {
     return claudeSeatTokenFallbackNotice(ref, reason);
   }
 
-  /** What would outrank the seat's own subscription token at its next managed launch: names its launch environment
-   *  carries, and the settings files it loads. Managed settings (a file, MDM or the server) aren't read; the restarted
-   *  seat's /status is the evidence for those. */
-  async credentialPrecedence(nodeId: string): Promise<CredentialPrecedence> {
+  /** What would outrank the seat's own subscription token at its next launch: names its launch environment carries, and
+   *  the settings files it loads. When the token applies, the launch unsets those names for Claude's process, so a pane
+   *  shell's own exports can't outrank it. With `storedLogin`, also a `CLAUDE_CODE_OAUTH_TOKEN` it would receive, which Claude
+   *  uses ahead of the stored login; a pane shell's own exports can't be read then. Managed settings (a file, MDM or the
+   *  server) aren't read; the restarted seat's /status is the evidence for those. */
+  async credentialPrecedence(nodeId: string, opts: { storedLogin?: boolean } = {}): Promise<CredentialPrecedence> {
     const target = this.target(nodeId);
     const cwd = target.cwd!;
     const conflicts: CredentialConflict[] = [];
-    for (const name of OUTRANKING_TOKEN_ENV) {
+    const instead: CredentialConflict[] = [];
+    const names = opts.storedLogin ? [...OUTRANKING_TOKEN_ENV, "CLAUDE_CODE_OAUTH_TOKEN"] : OUTRANKING_TOKEN_ENV;
+    const found = (name: string) => name === "CLAUDE_CODE_OAUTH_TOKEN" ? instead : conflicts;
+    for (const name of names) {
       if (this.sessionEnv[name]) {
-        conflicts.push({ name, source: "the daemon's environment, which every managed Claude launch receives",
+        found(name).push({ name, source: "the daemon's environment, which every managed Claude launch receives",
           remedy: `unset ${name} where the daemon starts, or take it out of recovery.provider_auth_env_allowlist; either reaches every seat` });
       }
     }
     const declared = await this.seatEnvKeys(nodeId, target.session ?? undefined);
-    for (const name of OUTRANKING_TOKEN_ENV) {
+    for (const name of names) {
       if (declared.includes(name)) {
-        conflicts.push({ name, source: "this seat's env: (member or rig) or a one-off launch name", remedy: `remove ${name} from this seat's env: in its rig spec` });
+        found(name).push({ name, source: "this seat's env: (member or rig) or a one-off launch name", remedy: `remove ${name} from this seat's env: in its rig spec` });
       }
     }
-    const checked = ["the launch environment"];
-    const notChecked = ["managed settings (a managed-settings.json file, MDM or the server)"];
+    const checked = [opts.storedLogin ? "the launch environment"
+      : "the launch environment (a pane shell's own exports are unset for Claude's process when the token applies)"];
+    const notChecked = ["managed settings (a managed-settings.json file, MDM or the server)",
+      ...(opts.storedLogin ? ["the pane shell's own exports (its startup files), which a launch without an explicit permission mode keeps"] : [])];
     const root = projectRootForLocalSettings(cwd);
     const files: Array<[string, string]> = [
       [path.join(this.configPaths(cwd, nodeId).configDir, "settings.json"), "user"],
@@ -176,12 +183,13 @@ export class ClaudeManagedLaunch {
       ...(root && root !== path.resolve(cwd) ? [[path.join(cwd, ".claude", "settings.local.json"), "project local"] as [string, string]] : []),
     ];
     for (const [file, scope] of files) {
-      const found = settingsFileConflicts(file, scope);
-      conflicts.push(...found.conflicts);
-      if (found.checked) checked.push(found.checked);
-      if (found.notChecked) notChecked.push(found.notChecked);
+      const settings = settingsFileConflicts(file, scope, undefined, opts);
+      conflicts.push(...settings.conflicts);
+      instead.push(...(settings.instead ?? []));
+      if (settings.checked) checked.push(settings.checked);
+      if (settings.notChecked) notChecked.push(settings.notChecked);
     }
-    return { conflicts, checked, notChecked };
+    return { conflicts, ...(instead.length ? { instead } : {}), checked, notChecked };
   }
 
   /** Bootstrap shares prepare's stored-node cwd when the binding omits it. */
@@ -312,14 +320,16 @@ export class ClaudeManagedLaunch {
     const terminal = terminalKeys.map(key => `if [ -n "\${${key}-}" ]; then export ${key};${otherwise(key)} fi`);
     terminal.push(`if [ -n "$${WAYLAND_DISPLAY_VAR}" ]; then export WAYLAND_DISPLAY="$${WAYLAND_DISPLAY_VAR}";${otherwise("WAYLAND_DISPLAY")} fi`);
     // A seat's own subscription token (rig provider switch --seat) is read from its file as Claude starts, after the
-    // environment is reduced, so the value never passes through OpenRig; an unreadable file stops the launch.
-    const token = this.seatTokenLaunch(target.nodeId);
+    // removals are worked out, so the value never passes through OpenRig. The reduction keeps the name the step sets; when the
+    // file can't be read, Claude still starts, and a token the reduction would have removed is removed by the step instead.
+    const tokenKept = selectedKeys.includes("CLAUDE_CODE_OAUTH_TOKEN");
+    const token = this.seatTokenLaunch(target.nodeId, { removeOnFailure: !tokenKept });
     const tokenStep = token ? `${token.step} && ` : "";
     const warnings = token?.warnings ?? Object.freeze([]);
     return Object.freeze({ assertCurrent, warnings, configDir: context.configDir, executable: context.executable, executableIsScript: context.executableIsScript, command: (args: readonly string[], launchEnv: Readonly<Record<string, string>> = {}) => {
       assertCurrent();
       const launch = Object.entries(launchEnv).map(([key, value]) => `export ${shellQuote(`${key}=${value}`)}`);
-      const keep = [...selectedKeys, ...terminalKeys, "WAYLAND_DISPLAY", ...Object.keys(launchEnv)];
+      const keep = [...selectedKeys, ...terminalKeys, "WAYLAND_DISPLAY", ...Object.keys(launchEnv), ...(token ? ["CLAUDE_CODE_OAUTH_TOKEN"] : [])];
       // env -0 keeps multiline values out of the name parser. The existing daemon's Node reads
       // that pipe with an empty environment (no pane NODE_OPTIONS); only removal names reach argv.
       const removalArgs = `const data=require("node:fs").readFileSync(0,"utf8"); if(!data.endsWith("\\0"))process.exit(1); `

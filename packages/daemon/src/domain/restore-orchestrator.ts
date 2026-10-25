@@ -565,10 +565,13 @@ export class RestoreOrchestrator {
     };
   }
 
+  /** `keepPane`: the seat is running and is relaunched in its own pane (its process ended in place, the pane and scrollback
+   *  kept) instead of a new session; nothing checks whether it is live first, since that is the point. */
   async launchSingleNode(rigId: string, logicalId: string, opts?: {
     adapters?: Record<string, import("./runtime-adapter.js").RuntimeAdapter>;
     fsOps?: { exists(path: string): boolean };
     snapshotId?: string;
+    keepPane?: boolean;
   }): Promise<NarrowLaunchResult> {
     return this.launchNodeTargets(rigId, [logicalId], { ...opts, nonTargetMode: "unchanged" });
   }
@@ -578,6 +581,7 @@ export class RestoreOrchestrator {
     fsOps?: { exists(path: string): boolean };
     holdReason?: string;
     snapshotId?: string;
+    keepPane?: boolean;
     nonTargetMode: "unchanged" | "detach_and_hold";
   }): Promise<NarrowLaunchResult> {
     const rig = this.rigRepo.getRig(rigId);
@@ -614,6 +618,11 @@ export class RestoreOrchestrator {
     const subsetWarnings: string[] = [];
 
     for (const node of targetNodes) {
+      if (opts.keepPane) {
+        launched.push(await this.restoreNodeWithCompensation({ node }, rigId, snapshot.id, snapshot.data,
+          { adapters: opts.adapters, fsOps: opts.fsOps, keepPane: true }, subsetWarnings));
+        continue;
+      }
       // An external CLI's claim has no tmux session to probe; restoreNodeWithCompensation leaves it attached.
       const external = this.sessionRegistry.getBindingForNode(node.id)?.attachmentType === "external_cli";
       const sessions = external ? [] : this.sessionRegistry.getSessionsForRig(rigId)
@@ -980,7 +989,7 @@ export class RestoreOrchestrator {
     rigId: string,
     snapshotId: string,
     data: SnapshotData,
-    opts?: { adapters?: Record<string, import("./runtime-adapter.js").RuntimeAdapter>; fsOps?: { exists(path: string): boolean }; freshLogicalIds?: string[]; onSessionLaunched?: (nodeId: string, sessionId: string) => void; automaticReplacements?: AutomaticSeatReplacement[] },
+    opts?: { adapters?: Record<string, import("./runtime-adapter.js").RuntimeAdapter>; fsOps?: { exists(path: string): boolean }; freshLogicalIds?: string[]; onSessionLaunched?: (nodeId: string, sessionId: string) => void; automaticReplacements?: AutomaticSeatReplacement[]; keepPane?: boolean },
     warnings?: string[],
     preserveStoppedCurrent = false,
   ): Promise<RestoreNodeResult> {
@@ -1100,6 +1109,10 @@ export class RestoreOrchestrator {
     }
     // Capture prior state for compensation, including an exited replacement predecessor.
     const priorState = this.captureNodeState(nodeId, rigId);
+    const keptPane = opts?.keepPane ? priorState.binding?.tmuxPane ?? null : null;
+    if (opts?.keepPane && (!keptPane || !priorState.binding?.tmuxSession)) {
+      return { nodeId, logicalId: node.logicalId, status: "failed", error: `${node.logicalId} has no bound tmux pane to keep, so nothing was stopped.` };
+    }
 
     // Clear stale state so NodeLauncher doesn't see already_bound
     this.clearStaleState(nodeId, rigId);
@@ -1107,9 +1120,10 @@ export class RestoreOrchestrator {
 
     // Derive canonical session name for pod-aware nodes
     const rig = this.rigRepo.getRig(rigId);
-    let launchOpts: { sessionName?: string; cwd?: string } | undefined = node.cwd
+    let launchOpts: { sessionName?: string; cwd?: string; keepPane?: string } | undefined = node.cwd
       ? { cwd: node.cwd }
       : undefined;
+    if (keptPane) launchOpts = { ...launchOpts, keepPane: keptPane };
     let expectedSessionName: string | undefined;
 
     // OPR.0.4.3.20 FR-5 — pin the resume target to the DURABLY-BOUND session.

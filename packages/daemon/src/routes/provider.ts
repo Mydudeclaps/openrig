@@ -7,6 +7,7 @@ import type { ClaudeSeatRelaunch, ProviderService, SeatRestart } from "../domain
 import type { RigRepository } from "../domain/rig-repository.js";
 import type { SnapshotCapture } from "../domain/snapshot-capture.js";
 import type { RestoreOrchestrator } from "../domain/restore-orchestrator.js";
+import type { TmuxAdapter } from "../adapters/tmux.js";
 import { snapshotLaunchOutcome } from "../domain/restore-orchestrator.js";
 import { resolveActiveSnapshotSession } from "../domain/active-occupant.js";
 import { readClaudeSeatTokenRef } from "../domain/claude-seat-token.js";
@@ -48,18 +49,19 @@ function seatRestartOf(c: Context): SeatRestart {
   };
 }
 
-/** A Claude seat's relaunch for this request, by restore's own resume path: a snapshot, the seat stopped, and only that
- *  seat launched from that snapshot (`rig seat stop`, then `rig launch <rig> <seat> --snapshot-id`). */
+/** A Claude seat's relaunch for this request, by restore's own resume path in the seat's own pane: a snapshot, then only
+ *  that seat launched from it, its process ended in place and the pane kept, all under the seat's lifecycle lease. */
 function claudeSeatOf(c: Context): ClaudeSeatRelaunch {
   const rigRepo = c.get("rigRepo" as never) as RigRepository;
   return {
     seat: (seat) => {
       if (!rigRepo) return null;
-      const row = rigRepo.db.prepare(`SELECT n.id, n.rig_id, n.logical_id, n.runtime, r.name, s.status FROM sessions s
-        JOIN nodes n ON n.id = s.node_id JOIN rigs r ON r.id = n.rig_id WHERE s.session_name = ? ORDER BY s.created_at DESC, s.id DESC LIMIT 1`)
-        .get(seat) as { id: string; rig_id: string; logical_id: string; runtime: string | null; name: string; status: string } | undefined;
+      const row = rigRepo.db.prepare(`SELECT n.id, n.rig_id, n.logical_id, n.runtime, r.name, s.status, b.tmux_pane FROM sessions s
+        JOIN nodes n ON n.id = s.node_id JOIN rigs r ON r.id = n.rig_id LEFT JOIN bindings b ON b.node_id = n.id
+        WHERE s.session_name = ? ORDER BY s.created_at DESC, s.id DESC LIMIT 1`)
+        .get(seat) as { id: string; rig_id: string; logical_id: string; runtime: string | null; name: string; status: string; tmux_pane: string | null } | undefined;
       return row?.runtime === "claude-code"
-        ? { nodeId: row.id, rigId: row.rig_id, rigName: row.name, logicalId: row.logical_id, running: row.status === "running" } : null;
+        ? { nodeId: row.id, rigId: row.rig_id, rigName: row.name, logicalId: row.logical_id, running: row.status === "running", pane: row.tmux_pane ?? null } : null;
     },
     tokenRef: (nodeId) => readClaudeSeatTokenRef(rigRepo.db, nodeId),
     setTokenRef: (nodeId, ref) => { rigRepo.setNodeClaudeTokenRef(nodeId, ref); },
@@ -72,19 +74,22 @@ function claudeSeatOf(c: Context): ClaudeSeatRelaunch {
       const occupant = resolveActiveSnapshotSession(snapshot.data, nodeId);
       return { snapshotId: snapshot.id, resumes: true, conversation: occupant.kind === "resolved" ? occupant.session.resumeToken ?? null : null };
     },
-    stop: async (seat, reason) => {
-      const stopped = await seatLifecycleService(c).stopSeat({ seatRef: seat, reason, operator: null });
-      return stopped.ok ? { ok: true } : { ok: false, code: stopped.code, message: stopped.message };
+    exclusive: (nodeId, fn) => {
+      const guard = (c.get("tmuxAdapter" as never) as TmuxAdapter | undefined)?.deliveryGuard;
+      return guard ? guard.lifecycle([nodeId], fn) : fn();
     },
-    launch: async (rigId, logicalId, snapshotId) => {
+    relaunchInPane: async (rigId, logicalId, snapshotId) => {
       const restore = c.get("restoreOrchestrator" as never) as RestoreOrchestrator | undefined;
-      if (!restore) return { ok: false, code: "restore_unavailable", message: "This daemon has no restore orchestrator." };
+      if (!restore) return { ok: false, effect: "none", code: "restore_unavailable", message: "This daemon has no restore orchestrator." };
       const adapters = (c.get("runtimeAdapters" as never) as Record<string, import("../domain/runtime-adapter.js").RuntimeAdapter> | undefined) ?? {};
-      const result = await restore.launchSingleNode(rigId, logicalId, { snapshotId, adapters, fsOps: { exists: (p: string) => fs.existsSync(p) } });
-      if (!result.ok) return { ok: false, code: result.code ?? "launch_failed", message: result.message ?? "The seat wasn't launched from the snapshot." };
+      const result = await restore.launchSingleNode(rigId, logicalId, { snapshotId, adapters, fsOps: { exists: (p: string) => fs.existsSync(p) }, keepPane: true });
+      // A refusal of the whole launch (no usable snapshot, no such seat) comes before anything is touched.
+      if (!result.ok) return { ok: false, effect: "none", code: result.code ?? "launch_failed", message: result.message ?? "The seat wasn't launched from the snapshot." };
       const node = result.launched?.find((n) => n.logicalId === logicalId);
-      if (node?.status === "resumed") return { ok: true, status: "resumed" };
-      return { ok: false, code: node?.status ?? "not_launched", message: node?.error ?? "The seat wasn't launched from the snapshot." };
+      if (node?.status === "resumed") return { ok: true, status: "resumed", warnings: result.warnings ?? [] };
+      // Restore stops for a decision, or leaves an attached CLI alone, before it touches the seat.
+      const untouched = node?.status === "awaiting-decision" || node?.status === "left_attached";
+      return { ok: false, effect: untouched ? "none" : "unknown", code: node?.status ?? "not_launched", message: node?.error ?? "The seat wasn't launched from the snapshot." };
     },
   };
 }

@@ -45,21 +45,26 @@ export interface SeatRestart {
   run(seat: string, reason: string): Promise<RestartInPlaceResult>;
 }
 
-/** A Claude seat's relaunch on the same conversation by restore's own resume path, lent by the route for one call. */
+/** A Claude seat's relaunch on the same conversation, in its own pane, by restore's own resume path, lent by the route for
+ *  one call. */
 export interface ClaudeSeatRelaunch {
-  /** The seat, when it's a managed Claude seat; null for any other runtime. */
-  seat(seat: string): { nodeId: string; rigId: string; rigName: string; logicalId: string; running: boolean } | null;
+  /** The seat, when it's a managed Claude seat; null for any other runtime. `pane` is its bound tmux pane. */
+  seat(seat: string): { nodeId: string; rigId: string; rigName: string; logicalId: string; running: boolean; pane: string | null } | null;
   tokenRef(nodeId: string): ClaudeSeatTokenRef | null;
   setTokenRef(nodeId: string, ref: ClaudeSeatTokenRef | null): void;
   /** A snapshot taken now, and whether restoring this seat from it resumes its conversation. */
   snapshot(rigId: string, nodeId: string): { snapshotId: string; resumes: true; conversation: string | null } | { snapshotId: string; resumes: false; why: string };
-  stop(seat: string, reason: string): Promise<{ ok: true } | { ok: false; code: string; message: string }>;
-  /** Launch only this seat from that snapshot; `resumed` means its conversation was resumed. */
-  launch(rigId: string, logicalId: string, snapshotId: string): Promise<{ ok: true; status: "resumed" } | { ok: false; code: string; message: string }>;
+  /** Runs `fn` holding the seat's lifecycle lease (the one its stop, launch and restore take), so no other one runs on the
+   *  seat in between. A wait for it ends with the seat as it is then. */
+  exclusive<T>(nodeId: string, fn: () => Promise<T>): Promise<T>;
+  /** Relaunch only this seat from that snapshot in its own pane: its process ends in place, the pane and its scrollback stay,
+   *  and restore resumes the conversation there. `effect: "none"` when it was refused before anything stopped. */
+  relaunchInPane(rigId: string, logicalId: string, snapshotId: string): Promise<{ ok: true; status: "resumed"; warnings: string[] }
+    | { ok: false; effect: "none" | "unknown"; code: string; message: string }>;
 }
 
 /** What would outrank a Claude seat's own token at its next launch (`ClaudeManagedLaunch.credentialPrecedence`). */
-export type ClaudeCredentialPrecedence = (nodeId: string) => Promise<CredentialPrecedence>;
+export type ClaudeCredentialPrecedence = (nodeId: string, opts?: { storedLogin?: boolean }) => Promise<CredentialPrecedence>;
 
 /** What a seat switch did: for a Codex seat, in the Codex home it runs on; for a Claude seat, to its token reference. */
 export interface SeatSwitchReport {
@@ -79,6 +84,11 @@ export interface SeatSwitchReport {
   /** The command that switches the home back. */
   undo: string | null;
   restart?: { outcome: string; message: string; recoveryCommand?: string; remainingStep?: string };
+  /** Claude: what the relaunch reported, such as a token it couldn't apply. */
+  warnings?: string[];
+  /** Claude: false when the relaunch reported starting without the seat's token. True means no such fallback was reported;
+   *  the seat's /status after a tool turn is the evidence. */
+  tokenApplied?: boolean;
   /** The other Codex seats. One on the same home shares its login: it keeps its current one only until its next token
    *  refresh, then stops until it's restarted, so `step` is that restart. */
   peers: Array<PeerReport & { step?: string }>;

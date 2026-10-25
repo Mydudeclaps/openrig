@@ -17,14 +17,18 @@ export interface CredentialConflict {
 
 export interface CredentialPrecedence {
   conflicts: CredentialConflict[];
+  /** Asked for a move back to the stored login: a `CLAUDE_CODE_OAUTH_TOKEN` the seat would still receive, which Claude Code
+   *  uses ahead of the stored login. */
+  instead?: CredentialConflict[];
   checked: string[];
   /** What the check couldn't read. The restarted seat's /status is the evidence for these. */
   notChecked: string[];
 }
 
-/** One settings file's `apiKeyHelper` and outranking `env` entries. An absent file has none. */
-export function settingsFileConflicts(file: string, scope: string, read: (file: string) => string = (f) => fs.readFileSync(f, "utf8")):
-  { conflicts: CredentialConflict[]; checked?: string; notChecked?: string } {
+/** One settings file's `apiKeyHelper` and outranking `env` entries, and with `storedLogin` its `env` block's
+ *  `CLAUDE_CODE_OAUTH_TOKEN`. An absent file has none. */
+export function settingsFileConflicts(file: string, scope: string, read: (file: string) => string = (f) => fs.readFileSync(f, "utf8"),
+  opts: { storedLogin?: boolean } = {}): { conflicts: CredentialConflict[]; instead?: CredentialConflict[]; checked?: string; notChecked?: string } {
   let text: string;
   try { text = read(file); } catch (err) {
     return (err as NodeJS.ErrnoException).code === "ENOENT"
@@ -40,7 +44,9 @@ export function settingsFileConflicts(file: string, scope: string, read: (file: 
   for (const name of OUTRANKING_TOKEN_ENV) {
     if (env[name] !== undefined) conflicts.push({ name, source: `the env block of ${scope} settings ${file}`, remedy });
   }
-  return { conflicts, checked: `${scope} settings ${file}` };
+  const instead = opts.storedLogin && env.CLAUDE_CODE_OAUTH_TOKEN !== undefined
+    ? [{ name: "CLAUDE_CODE_OAUTH_TOKEN", source: `the env block of ${scope} settings ${file}`, remedy }] : [];
+  return { conflicts, ...(instead.length ? { instead } : {}), checked: `${scope} settings ${file}` };
 }
 
 /** Where Claude Code reads a project's local settings: the git repository root, or the main checkout's root for a worktree
