@@ -6,6 +6,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import Database from "better-sqlite3";
 import { ClaudeManagedLaunch } from "../src/domain/claude-managed-launch.js";
+import { SeatLaunchEnvironment } from "../src/domain/seat-launch-environment.js";
+import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { createFullTestDb } from "./helpers/test-app.js";
 
@@ -38,9 +40,10 @@ printf '{"TOKEN":"%s"}' "\${CLAUDE_CODE_OAUTH_TOKEN-absent}"
   db.prepare("INSERT INTO nodes VALUES ('node', 'rig', 'claude-code', ?, NULL, ?)").run(cwd, ref ? JSON.stringify(ref) : null);
   db.exec("INSERT INTO bindings VALUES ('b', 'node', 'seat@rig', '%1'); INSERT INTO occupant_tenures VALUES ('node', 'gen', 1)");
   const managed = new ClaudeManagedLaunch(db, { PATH: `${bin}:/usr/bin:/bin`, HOME: home }, {}, async () => undefined);
-  const command = async () => (await managed.prepare({ nodeId: "node", session: "seat@rig", pane: "%1" }, "auto")).command(["--permission-mode", "auto"]);
+  const prepare = () => managed.prepare({ nodeId: "node", session: "seat@rig", pane: "%1" }, "auto");
+  const command = async () => (await prepare()).command(["--permission-mode", "auto"]);
   const run = (cmd: string) => exec("/bin/sh", ["-c", cmd], { env: { PATH: "/usr/bin:/bin" }, timeout: 5000 });
-  return { root, command, run };
+  return { root, command, prepare, run };
 }
 
 describe.skipIf(process.platform === "win32")("a Claude seat's own subscription token file", () => {
@@ -55,15 +58,29 @@ describe.skipIf(process.platform === "win32")("a Claude seat's own subscription 
     expect(JSON.parse((await f.run(command)).stdout)).toEqual({ TOKEN: SYNTHETIC });
   });
 
-  it("doesn't start Claude when the token file can't be read, and says why", async () => {
+  it("starts Claude on its stored login when the token file can't be read, and the pane says so", async () => {
     const f = fixture({ label: "work", tokenFile: path.join(tmpdir(), "no-such-dir-claude-seat-token", "claude-work.token") });
-    const result = await f.run(await f.command()).then(
-      ({ stdout, stderr }) => ({ code: 0, stdout, stderr }),
-      (err: { code?: number; stdout?: string; stderr?: string }) => ({ code: err.code ?? -1, stdout: err.stdout ?? "", stderr: err.stderr ?? "" }));
-    expect(result.code).not.toBe(0);
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toContain("token file (work) can't be read");
+    const { stdout, stderr } = await f.run(await f.command());
+    expect(JSON.parse(stdout)).toEqual({ TOKEN: "absent" });
+    expect(stderr).toContain("subscription token (work) wasn't applied");
+    // The launch result says so too, checked without reading the file.
+    expect((await f.prepare()).warnings).toEqual([expect.stringContaining("subscription token (work) wasn't applied")]);
   });
+
+  it.each([["bash", true], ["zsh", true], ["fish", false]] as const)(
+    "a launch without an explicit permission mode runs the token step before Claude in a %s pane: %s",
+    async (shell, included) => {
+      const root = mkdtempSync(path.join(tmpdir(), "claude-seat-token-classic-")); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+      const cli = path.join(root, "rig");
+      writeFileSync(cli, "#!/bin/sh\n", { mode: 0o700 });
+      const identity: Record<string, string> = { OPENRIG_NODE_ID: "node", OPENRIG_SESSION_NAME: "seat@rig" };
+      const tmux = { getPaneCommand: async () => shell, getSessionEnv: async (_session: string, key: string) => identity[key] } as unknown as TmuxAdapter;
+      const launch = new SeatLaunchEnvironment(tmux, { PATH: "/usr/bin:/bin", HOME: root }, root, cli);
+      const step = "{ __openrig_token_step_fixture; }";
+      const command = await launch.command("seat@rig", "claude --resume abc", { runtime: "claude-code", nodeId: "node", claudeTokenStep: step });
+      expect(command.includes(step)).toBe(included);
+      if (included) expect(command.indexOf(step)).toBeLessThan(command.indexOf("claude --resume abc"));
+    });
 
   it("a seat without one launches exactly as before", async () => {
     const f = fixture();
