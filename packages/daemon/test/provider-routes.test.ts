@@ -115,6 +115,32 @@ describe("provider routes", () => {
     for (const seatRestart of lent) expect(seatRestart).toMatchObject({ plan: expect.any(Function), run: expect.any(Function) });
   });
 
+  it("precheck and switch also lend a Claude seat's relaunch, and pass its token file or the stored login through", async () => {
+    const seen: Array<{ input: unknown; claudeSeat: unknown }> = [];
+    const app = appWith({
+      ...stubService,
+      precheck: async (input, _seatRestart, claudeSeat) => { seen.push({ input, claudeSeat }); return { safe: true }; },
+      switchAccount: async (input, _seatRestart, claudeSeat) => { seen.push({ input, claudeSeat }); return { outcome: "rebind_in_progress" }; },
+    });
+    expect((await app.request("/api/provider/precheck?seat=s1&toAccount=work&tokenFile=%2Ftokens%2Fwork")).status).toBe(200);
+    expect((await app.request("/api/provider/precheck?seat=s1&toAccount=stored-login&storedLogin=1")).status).toBe(200);
+    expect((await app.request("/api/provider/switch", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ seat: "s1", toAccount: "work", tokenFile: "/tokens/work" }),
+    })).status).toBe(200);
+    expect(seen.map((s) => s.input)).toEqual([
+      { seat: "s1", toAccount: "work", tokenFile: "/tokens/work" },
+      { seat: "s1", toAccount: "stored-login", tokenFile: null },
+      { seat: "s1", toAccount: "work", forceUnsafe: false, tokenFile: "/tokens/work" },
+    ]);
+    for (const { claudeSeat } of seen) {
+      expect(claudeSeat).toMatchObject({ seat: expect.any(Function), snapshot: expect.any(Function), stop: expect.any(Function), launch: expect.any(Function) });
+    }
+    const bad = await app.request("/api/provider/switch", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ seat: "s1", toAccount: "work", tokenFile: 7 }),
+    });
+    expect(bad.status).toBe(400);
+  });
+
   it("switch business outcomes are 200 payloads, not transport errors (failed_safely = 200)", async () => {
     const res = await appWith(stubService).request("/api/provider/switch", {
       method: "POST",
