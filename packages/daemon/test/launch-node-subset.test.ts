@@ -16,6 +16,11 @@ import { RestoreOrchestrator } from "../src/domain/restore-orchestrator.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { createFullTestDb } from "./helpers/test-app.js";
+import { createDb } from "../src/db/connection.js";
+import { migrate } from "../src/db/migrate.js";
+import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
+import { TmuxAdapter } from "../src/adapters/tmux.js";
+import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
 import type { NativeProcessRow } from "../src/domain/native-process-lineage.js";
 
 function makeTmux(overrides?: Partial<Record<string, (...args: unknown[]) => unknown>>) {
@@ -61,8 +66,10 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
   let processes: NativeProcessRow[];
   let listProcesses: ReturnType<typeof vi.fn<() => Promise<NativeProcessRow[]>>>;
 
-  beforeEach(() => {
-    db = createFullTestDb();
+  beforeEach(() => { setup(createFullTestDb()); });
+
+  function setup(database: Database.Database) {
+    db = database;
     rigRepo = new RigRepository(db);
     sessionRegistry = new SessionRegistry(db);
     eventBus = new EventBus(db);
@@ -80,7 +87,7 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
       codexResume: new CodexResumeAdapter(tmux as any),
       listProcesses,
     });
-  });
+  }
 
   afterEach(() => { db.close(); });
 
@@ -736,6 +743,59 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
       expect(result.launched).toEqual([expect.objectContaining({ status: "failed", error: expect.stringContaining("did not exit") })]);
       expect((tmux as any).signalPaneProcess).toHaveBeenCalledWith("%7", "KILL");
       expect((tmux as any).respawnPane).not.toHaveBeenCalled();
+    });
+
+    it("the takeover goes through the daemon's delivery guard: the seat's pane stays its target while it's ended and restarted", async () => {
+      // The guard's own tables, as a daemon's database has them.
+      db.close();
+      const full = createDb();
+      migrate(full, ALL_MIGRATIONS);
+      setup(full);
+      const { rigId, nodeIds } = seedPodAwareRig();
+      seedSnapshot(rigId, nodeIds, { [nodeIds[0]!]: emptyStartupContext("claude-code") });
+      liveDriver(rigId, nodeIds[0]!);
+      // The real adapter's signal and respawn, behind the real guard, as a daemon wires them. Only the shell is a fake.
+      const guard = new SeatDeliveryGuard(db, (name) => resolveGuardTarget(db, name));
+      const commands: string[] = [];
+      const configs: string[] = [];
+      const real = new TmuxAdapter(async (command) => { commands.push(command); return ""; }, {
+        writeFile: async (_path, content) => { configs.push(content); }, unlink: async () => {},
+        tmpName: () => "/inert/respawn", bufferName: () => "fixture",
+      });
+      real.deliveryGuard = guard;
+      real.listPanes = tmux.listPanes as any;
+      real.getPanePid = async () => 4242;
+      Object.assign(tmux, {
+        deliveryGuard: guard,
+        signalPaneProcess: vi.fn((pane: string, signal: "TERM" | "KILL") => real.signalPaneProcess(pane, signal)),
+        respawnPane: vi.fn((pane: string, command?: string, opts?: { cwd?: string; env?: Record<string, string> }) => real.respawnPane(pane, command, opts)),
+      });
+
+      // The switch holds the seat's lifecycle lease around the relaunch.
+      const result = await guard.lifecycle([nodeIds[0]!], () =>
+        orchestrator.launchSingleNode(rigId, "dev.driver", { adapters: { "claude-code": readyAdapter("claude-code") }, keepPane: true }));
+      expect(await (tmux as any).signalPaneProcess.mock.results[0].value).toEqual({ ok: true });
+      expect(await (tmux as any).respawnPane.mock.results[0].value).toMatchObject({ ok: true });
+      expect(commands).toContain("kill -TERM 4242");
+      expect(configs).toEqual([expect.stringMatching(/^respawn-pane -t \S*%7/)]);
+      expect(result.launched).toEqual([expect.objectContaining({ logicalId: "dev.driver", status: "fresh-primed" })]);
+      expect(sessionRegistry.getBindingForNode(nodeIds[0]!)).toMatchObject({ tmuxSession: "dev-driver@test-rig", tmuxPane: "%7" });
+    });
+
+    it("a failed registration after the pane was restarted leaves the person's session alone", async () => {
+      const { rigId, nodeIds } = seedPodAwareRig();
+      seedSnapshot(rigId, nodeIds, { [nodeIds[0]!]: emptyStartupContext("claude-code") });
+      liveDriver(rigId, nodeIds[0]!);
+      const persist = eventBus.persistWithinTransaction.bind(eventBus);
+      let failed = false;
+      vi.spyOn(eventBus, "persistWithinTransaction").mockImplementation((event) => {
+        if (event.type === "node.launched" && !failed) { failed = true; throw new Error("synthetic DB commit failure"); }
+        return persist(event);
+      });
+      const result = await orchestrator.launchSingleNode(rigId, "dev.driver", { adapters: { "claude-code": readyAdapter("claude-code") }, keepPane: true });
+      expect((tmux as any).respawnPane).toHaveBeenCalledOnce();
+      expect(tmux.killSession).not.toHaveBeenCalled();
+      expect(result.launched).toEqual([expect.objectContaining({ logicalId: "dev.driver", status: "failed", error: expect.stringContaining("synthetic DB commit failure") })]);
     });
   });
 });
