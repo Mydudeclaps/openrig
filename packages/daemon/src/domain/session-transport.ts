@@ -30,6 +30,7 @@ import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import { claudeResumeRotation, type SessionRegistry } from "./session-registry.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
+import { tmuxResizeWindowCommand } from "../adapters/tmux-server.js";
 import { latestHookPermissionPending, latestHookWaitsOnPerson, type AgentActivityStore } from "./agent-activity-store.js";
 import type { EventBus } from "./event-bus.js";
 import type { AgentActivity } from "./types.js";
@@ -205,6 +206,8 @@ export interface ClassifyPaneOptions {
   /** Opted-in typing guards retain styling and cursor evidence for this read. */
   composerSnapshot?: ComposerSnapshot;
   runtime?: string | null;
+  /** Only the managed compaction's post-compaction turn boundary: see SendOptions.postCompactTurnBoundary. */
+  postCompactTurnBoundary?: boolean;
 }
 
 /** The current Claude footer follows the input frame; earlier examples are history or draft text. */
@@ -213,6 +216,14 @@ function findClaudeFooterIndex(lines: string[]): number {
   while (bar >= 0 && (!lines[bar]!.trim() || CLAUDE_STATUS_WARNINGS.some(pattern => pattern.test(lines[bar]!.trim())))) bar--;
   return bar;
 }
+
+// Claude's task-list rows, the only rows it draws between a live status row and the input box. Its renderer marks pending,
+// in-progress and completed tasks with figures' small squares and tick (◻ ◼ ✔, or □ ■ √ where the terminal lacks them);
+// an older checkbox list used ☐ ☒.
+const CLAUDE_TASK_ROW = /^\s*(?:⎿\s+)?[◻◼✔□■√☐☒]\s/;
+// Claude's tool and hook output: a "⎿" row, or its continuation indented past that gutter. A reply's own text continues
+// two columns in, under its "●".
+const CLAUDE_OUTPUT_ROW = /^(?: {2}⎿ | {5,}\S)/;
 
 function findClaudeComposer(paneContent: string, options: ClassifyPaneOptions = {}) {
   // Preserve columns: a multiline draft may contain indented border/prompt text.
@@ -244,6 +255,7 @@ function findClaudeComposer(paneContent: string, options: ClassifyPaneOptions = 
 
   let liveStatus: string | null = null;
   let headSeen = false;
+  let outputOnly = true;
   for (let i = statusStart; i >= 0; i--) {
     if (!lines[i]!.startsWith(indent)) break;
     const line = lines[i]!.slice(indent.length);
@@ -258,8 +270,9 @@ function findClaudeComposer(paneContent: string, options: ClassifyPaneOptions = 
     // Indented task rows can follow the live status. A newer unindented output
     // or completed status ends this block; do not revive an older work row.
     if (!/^\s/.test(line)) { headSeen = true; break; }
+    if (CLAUDE_TASK_ROW.test(line) || !CLAUDE_OUTPUT_ROW.test(line)) outputOnly = false;
   }
-  return { text: prompt.slice(indent.length), bar: lines[bar]!.trim(), framed, hasWarnings: bar < lines.length - 1, supportedWarningFooter, modeFooter, headSeen, liveStatus };
+  return { text: prompt.slice(indent.length), bar: lines[bar]!.trim(), framed, hasWarnings: bar < lines.length - 1, supportedWarningFooter, modeFooter, headSeen, liveStatus, outputOnly };
 }
 
 const unknown = (unknownReason: string, cursor?: ComposerSnapshot["cursor"]): ComposerInput => ({ state: "unknown", rows: [], columns: 0, cursorAtEnd: false, collapsedPaste: null, unknownReason, ...(cursor ? { cursor } : {}) });
@@ -584,8 +597,22 @@ export function classifyPaneActivity(paneContent: string, options: ClassifyPaneO
   if (claudeComposer?.liveStatus) {
     return { state: "agent_active", reason: "mid_work_pattern", evidence: claudeComposer.liveStatus };
   }
+  // Right after a managed compaction the rows above the input box are indented compaction and hook output, so the status
+  // head is out of this window and the read stays unknown until the screen changes. For that one send, a complete framed
+  // empty box with its mode footer, and no live status in view, is idle, but only while every row above it is that output.
+  // A tall task list can push a live status out of the window, and Claude hides its status while it streams a reply, so
+  // task rows or reply text in view may be a seat that is working.
+  const postCompactEmptyBox = options.postCompactTurnBoundary === true && claudeComposer?.framed === true &&
+    claudeComposer.modeFooter && claudeComposer.outputOnly && IDLE_PROMPT_PATTERNS.some((pattern) => pattern.test(claudeComposer.text));
   // Unframed status evidence can veto idle, but warnings require a complete input frame to prove it.
-  if (claudeComposer && (!claudeComposer.headSeen || (claudeComposer.hasWarnings && !claudeComposer.framed))) {
+  if (claudeComposer && !postCompactEmptyBox && (!claudeComposer.headSeen || (claudeComposer.hasWarnings && !claudeComposer.framed))) {
+    return { state: "unknown", reason: "no_activity_signal", evidence: truncateEvidence(lastLine) };
+  }
+  // An empty prompt row is not an empty box: authored text can start on a continuation row.
+  // Read the same bounded composer region as the input check before a mode footer can imply idle.
+  const inputBox = options.runtime !== "codex" ? composerRegion(paneContent, "claude-code") : null;
+  if (inputBox?.body && inputBox.markerLine !== null &&
+      /^\s*❯\s*$/.test(paneContent.split("\n")[inputBox.markerLine - 1]!)) {
     return { state: "unknown", reason: "no_activity_signal", evidence: truncateEvidence(lastLine) };
   }
   // Below warning rows, any Claude mode footer completes the frame for an EMPTY composer (#808).
@@ -682,6 +709,8 @@ export async function probeSessionActivity(input: {
   composerSnapshot?: () => Promise<ComposerSnapshot | null>;
   /** The seat's community harness (`communityHarnessOf`): its idle-looking screen reads unknown. */
   communityHarness?: string | null;
+  /** See ClassifyPaneOptions.postCompactTurnBoundary. */
+  postCompactTurnBoundary?: boolean;
 }): Promise<AgentActivity> {
   // Capture routing and observation labels must share the entry context. The
   // caller may reuse/mutate its input while hasSession is pending.
@@ -710,6 +739,7 @@ export async function probeSessionActivity(input: {
       evidence: null,
     };
   }
+  const readTarget = binding?.pane ?? sessionName;
   if (attachmentType === "external_cli") {
     return {
       state: "unknown",
@@ -721,7 +751,7 @@ export async function probeSessionActivity(input: {
   }
   if (runtime === "terminal") {
     try {
-      const paneCommand = await tmuxAdapter.getPaneCommand(sessionName);
+      const paneCommand = await tmuxAdapter.getPaneCommand(readTarget);
       if (paneCommand && !IDLE_TERMINAL_COMMANDS.has(paneCommand)) {
         return {
           state: "running",
@@ -793,14 +823,15 @@ export async function probeSessionActivity(input: {
   const captureSeq = observed ? nextCaptureSeq++ : 0;
   try {
     const capture = (opts?: { escapeSequences?: boolean }) => visibleScreenOnly
-      ? opts ? tmuxAdapter.capturePaneScreen(sessionName, opts) : tmuxAdapter.capturePaneScreen(sessionName)
-      : opts ? tmuxAdapter.capturePaneContent(sessionName, 20, opts) : tmuxAdapter.capturePaneContent(sessionName, 20);
+      ? opts ? tmuxAdapter.capturePaneScreen(readTarget, opts) : tmuxAdapter.capturePaneScreen(readTarget)
+      : opts ? tmuxAdapter.capturePaneContent(readTarget, 20, opts) : tmuxAdapter.capturePaneContent(readTarget, 20);
     const snapshot = input.composerSnapshot ? await input.composerSnapshot().catch(() => null) : null;
     const paneContent = snapshot?.screen ?? await capture();
     const capturedAt = new Date().toISOString();
     const classifyOptions = {
       timerlessStatusIsLive: input.timerlessStatusIsLive === true,
       currentClaudeDialogueOnly: input.currentClaudeDialogueOnly === true,
+      postCompactTurnBoundary: input.postCompactTurnBoundary === true,
     };
     let classification = communityHarnessPaneActivity(classifyPaneActivity(paneContent ?? "", { ...classifyOptions,
       composerSnapshot: snapshot ?? undefined, runtime }), input.communityHarness);
@@ -1620,6 +1651,10 @@ export interface SendOpts {
    *  latest hook may predate the state that matters, such as a post-compact drain whose newest hook
    *  can be the Stop from before /compact. */
   readinessFromPaneOnly?: boolean;
+  /** Internal, for the managed compaction's post-compaction turn boundary only. The rows above the input box are then
+   *  indented compaction output, so the pane classifier can't see the status head; a complete, framed, empty Claude box
+   *  with its mode footer and no live status reads idle for this send. Every other send keeps unknown as never idle. */
+  postCompactTurnBoundary?: boolean;
   // OPR.0.4.1.10 — interactive-prompt / permission guard.
   // `dangerouslyInteract` is the ONLY override of the prompt/permission guard (force does NOT bypass
   // it). It requires `reason` and writes an auditable `transport.prompt_override` record before the
@@ -1789,6 +1824,8 @@ export interface CaptureResult {
   /** Claude Code and Codex seats, when the caller asked: what the live input box holds, and which part is likely a
    *  harness suggestion. */
   inputBox?: InputBoxAnnotation;
+  /** When the caller asked: the captured screen is at a prompt in a pane smaller than 80x24, which may cut it off. */
+  promptPane?: { width: number; height: number; hint: string };
 }
 
 export interface BroadcastResult {
@@ -2517,6 +2554,7 @@ export class SessionTransport {
       binding: { sessionName, nodeId: meta.nodeId, occupant: meta.occupant, pane: meta.pane },
       privateInput: opts.dangerouslyInteract === true,
       readinessFromPaneOnly: opts.readinessFromPaneOnly === true,
+      postCompactTurnBoundary: opts.postCompactTurnBoundary === true,
       signal: callerSignal(opts), cancelledBy: "caller",
     });
     if (!preWait.ok) {
@@ -2540,6 +2578,7 @@ export class SessionTransport {
     let preVerifyContent: string | null = null;
     const sessionMeta = this.getSessionMeta(sessionName);
     const runtime = sessionMeta.runtime;
+    const readTarget = sessionMeta.pane ?? sessionName;
     let runtimeAdvisory: string | undefined;
     const bindingChanged = () => JSON.stringify(this.getSessionMeta(sessionName)) !== JSON.stringify(sessionMeta);
     const changedRecipient = (sent = false): SendResult => ({ ok: false, sessionName, sent, reason: "target_runtime_conflict",
@@ -2562,13 +2601,13 @@ export class SessionTransport {
     // typing anything only if the pane still reads as in a mode. An unknown answer keeps today's path.
     const readPaneInMode = async (): Promise<boolean | null> => {
       try {
-        return typeof this.tmuxAdapter.isPaneInMode === "function" ? await this.tmuxAdapter.isPaneInMode(sessionName) : null;
+        return typeof this.tmuxAdapter.isPaneInMode === "function" ? await this.tmuxAdapter.isPaneInMode(readTarget) : null;
       } catch { return null; }
     };
     const leavePaneMode = async (outcome: string): Promise<SendResult | null> => {
       if (await readPaneInMode() !== true) return null;
       try {
-        if (typeof this.tmuxAdapter.cancelPaneMode === "function") await this.tmuxAdapter.cancelPaneMode(sessionName);
+        if (typeof this.tmuxAdapter.cancelPaneMode === "function") await this.tmuxAdapter.cancelPaneMode(readTarget);
       } catch { /* the re-read below decides */ }
       if (await readPaneInMode() !== true) return null;
       return { ok: false, sessionName, sent: false, reason: "pane_in_mode",
@@ -2706,7 +2745,7 @@ export class SessionTransport {
       try {
         pane = await this.runStage(
           "session_transport.submit_only_precheck",
-          () => this.tmuxAdapter.capturePaneContent(sessionName, opts.submitOnlyCaptureLines ?? 50),
+          () => this.tmuxAdapter.capturePaneContent(readTarget, opts.submitOnlyCaptureLines ?? 50),
         );
       } catch (error) {
         recordMismatch(null);
@@ -2767,6 +2806,7 @@ export class SessionTransport {
         binding: observed?.binding,
         privateInput: opts?.dangerouslyInteract === true,
         readinessFromPaneOnly: opts?.readinessFromPaneOnly === true,
+        postCompactTurnBoundary: opts?.postCompactTurnBoundary === true,
         signal: callerSignal(opts), cancelledBy: "caller",
       });
       waitEvidence = {
@@ -2826,6 +2866,7 @@ export class SessionTransport {
           privateInput: opts.dangerouslyInteract === true,
           binding: observed?.binding,
           readinessFromPaneOnly: opts.readinessFromPaneOnly === true,
+          postCompactTurnBoundary: opts.postCompactTurnBoundary === true,
           signal: callerSignal(opts), cancelledBy: "caller",
         });
         waitEvidence = {
@@ -2851,6 +2892,7 @@ export class SessionTransport {
           attachmentType: sessionMeta.attachmentType,
           binding: observed?.binding,
           readinessFromPaneOnly: opts.readinessFromPaneOnly === true,
+          postCompactTurnBoundary: opts.postCompactTurnBoundary === true,
         }, opts.dangerouslyInteract === true);
         if (recheck.state !== "idle") {
           const late: { reason: string; error: string } =
@@ -3001,8 +3043,8 @@ export class SessionTransport {
       try {
         preVerifyContent = await this.runStage(
           "session_transport.pre_capture",
-          () => runtime === "terminal" || !verificationSnippet(text).envelope ? this.tmuxAdapter.capturePaneContent(sessionName, 30)
-            : this.tmuxAdapter.capturePaneContent(sessionName, 30, { joinWrappedLines: true }),
+          () => runtime === "terminal" || !verificationSnippet(text).envelope ? this.tmuxAdapter.capturePaneContent(readTarget, 30)
+            : this.tmuxAdapter.capturePaneContent(readTarget, 30, { joinWrappedLines: true }),
         );
         if (observed) observed.pre = captureSlot(preVerifyContent, this.now().toISOString(), captureSeq);
       } catch {
@@ -3084,8 +3126,8 @@ export class SessionTransport {
       // The seat is read from the existing --verify capture taken before the paste (the whole screen); no new read.
       if (inputBoxRuntime && !promptOverride) {
         const read = await this.readWithinDeadline("session_transport.input_box_capture", () => Promise.all([
-          this.tmuxAdapter.getPanePid(sessionName).catch(() => null),
-          this.tmuxAdapter.capturePaneContent(sessionName, 30).catch(() => null),
+          this.tmuxAdapter.getPanePid(readTarget).catch(() => null),
+          this.tmuxAdapter.capturePaneContent(readTarget, 30).catch(() => null),
         ]));
         boxBefore = { seat: readSeatBeforePaste(preVerifyContent, inputBoxRuntime, sessionName),
           reading: readInputBox(read?.[1] ?? null, inputBoxRuntime, text), pid: read?.[0] ?? null, pane: read?.[1] ?? null };
@@ -3095,7 +3137,7 @@ export class SessionTransport {
 
       if (promptOverride) {
         const pane = await this.runStage("session_transport.prompt_override_pre_submit_capture",
-          () => this.tmuxAdapter.capturePaneContent(sessionName, 50)).catch(() => null);
+          () => this.tmuxAdapter.capturePaneContent(readTarget, 50)).catch(() => null);
         if (runtime === "claude-code" && bindingChanged()) return observe(changedRecipient(true));
         if (!promptAnswerStaged(pane, text, runtime)) {
           return observe({ ok: true, sessionName, sent: true, verified: false, outcome: "rendered-unconfirmed", promptInteraction: "unverified",
@@ -3142,8 +3184,8 @@ export class SessionTransport {
       try {
         const content = await this.runStage(
           "session_transport.post_capture",
-          () => runtime === "terminal" || !verificationSnippet(text).envelope ? this.tmuxAdapter.capturePaneContent(sessionName, 30)
-            : this.tmuxAdapter.capturePaneContent(sessionName, 30, { joinWrappedLines: true }),
+          () => runtime === "terminal" || !verificationSnippet(text).envelope ? this.tmuxAdapter.capturePaneContent(readTarget, 30)
+            : this.tmuxAdapter.capturePaneContent(readTarget, 30, { joinWrappedLines: true }),
         );
         if (observed) observed.post = captureSlot(content, this.now().toISOString(), captureSeq);
         // A terminal prompt is command history, not an agent composer. Preserve
@@ -3161,7 +3203,7 @@ export class SessionTransport {
         // An audited prompt answer reads no box (no extra read is added for it), so it reads unconfirmed; it never
         // falls back to the count below.
         const inputBox = boxBefore && inputBoxRuntime
-          ? await this.inputBoxEvidence(sessionName, sessionMeta, boxBefore, readInputBox(content, inputBoxRuntime, text, boxBefore.pane))
+          ? await this.inputBoxEvidence(sessionName, readTarget, sessionMeta, boxBefore, readInputBox(content, inputBoxRuntime, text, boxBefore.pane))
           : undefined;
         // With the setting on, only a seat proven idle before the paste and input-box evidence verify: exact before
         // Enter, empty after, same process. A not-idle or unknown seat always reads unconfirmed.
@@ -3205,11 +3247,12 @@ export class SessionTransport {
   /** After the post-Enter capture: the same pane process (pid read before Enter and now) and the same binding. */
   private async inputBoxEvidence(
     sessionName: string,
+    paneTarget: string,
     meta: { nodeId: string | null; pane: string | null; occupant: string | null },
     before: { seat: SeatReading; reading: InputBoxReading; pid: number | null },
     after: InputBoxReading,
   ): Promise<InputBoxEvidence> {
-    const pid = await this.readWithinDeadline("session_transport.input_box_pane_pid", () => this.tmuxAdapter.getPanePid(sessionName));
+    const pid = await this.readWithinDeadline("session_transport.input_box_pane_pid", () => this.tmuxAdapter.getPanePid(paneTarget));
     let sameBinding = false;
     try {
       const now = this.getSessionMeta(sessionName);
@@ -3246,6 +3289,7 @@ export class SessionTransport {
     privateInput?: boolean;
     binding?: ObservedBinding;
     readinessFromPaneOnly?: boolean;
+    postCompactTurnBoundary?: boolean;
     // Optional display value for timeout messages. The deadline always comes
     // from timeoutMs; when set, expiry reports this value instead, so a
     // re-wait running on a leftover budget still names the configured wait.
@@ -3338,7 +3382,7 @@ export class SessionTransport {
    *  caller's cancellation. Null when the deadline or the cancellation wins; the abandoned observation is ignored,
    *  never delivered on. */
   private async observeReadinessWithin(
-    input: { sessionName: string; runtime: string | null; attachmentType: string | null; binding?: ObservedBinding; readinessFromPaneOnly?: boolean; privateInput?: boolean },
+    input: { sessionName: string; runtime: string | null; attachmentType: string | null; binding?: ObservedBinding; readinessFromPaneOnly?: boolean; postCompactTurnBoundary?: boolean; privateInput?: boolean },
     remainingMs: number,
     cancel?: AbortSignal,
   ): Promise<AgentActivity | null> {
@@ -3363,20 +3407,32 @@ export class SessionTransport {
     const unknown = { state: "unknown" as const, detail: "Claude runtime observation or older launch binding is unavailable" };
     try {
       const panes = await this.tmuxAdapter.listPanes(sessionName);
-      if (panes.length > 1 || (pane && panes.length === 1 && panes[0]!.id !== pane)) {
-        return { state: "conflict", detail: "The session does not have the single expected bound pane" };
+      if (!pane && panes.length > 1) {
+        return { state: "conflict", detail: "The session has several panes but no recorded bound pane" };
+      }
+      if (panes.length > 0 && pane && !panes.some(candidate => candidate.id === pane)) {
+        return { state: "conflict", detail: "The session does not have the expected bound pane" };
       }
       if (!pane || panes.length === 0) return unknown;
-      const [sessionPid, panePid] = await Promise.all([this.tmuxAdapter.getPanePid(sessionName), this.tmuxAdapter.getPanePid(pane)]);
-      if (sessionPid && panePid && sessionPid !== panePid) return { state: "conflict", detail: "The session and bound pane name different processes" };
+      let panePid: number | null;
+      if (panes.length === 1) {
+        const [sessionPid, observedPanePid] = await Promise.all([this.tmuxAdapter.getPanePid(sessionName), this.tmuxAdapter.getPanePid(pane)]);
+        if (sessionPid && observedPanePid && sessionPid !== observedPanePid) return { state: "conflict", detail: "The session and bound pane name different processes" };
+        panePid = observedPanePid;
+      } else {
+        // A session target resolves to its current pane, which may be a sibling
+        // panel. With more than one pane, the immutable bound pane is the only
+        // process identity that can be compared safely.
+        panePid = await this.tmuxAdapter.getPanePid(pane);
+      }
       const observation = await observeClaudeDelivery({ target: pane, tmux: this.tmuxAdapter, listProcesses: this.listProcesses, expectedToken: resumeToken, rotation });
       // Refusal already has positive evidence; a later failed read cannot erase it.
       if (observation.state === "conflict" || observation.state === "idle_shell") return observation;
       const after = await this.tmuxAdapter.listPanes(sessionName);
-      if (after.length > 1 || (after.length === 1 && after[0]!.id !== pane)) return { state: "conflict", detail: "The bound pane changed during delivery verification" };
+      if (after.length > 0 && !after.some(candidate => candidate.id === pane)) return { state: "conflict", detail: "The bound pane changed during delivery verification" };
       const currentPid = await this.tmuxAdapter.getPanePid(pane);
       if (panePid && currentPid && panePid !== currentPid) return { state: "conflict", detail: "The bound pane process changed during delivery verification" };
-      return after.length === 0 || !sessionPid || !panePid || !currentPid ? unknown : observation;
+      return after.length === 0 || !panePid || !currentPid ? unknown : observation;
     } catch { return unknown; }
   }
 
@@ -3384,8 +3440,9 @@ export class SessionTransport {
    * Null when no shell label is observed, or the expected native process is verified. */
   private async unverifiedShellForeground(sessionName: string, runtime: string, pane: string | null, resumeToken: string | null): Promise<string | null> {
     let paneCommand: string | null;
+    const readTarget = pane ?? sessionName;
     try {
-      paneCommand = await this.tmuxAdapter.getPaneCommand(sessionName);
+      paneCommand = await this.tmuxAdapter.getPaneCommand(readTarget);
     } catch {
       return null;
     }
@@ -3394,7 +3451,7 @@ export class SessionTransport {
       // Reuse stable, foreground, pane-descendant Codex proof. A resumed process
       // must name this session's token. Stale UI, a Node
       // launcher alone, missing observations or a native process elsewhere cannot clear it.
-      const native = await verifyCodexPaneProcess({ target: sessionName, tmux: this.tmuxAdapter,
+      const native = await verifyCodexPaneProcess({ target: readTarget, tmux: this.tmuxAdapter,
         listProcesses: this.listProcesses, expectedToken: resumeToken });
       if (native && await this.tmuxAdapter.getPanePid(pane).catch(() => null) === native.panePid) return null;
     }
@@ -3407,10 +3464,21 @@ export class SessionTransport {
     attachmentType: string | null;
     binding?: ObservedBinding;
     readinessFromPaneOnly?: boolean;
+    postCompactTurnBoundary?: boolean;
   }, privateInput = false): Promise<AgentActivity> {
     const now = this.now();
+    let binding = input.binding;
+    try {
+      const stored = this.getSessionMeta(input.sessionName);
+      binding = {
+        sessionName: input.sessionName,
+        nodeId: binding?.nodeId ?? stored.nodeId,
+        occupant: binding?.occupant ?? stored.occupant,
+        pane: binding?.pane ?? stored.pane,
+      };
+    } catch { /* An unavailable binding keeps the existing session-name fallback. */ }
     const composerSnapshot = this.tmuxAdapter.deliveryGuard?.needsInputCheck(input.sessionName)
-      ? () => this.tmuxAdapter.captureComposerSnapshot(input.binding?.pane ?? input.sessionName) : undefined;
+      ? () => this.tmuxAdapter.captureComposerSnapshot(binding?.pane ?? input.sessionName) : undefined;
     const hookActivity = this.agentActivityStore?.getLatestForNode({
       sessionName: input.sessionName,
       now,
@@ -3454,7 +3522,7 @@ export class SessionTransport {
             tmuxAdapter: this.tmuxAdapter,
             now,
             captureObserver: privateInput ? undefined : this.captureObserver,
-            binding: input.binding,
+            binding,
           });
           if (paneVeto.state === "needs_input") return paneVeto;
         }
@@ -3482,7 +3550,7 @@ export class SessionTransport {
           tmuxAdapter: this.tmuxAdapter,
           now,
           captureObserver: privateInput ? undefined : this.captureObserver,
-          binding: input.binding,
+          binding,
         });
         if (paneVeto.state === "needs_input") {
           return paneVeto;
@@ -3499,9 +3567,10 @@ export class SessionTransport {
       tmuxAdapter: this.tmuxAdapter,
       now,
       captureObserver: privateInput ? undefined : this.captureObserver,
-      binding: input.binding,
+      binding,
       // Pane-only readiness must not send into a status row whose timer hasn't appeared yet.
       timerlessStatusIsLive: input.readinessFromPaneOnly === true,
+      postCompactTurnBoundary: input.postCompactTurnBoundary === true,
     });
     // A Codex empty-composer placeholder is also on screen while Codex streams with its status
     // row hidden, so a placeholder-only idle verdict must not override a display-fresh (<5min)
@@ -3681,7 +3750,7 @@ export class SessionTransport {
   /** `inputBox`: also describe a Claude Code or Codex seat's live input box (three more tmux reads), for callers that
    *  use it: the capture route asks when its request does (`rig capture`, the MCP tool). `inputBoxBudget` is the time
    *  those reads may still take, shared across a fan-out; a single capture gets its own CAPTURE_INPUT_BOX_DEADLINE_MS. */
-  async capture(sessionName: string, opts?: { lines?: number; inputBox?: boolean; inputBoxBudget?: InputBoxBudget }): Promise<CaptureResult> {
+  async capture(sessionName: string, opts?: { lines?: number; inputBox?: boolean; inputBoxBudget?: InputBoxBudget; promptPane?: boolean }): Promise<CaptureResult> {
     sessionName = physicalSessionName(this.db, sessionName);
     const sessionMeta = this.getSessionMeta(sessionName);
     if (sessionMeta.attachmentType === "external_cli") {
@@ -3742,7 +3811,20 @@ export class SessionTransport {
     const inputBox = opts?.inputBox && (runtime === "claude-code" || runtime === "codex")
       ? await this.captureInputBox(sessionName, runtime, opts.inputBoxBudget ?? { remainingMs: CAPTURE_INPUT_BOX_DEADLINE_MS })
       : undefined;
-    return { ok: true, sessionName, content, lines, ...(inputBox ? { inputBox } : {}) };
+    const promptPane = opts?.promptPane ? await this.capturePromptPane(sessionName, content, runtime) : undefined;
+    return { ok: true, sessionName, content, lines, ...(inputBox ? { inputBox } : {}), ...(promptPane ? { promptPane } : {}) };
+  }
+
+  /** A prompt drawn in a pane smaller than an 80x24 terminal may be cut off, so a reader can't see what the seat asks.
+   *  The pane size is read only when the captured screen shows a prompt. */
+  private async capturePromptPane(sessionName: string, content: string, runtime: string | null | undefined): Promise<CaptureResult["promptPane"]> {
+    const prompt = classifyPaneActivity(content, { runtime });
+    if (prompt.reason !== "permission_prompt" && prompt.reason !== "selection_prompt") return undefined;
+    const panes = await this.tmuxAdapter.listPanes(sessionName).catch(() => []);
+    const pane = panes.find(entry => entry.active) ?? panes[0];
+    if (!pane || (pane.width >= 80 && pane.height >= 24)) return undefined;
+    return { width: pane.width, height: pane.height,
+      hint: `pane ${pane.width}x${pane.height} is smaller than 80x24, so the prompt may be cut off; resize it (${tmuxResizeWindowCommand(sessionName, 120, 40)}) and capture again` };
   }
 
   /** The input box, or unknown when its reads don't finish within the budget's remaining time (or none is left): the
