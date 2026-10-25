@@ -862,8 +862,8 @@ export class RestoreOrchestrator {
     return null;
   }
 
-  private clearStaleState(nodeId: string, rigId: string): void {
-    this.sessionRegistry.clearBinding(nodeId);
+  private clearStaleState(nodeId: string, rigId: string, opts: { keepBinding?: boolean } = {}): void {
+    if (!opts.keepBinding) this.sessionRegistry.clearBinding(nodeId);
     const sessions = this.sessionRegistry.getSessionsForRig(rigId);
     for (const sess of sessions) {
       if (sess.nodeId === nodeId && sess.status !== "superseded" && sess.status !== "exited") {
@@ -1114,8 +1114,9 @@ export class RestoreOrchestrator {
       return { nodeId, logicalId: node.logicalId, status: "failed", error: `${node.logicalId} has no bound tmux pane to keep, so nothing was stopped.` };
     }
 
-    // Clear stale state so NodeLauncher doesn't see already_bound
-    this.clearStaleState(nodeId, rigId);
+    // Clear stale state so NodeLauncher doesn't see already_bound. A kept pane keeps its binding through the takeover: the
+    // delivery guard resolves the pane through it.
+    this.clearStaleState(nodeId, rigId, { keepBinding: keptPane !== null });
     this.tmuxAdapter.deliveryGuard?.rebindLifecycle(nodeId);
 
     // Derive canonical session name for pod-aware nodes
