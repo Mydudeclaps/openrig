@@ -57,8 +57,26 @@ describe("what would outrank a Claude seat's own subscription token", () => {
     writeFileSync(path.join(f.cwd, ".claude", "settings.json"), JSON.stringify({ env: { FOO: "1" }, model: "opus" }));
     const found = await f.managed.credentialPrecedence("node");
     expect(found.conflicts).toEqual([]);
-    expect(found.checked).toContain("the launch environment");
+    // A pane shell's own exports can't be read, but the launch unsets those names for Claude when the token applies.
+    expect(found.checked).toContain("the launch environment (a pane shell's own exports are unset for Claude's process when the token applies)");
     expect(found.notChecked).toEqual(["managed settings (a managed-settings.json file, MDM or the server)"]);
+  });
+
+  it("a move back to the stored login also finds a CLAUDE_CODE_OAUTH_TOKEN the seat would still receive, as what it uses instead", async () => {
+    const f = fixture({ daemonEnv: { CLAUDE_CODE_OAUTH_TOKEN: "x" }, memberEnv: { CLAUDE_CODE_OAUTH_TOKEN: "y" } });
+    writeFileSync(path.join(f.cwd, ".claude", "settings.json"), JSON.stringify({ env: { CLAUDE_CODE_OAUTH_TOKEN: "z" } }));
+    const back = await f.managed.credentialPrecedence("node", { storedLogin: true });
+    expect(back.conflicts).toEqual([]);
+    expect(back.instead?.map((c) => [c.name, c.source])).toEqual([
+      ["CLAUDE_CODE_OAUTH_TOKEN", "the daemon's environment, which every managed Claude launch receives"],
+      ["CLAUDE_CODE_OAUTH_TOKEN", "this seat's env: (member or rig) or a one-off launch name"],
+      ["CLAUDE_CODE_OAUTH_TOKEN", `the env block of project settings ${path.join(f.cwd, ".claude", "settings.json")}`],
+    ]);
+    // The pane shell's own exports, which a launch without a permission mode keeps, can't be read.
+    expect(back.notChecked).toContain("the pane shell's own exports (its startup files), which a launch without an explicit permission mode keeps");
+    expect(JSON.stringify(back)).not.toMatch(/"(x|y|z)"/);
+    // Moving to a token, the same token isn't something that outranks it.
+    expect((await f.managed.credentialPrecedence("node")).instead).toBeUndefined();
   });
 
   it("a settings file that isn't valid JSON is named as not checked, never as clear", async () => {

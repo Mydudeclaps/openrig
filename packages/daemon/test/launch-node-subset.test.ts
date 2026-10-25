@@ -672,4 +672,70 @@ describe("RestoreOrchestrator.launchNodeSubset", () => {
     expect(events).toHaveLength(1);
     expect(JSON.parse(events[0]!.payload).logicalId).toBe("dev.guard");
   });
+
+  describe("keeping the seat's pane (a running seat relaunched in place)", () => {
+    function liveDriver(rigId: string, nodeId: string, pane = "%7") {
+      const live = sessionRegistry.registerSession(nodeId, "dev-driver@test-rig");
+      sessionRegistry.updateStatus(live.id, "running");
+      sessionRegistry.updateBinding(nodeId, { tmuxSession: "dev-driver@test-rig", tmuxPane: pane });
+      Object.assign(tmux, {
+        hasSession: vi.fn(async () => true),
+        listPanes: vi.fn(async () => [{ id: "%7", index: 0, cwd: "/", width: 80, height: 24, active: true }]),
+        setRemainOnExit: vi.fn(async () => ({ ok: true as const })),
+        signalPaneProcess: vi.fn(async () => ({ ok: true as const })),
+        isPaneDead: vi.fn(async () => true),
+        getDefaultShell: vi.fn(async () => "/bin/zsh"),
+        respawnPane: vi.fn(async () => ({ ok: true as const })),
+      });
+      return live;
+    }
+
+    it("ends the seat's process in its own pane and starts a shell there, with no new session, then launches it there", async () => {
+      const { rigId, nodeIds } = seedPodAwareRig();
+      seedSnapshot(rigId, nodeIds, { [nodeIds[0]!]: emptyStartupContext("claude-code") });
+      const live = liveDriver(rigId, nodeIds[0]!);
+      const adapter = readyAdapter("claude-code");
+      // Without it, a running seat is left alone.
+      expect((await orchestrator.launchSingleNode(rigId, "dev.driver", { adapters: { "claude-code": adapter } })).alreadyRunning)
+        .toEqual([expect.objectContaining({ logicalId: "dev.driver" })]);
+      expect(adapter.launchHarness).not.toHaveBeenCalled();
+
+      const result = await orchestrator.launchSingleNode(rigId, "dev.driver", { adapters: { "claude-code": adapter }, keepPane: true });
+      expect(result.launched).toEqual([expect.objectContaining({ logicalId: "dev.driver", status: "fresh-primed" })]);
+      expect(tmux.createSession).not.toHaveBeenCalled();
+      expect(tmux.killSession).not.toHaveBeenCalled();
+      expect((tmux as any).signalPaneProcess).toHaveBeenCalledWith("%7", "TERM");
+      expect((tmux as any).respawnPane).toHaveBeenCalledWith("%7", "/bin/zsh", expect.objectContaining({
+        env: expect.objectContaining({ OPENRIG_NODE_ID: nodeIds[0], OPENRIG_SESSION_NAME: "dev-driver@test-rig" }) }));
+      expect(adapter.launchHarness).toHaveBeenCalledOnce();
+      expect(sessionRegistry.getBindingForNode(nodeIds[0]!)).toMatchObject({ tmuxSession: "dev-driver@test-rig", tmuxPane: "%7" });
+      expect(db.prepare("SELECT status FROM sessions WHERE id = ?").get(live.id)).toEqual({ status: "superseded" });
+    });
+
+    it("a pane that isn't in the seat's session is left alone, and the seat's records are put back", async () => {
+      const { rigId, nodeIds } = seedPodAwareRig();
+      seedSnapshot(rigId, nodeIds, { [nodeIds[0]!]: emptyStartupContext("claude-code") });
+      const live = liveDriver(rigId, nodeIds[0]!, "%8");
+      const result = await orchestrator.launchSingleNode(rigId, "dev.driver", { adapters: { "claude-code": readyAdapter("claude-code") }, keepPane: true });
+      expect(result.launched).toEqual([expect.objectContaining({ logicalId: "dev.driver", status: "failed", error: expect.stringContaining("nothing was stopped") })]);
+      expect((tmux as any).signalPaneProcess).not.toHaveBeenCalled();
+      expect((tmux as any).respawnPane).not.toHaveBeenCalled();
+      expect(sessionRegistry.getBindingForNode(nodeIds[0]!)).toMatchObject({ tmuxSession: "dev-driver@test-rig", tmuxPane: "%8" });
+      expect(db.prepare("SELECT status FROM sessions WHERE id = ?").get(live.id)).toEqual({ status: "running" });
+    });
+
+    it("a process that won't end isn't replaced: no shell is started over it", async () => {
+      const { rigId, nodeIds } = seedPodAwareRig();
+      seedSnapshot(rigId, nodeIds, { [nodeIds[0]!]: emptyStartupContext("claude-code") });
+      liveDriver(rigId, nodeIds[0]!);
+      Object.assign(tmux, { isPaneDead: vi.fn(async () => false) });
+      const fastLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter: tmux as any,
+        paneExit: { pollMs: 1, timeoutMs: 2, sleep: async () => {} } });
+      (orchestrator as any).nodeLauncher = fastLauncher;
+      const result = await orchestrator.launchSingleNode(rigId, "dev.driver", { adapters: { "claude-code": readyAdapter("claude-code") }, keepPane: true });
+      expect(result.launched).toEqual([expect.objectContaining({ status: "failed", error: expect.stringContaining("did not exit") })]);
+      expect((tmux as any).signalPaneProcess).toHaveBeenCalledWith("%7", "KILL");
+      expect((tmux as any).respawnPane).not.toHaveBeenCalled();
+    });
+  });
 });
