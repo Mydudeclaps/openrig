@@ -2,10 +2,10 @@ import { expect, it } from "vitest";
 import { DaemonClient } from "../src/daemon-client.js";
 import { hydrateSnapshot } from "../src/hydrate.js";
 import { createViewState, emptySnapshot } from "../src/state.js";
-import { attentionLines, opensOnDefaultFeed } from "../src/attention/attention-model.js";
+import { attentionLines, opensOnDefaultFeed, answerRequest } from "../src/attention/attention-model.js";
 import { parseCommand } from "../src/grammar.js";
 import type { AttentionRead } from "@openrig/daemon/attention";
-import type { FleetSnapshot } from "../src/types.js";
+import type { Action, FleetSnapshot } from "../src/types.js";
 
 // Whose queue the Feed shows is a view, never who acts: the header names both, and acts stay the primary user's.
 
@@ -77,4 +77,19 @@ it("opens on the default person's Feed only when one was chosen, and only before
   // Once the person has typed or moved, the TUI doesn't move them.
   expect(opensOnDefaultFeed(read(perspective("mike@external", "default", "chosen")), opening, false)).toBe(false);
   expect(opensOnDefaultFeed(read(perspective("mike@external", "default", "chosen")), { ...opening, section: "specs" }, true)).toBe(false);
+});
+
+it("an act on someone else's ask says who acts and whose ask it is, and carries the primary user's authority", () => {
+  const item = { id: "queue:sarahs", kind: "action" as const, summary: "Ship the draft?", unblocks: null, urgency: "routine", at: "2026-10-25T10:00:00Z",
+    scope: "instance · project unknown", project: null, source: "/api/queue/sarahs", recipient: "sarah@external",
+    answer: { verb: "approve" as const, actorSession: "sarah@external" } };
+  const served = (p?: AttentionRead["perspective"]): FleetSnapshot => ({ ...emptySnapshot(), attentionRead: { ...read(p), items: [item], detail: { item, lines: [], files: [] } } });
+  const state = { ...createViewState({ instanceId: "perspective" }).get(), section: "needs", attentionOpen: item.id };
+  const approve = (snap: FleetSnapshot) => attentionLines(state, snap, 160).find(l => l.action?.type === "act")!;
+  const viewingSarah = approve(served(perspective("sarah@external", "chosen-here")));
+  expect(viewingSarah.text).toContain("Approve as mike@external on sarah@external's ask");
+  expect(answerRequest(viewingSarah.action as Extract<Action, { type: "act"; act: "answer" }>)).toEqual(
+    { verb: "approve", qitemId: "sarahs", actorSession: "sarah@external", authority: "primary-user" });
+  // With no one registered, the label is as before.
+  expect(approve(served()).text).toContain("Approve as sarah@external (closes");
 });

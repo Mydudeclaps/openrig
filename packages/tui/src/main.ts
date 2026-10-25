@@ -33,7 +33,7 @@ import { restoreKeyAction, type RestoreInputEvent } from "./crash-cart/restore-i
 import { evaluateOneClickGate, restoreConfirmMessage } from "./crash-cart/one-click-gate.js";
 import { daemonStartArgs } from "./crash-cart/start-daemon.js";
 import { readLocal } from "./local-reading.js";
-import { replyAct, opensOnDefaultFeed } from "./attention/attention-model.js";
+import { replyAct, opensOnDefaultFeed, actingAs, answerRequest } from "./attention/attention-model.js";
 import type { AttentionRead } from "@openrig/daemon/attention";
 import { StartupController } from "./startup.js";
 import { dirname, join } from "node:path";
@@ -455,12 +455,12 @@ async function run(): Promise<void> {
         const result = await client.launchNode(action.rigId, action.agent);
         view.dispatch({ type: "notice", message: launchNodeNotice(action.agent, result) });
       } else if (action.act === "answer") {
-        const { act: _act, type: _type, ...input } = action;
-        const result = await client.missionControlAction(input);
+        const result = await client.missionControlAction(answerRequest(action));
+        const actor = actingAs(snapshot.attentionRead, action.actorSession);
         view.dispatch({ type: "notice", message: action.verb === "approve"
-          ? `Approved ${action.qitemId} as ${action.actorSession}: the request is closed on its own row.`
+          ? `Approved ${action.qitemId} as ${actor}: the request is closed on its own row.`
           : result.answer?.message ?? (result.answer?.outcome === "recorded" ? `Recorded on ${action.qitemId}. Still to answer: ${result.answer.unanswered.join("; ")}`
-          : `Answered ${action.qitemId} as ${action.actorSession}: the answer went back to the asker, and the request is closed.`) });
+          : `Answered ${action.qitemId} as ${actor}: the answer went back to the asker, and the request is closed.`) });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

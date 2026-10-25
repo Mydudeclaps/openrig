@@ -66,9 +66,12 @@ export function attentionLines(state: ViewState, snap: FleetSnapshot, width: num
       const qitemId = d.item.id.startsWith("queue:") ? d.item.id.slice("queue:".length) : null;
       if (d.item.answer && qitemId) {
         const { verb, actorSession } = d.item.answer;
+        // Whoever's queue is shown, the act is the primary user's; it says whose ask it settles when that's someone else.
+        const actor = actingAs(read, actorSession);
+        const as = `as ${actor}${d.item.recipient && d.item.recipient !== actor && read.perspective ? ` on ${d.item.recipient}'s ask` : ""}`;
         const open = (d.item.humanQuestions ?? []).filter(q => answerOf(d.item, q.id) == null);
         if (verb === "approve") {
-          lines.push(listItem(`Approve as ${actorSession} (closes this request, as Steering's Approve does)`, { type: "act", act: "answer", qitemId, verb, actorSession }));
+          lines.push(listItem(`Approve ${as} (closes this request, as Steering's Approve does)`, { type: "act", act: "answer", qitemId, verb, actorSession }));
         } else if (!open.length) {
           lines.push(listItem(`Send the recorded answers back to ${d.item.asker ?? "the asker"} and close this request`, { type: "act", act: "answer", qitemId, verb, actorSession }));
         } else {
@@ -77,7 +80,7 @@ export function attentionLines(state: ViewState, snap: FleetSnapshot, width: num
               { type: "act", act: "answer", qitemId, verb, actorSession, questionId: q.id, optionId: o.id }));
         }
         if (verb === "approve" || open.length) {
-          lines.push({ text: `Or answer in your own words: reply <text>, as ${actorSession}${verb === "answer" ? " (it fills the first unanswered question and closes the request)" : ""}.` });
+          lines.push({ text: `Or answer in your own words: reply <text>, ${as}${verb === "answer" ? " (it fills the first unanswered question and closes the request)" : ""}.` });
         }
       }
       // Chat, as on the Feed card: open the asker's terminal (its pod's view) to answer in your own words.
@@ -109,6 +112,18 @@ export function attentionLines(state: ViewState, snap: FleetSnapshot, width: num
   }
   lines.push({ text: "" }, { text: "Viewing is not approval. Each request's detail says whether it went to Slack and where to answer it." });
   return wrapDetailLines(lines, width);
+}
+
+/** The mission-control write for an answer act. Terminal acts carry the primary user's authority; the daemon records who
+ *  that is and whose ask it was. */
+export function answerRequest(action: Extract<Action, { type: "act"; act: "answer" }>) {
+  const { act: _act, type: _type, ...input } = action;
+  return { ...input, authority: "primary-user" as const };
+}
+
+/** Who an act on the Feed is recorded as: the primary user once anyone is registered, else the served actor, as before. */
+export function actingAs(read: AttentionRead | null | undefined, served: string): string {
+  return read?.perspective ? read.perspective.actingAs.person ?? "the primary user" : served;
 }
 
 /** The TUI opens on the default person's Feed only when the participants file chose one, and only while the person hasn't
