@@ -291,17 +291,18 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     // subshell. A launch that can't apply it still starts, and says so.
     const seatToken = managed ? null : this.claudeManagedLaunch?.seatTokenLaunch?.(binding.nodeId) ?? null;
     const tokenWarnings: string[] = [...(managed?.warnings ?? seatToken?.warnings ?? [])];
+    const session = binding.tmuxSession;
     const sendClassic = async (cmd: string) => {
       if (!this.seatLaunchEnvironment) {
         if (seatToken) tokenWarnings.push(claudeSeatTokenFallbackNotice(seatToken.ref, "this launch path can't run the token step"));
-        return this.tmux.sendText(binding.tmuxSession, cmd);
+        return this.tmux.sendText(session, cmd);
       }
-      const staged = await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration,
+      const staged = await this.seatLaunchEnvironment.command(session, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration,
         runtime: this.runtime, ...(seatToken ? { claudeTokenStep: seatToken.step } : {}) });
       if (seatToken && !staged.includes(seatToken.step)) {
         tokenWarnings.push(claudeSeatTokenFallbackNotice(seatToken.ref, "the seat's pane shell can't run the token step"));
       }
-      return this.tmux.sendShellCommand(binding.tmuxSession, staged, undefined, { sourceInPane: true });
+      return this.tmux.sendShellCommand(session, staged, undefined, { sourceInPane: true });
     };
     const launchNotes = () => (tokenWarnings.length ? { warnings: [...tokenWarnings] } : {});
     const posture = claudePostureFlag(process.env, binding.launchPosture, binding.permissionMode);
