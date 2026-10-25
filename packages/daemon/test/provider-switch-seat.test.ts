@@ -77,7 +77,7 @@ describe("rig provider switch --seat moves one seat to a login saved in the Code
       .toMatchObject({ safe: true, seat: { home: HOME, activity: "idle", peers: [PEER, OTHER] } });
     const r = await h.svc.switchAccount({ seat: "dev-a@rig", toAccount: "work", forceUnsafe: false }, h.seatRestart);
     expect(r).toMatchObject({ outcome: "rebind_in_progress",
-      seat: { peers: [{ ...PEER, step: "rig seat restart dev-qa@rig --keep-conversation" }, OTHER] } });
+      seat: { peers: [{ ...PEER, step: 'rig seat restart dev-qa@rig --keep-conversation --reason "its Codex home moved to work"' }, OTHER] } });
     expect(r.seat!.peers[1]).not.toHaveProperty("step");
   });
 
@@ -137,7 +137,65 @@ describe("rig provider switch --seat moves one seat to a login saved in the Code
       seat: { loginChanged: true, undo: `rig auth switch --codex-home ${HOME} ${BEFORE}` } });
     // The seat wasn't restarted, so it keeps its old login only until its next token refresh.
     expect(r.message).toContain("next token refresh");
-    expect(r.message).toContain("rig seat restart dev-a@rig --keep-conversation");
+    expect(r.message).toContain('rig seat restart dev-a@rig --keep-conversation --reason "its Codex home moved to work"');
+  });
+
+  it("a switch that waited behind another on its home checks the seat again before it changes the login", async () => {
+    const h = harness();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let bPlans = 0;
+    const seatRestart = {
+      plan: async (seat: string) => {
+        h.calls.push(`plan ${seat}`);
+        // While it waits, seat B loses what its restart needs.
+        if (seat === "dev-b@rig" && bPlans++ > 0) return { ok: false, code: "settings_unverified", message: "Couldn't read the running Codex's environment." } as never;
+        return report() as never;
+      },
+      run: async (seat: string) => {
+        h.calls.push(`run ${seat}`);
+        if (seat === "dev-a@rig") await held;
+        return report({ planOnly: false, outcome: "restarted_account_unverified", message: "Restarted in place." }) as never;
+      },
+    };
+    const a = h.svc.switchAccount({ seat: "dev-a@rig", toAccount: "work", forceUnsafe: false }, seatRestart);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const b = h.svc.switchAccount({ seat: "dev-b@rig", toAccount: "personal", forceUnsafe: false }, seatRestart);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    release();
+    expect(await a).toMatchObject({ outcome: "rebind_in_progress" });
+    expect(await b).toMatchObject({ outcome: "failed_safely", reasons: ["seat_restart_refused"], message: expect.stringContaining("settings_unverified") });
+    // B planned twice (before and after its wait), and changed nothing: the home keeps A's login.
+    expect(h.calls.filter((call) => call.endsWith("dev-b@rig"))).toEqual(["plan dev-b@rig", "plan dev-b@rig"]);
+    expect(h.homes.get(HOME)!.active).toBe("work");
+  });
+
+  it("a switch whose seat moved to another home while it waited touches neither home", async () => {
+    const h = harness();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let bPlans = 0;
+    const seatRestart = {
+      plan: async (seat: string) => {
+        h.calls.push(`plan ${seat}`);
+        if (seat === "dev-b@rig" && bPlans++ > 0) return report({ codexHome: "/homes/seat-b" }) as never;
+        return report() as never;
+      },
+      run: async (seat: string) => {
+        h.calls.push(`run ${seat}`);
+        if (seat === "dev-a@rig") await held;
+        return report({ planOnly: false, outcome: "restarted_account_unverified", message: "Restarted in place." }) as never;
+      },
+    };
+    const a = h.svc.switchAccount({ seat: "dev-a@rig", toAccount: "work", forceUnsafe: false }, seatRestart);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const b = h.svc.switchAccount({ seat: "dev-b@rig", toAccount: "personal", forceUnsafe: false }, seatRestart);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    release();
+    await a;
+    expect(await b).toMatchObject({ outcome: "failed_safely", reasons: ["seat_home_changed"], message: expect.stringContaining("/homes/seat-b") });
+    expect(h.calls.filter((call) => call.endsWith("dev-b@rig") || call.includes("seat-b"))).toEqual(["plan dev-b@rig", "plan dev-b@rig"]);
+    expect(h.homes.get(HOME)!.active).toBe("work");
   });
 
   it("a home with no active login moves without a before copy, and says there's nothing to switch back to", async () => {

@@ -1030,7 +1030,7 @@ of improvising. A Claude seat moves differently; see the next section.
    `before-switch-<time>`, activates the chosen one, and restarts the seat in place on the same conversation. If the
    current login can't be saved first, nothing changes. Peers on the home aren't restarted. Each keeps its current login
    only until its next token refresh, when Codex stops it with "signed in to another account". Run the printed
-   `rig seat restart <peer> --keep-conversation` for each to move it too. Don't sign in again in that home: that replaces
+   `rig seat restart <peer> --keep-conversation --reason "..."` for each to move it too. Don't sign in again in that home: that replaces
    the login you just switched to.
 4. **Confirm:** after the seat completes a real tool-using turn, run the printed
    `rig seat restart <seat> --keep-conversation --verify --expect-account <its Account line>`. Until then the move is

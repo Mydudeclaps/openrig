@@ -68,20 +68,26 @@ const codexHomeLogins: CodexHomeLogins = {
  *  next switch on that home starts, so each restart loads the login its receipt names. */
 const switchesByHome = new Map<string, Promise<unknown>>();
 
-function oneSwitchPerHome<T>(home: string, run: () => Promise<T>): Promise<T> {
+function oneSwitchPerHome<T>(home: string, run: (waited: boolean) => Promise<T>): Promise<T> {
   let key = home;
   try { key = fs.realpathSync(home); } catch { /* an unresolvable home is keyed by its path */ }
-  const next = (switchesByHome.get(key) ?? Promise.resolve()).then(run);
+  const ahead = switchesByHome.get(key);
+  const next = (ahead ?? Promise.resolve()).then(() => run(ahead !== undefined));
   const settled = next.catch(() => undefined);
   switchesByHome.set(key, settled);
   void settled.then(() => { if (switchesByHome.get(key) === settled) switchesByHome.delete(key); });
   return next;
 }
 
+/** What a seat restarted after a switch records as its reason; a login name has no quotes or spaces. */
+function movedReason(account: string): string {
+  return `--reason "its Codex home moved to ${account}"`;
+}
+
 /** A peer on the same home keeps its current login only until its next token refresh, then stops until it's restarted. */
-function withRestartSteps(peers: PeerReport[]): SeatSwitchReport["peers"] {
+function withRestartSteps(peers: PeerReport[], account: string): SeatSwitchReport["peers"] {
   return peers.map((peer) => peer.home === "same" && peer.sessionName
-    ? { ...peer, step: `rig seat restart ${peer.sessionName} --keep-conversation` } : peer);
+    ? { ...peer, step: `rig seat restart ${peer.sessionName} --keep-conversation ${movedReason(account)}` } : peer);
 }
 
 export interface ProviderServiceImplDeps {
@@ -259,7 +265,21 @@ export class ProviderServiceImpl implements ProviderService {
       const { reasons, message } = checked.verdict;
       return { outcome: "failed_safely", reasons: reasons as [string, ...string[]], ...(message ? { message } : {}) };
     }
-    return oneSwitchPerHome(checked.home, () => this.switchOnHome(input, seatRestart, checked.home, checked.peers));
+    return oneSwitchPerHome(checked.home, async (waited): Promise<ProviderSwitchResult> => {
+      if (!waited) return this.switchOnHome(input, seatRestart, checked.home, checked.peers);
+      // It waited behind another switch on this home, so the seat may have changed meanwhile: check it again first.
+      const now = await this.seatPrecheck(input, seatRestart);
+      const nowHome = now.ok ? now.home : now.verdict.seat?.home;
+      if (nowHome !== undefined && nowHome !== checked.home) {
+        return { outcome: "failed_safely", reasons: ["seat_home_changed"],
+          message: `${input.seat} now runs on ${nowHome}, not ${checked.home}, the home this switch waited on. Nothing changed; run the switch again for its current home.` };
+      }
+      if (!now.ok) {
+        const { reasons, message } = now.verdict;
+        return { outcome: "failed_safely", reasons: reasons as [string, ...string[]], ...(message ? { message } : {}) };
+      }
+      return this.switchOnHome(input, seatRestart, now.home, now.peers);
+    });
   }
 
   private async switchOnHome(input: ProviderSwitchInput, seatRestart: SeatRestart, home: string, peers: PeerReport[]): Promise<ProviderSwitchResult> {
@@ -272,7 +292,7 @@ export class ProviderServiceImpl implements ProviderService {
     }
     const savedBefore = saved.ok ? saved.name : null;
     const report: SeatSwitchReport = { seat: input.seat, home, account: input.toAccount, loginChanged: false, savedBefore,
-      undo: savedBefore ? `rig auth switch --codex-home ${home} ${savedBefore}` : null, peers: withRestartSteps(peers) };
+      undo: savedBefore ? `rig auth switch --codex-home ${home} ${savedBefore}` : null, peers: withRestartSteps(peers, input.toAccount) };
     const activated = logins.activate(home, input.toAccount);
     if (!activated.ok) {
       return { outcome: "failed_safely", reasons: ["login_not_activated"], seat: report,
@@ -282,12 +302,12 @@ export class ProviderServiceImpl implements ProviderService {
     const restart = await seatRestart.run(input.seat, `rig provider switch --to-account ${input.toAccount}`);
     if (!restart.ok) {
       return { outcome: "failed_safely", reasons: ["login_changed_seat_not_restarted"], seat: report,
-        message: `${home} now uses "${input.toAccount}", but ${input.seat} wasn't restarted (${restart.code}: ${restart.message}). It and every other seat on this home keep their current login only until their next token refresh, when Codex stops them with "signed in to another account" until they're restarted: rig seat restart ${input.seat} --keep-conversation.${report.undo ? ` To switch the home back: ${report.undo}` : ""}` };
+        message: `${home} now uses "${input.toAccount}", but ${input.seat} wasn't restarted (${restart.code}: ${restart.message}). It and every other seat on this home keep their current login only until their next token refresh, when Codex stops them with "signed in to another account" until they're restarted: rig seat restart ${input.seat} --keep-conversation ${movedReason(input.toAccount)}.${report.undo ? ` To switch the home back: ${report.undo}` : ""}` };
     }
     const outcome = restart.outcome ?? "native_unknown";
     report.restart = { outcome, message: restart.message,
       ...(restart.recoveryCommand ? { recoveryCommand: restart.recoveryCommand } : {}), ...(restart.remainingStep ? { remainingStep: restart.remainingStep } : {}) };
-    report.peers = withRestartSteps(restart.peers);
+    report.peers = withRestartSteps(restart.peers, input.toAccount);
     if (outcome === "restarted_account_unverified") {
       report.next = `After the seat completes a turn with a tool call: rig seat restart ${input.seat} --keep-conversation --verify --expect-account <text its /status shows for "${input.toAccount}">`;
       return { outcome: "rebind_in_progress", seat: report,
