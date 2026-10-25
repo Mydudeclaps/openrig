@@ -60,7 +60,13 @@ process.stdin.resume();
 process.stdin.on('data', chunk => { received += chunk.toString(); });
 setInterval(() => {
   const text = fs.readFileSync(frame, 'utf8');
-  process.stdout.write('\\x1b[2J\\x1b[H' + received.replace(/\\x1b\\[[0-9;]*[A-Za-z~]/g, '') + '\\n' + text);
+  const rows = process.stdout.rows || 40;
+  const lines = (received.replace(/\\x1b\\[[0-9;]*[A-Za-z~]/g, '') + '\\n' + text).trimEnd().split('\\n').slice(-rows);
+  // Native full-screen UIs keep the composer at the bottom, with the cursor inside it.
+  const padding = Math.max(0, rows - lines.length);
+  const input = lines.findLastIndex(line => /^[❯›] *$/.test(line));
+  process.stdout.write('\\x1b[2J\\x1b[H' + '\\n'.repeat(padding) + lines.join('\\n') +
+    (input < 0 ? '' : '\\x1b[' + (padding + input + 1) + ';3H'));
 }, 200);
 `;
 
@@ -165,8 +171,8 @@ export async function runPromptState(rigBin, frames, proof = {}) {
     for (const [kind, frame] of [['quoted-selector', frames.workingSelector], ['quoted-permission', frames.workingPermission]]) {
       await setFrame(claude, frame);
       const marker = `send-${randomUUID()}`;
-      const send = await cli(['send', claude, marker], codex, false);
-      const row = { kind, marker, send }; proof.working.push(row);
+      const row = { kind, marker, before: await capture(claude) }; proof.working.push(row);
+      const send = row.send = await cli(['send', claude, marker], codex, false);
       assert.equal(send.code, 0, `#1955 ${kind}: working send refused: ${send.stdout} ${send.stderr}`);
       row.pane = await until(() => capture(claude), pane => pane.includes(marker), 'send absent from addressed pane');
       row.wake = await wake(true);
