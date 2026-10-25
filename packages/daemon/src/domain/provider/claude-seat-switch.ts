@@ -69,7 +69,9 @@ export async function switchClaudeSeat(input: ProviderSwitchInput, relaunch: Cla
       return { outcome: "failed_safely", reasons: [typeof code === "string" ? code : "seat_unavailable"],
         message: `${input.seat} couldn't be switched (${message}). Nothing changed.` };
     }
+    // Its reference was set before the error; what the seat runs isn't known.
     return { outcome: "unknown", reasons: ["relaunch_threw"],
+      seat: { seat: input.seat, account: input.tokenFile === null ? STORED_LOGIN : input.toAccount, loginChanged: true, peers: [], undo: null },
       message: `${input.seat}'s relaunch stopped with an error after its process may have been ended (${message}). Check the pane with rig capture ${input.seat}. Not retried.` };
   }
 }
