@@ -183,8 +183,8 @@ history above its current empty composer and running timer: unique sends and
 actual parked-row timer wakes must reach its pane. A real waiting dialog must
 refuse a send and an attempted wake without either marker being typed.
 
-The report retains each served value, delivered nonce, wake transition, matching watchdog refusal attempt and current
-pane, including the stage if incomplete. Product state is never set through a DB
+The report retains each served value, delivered nonce, wake transition, matching
+watchdog refusal attempt and current pane, including the stage if incomplete. Product state is never set through a DB
 write or a mocked observation. These are controlled pane layouts and OpenRig's
 coordination path, not native prompt-layout or model behavior evidence. Historical
 fail-before arms are author evidence: #1946 against32633a3d-era installed bytes,
