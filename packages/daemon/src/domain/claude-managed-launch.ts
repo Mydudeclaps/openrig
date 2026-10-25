@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { accessSync, closeSync, constants, openSync, readSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import type Database from "better-sqlite3";
+import type { RigEvent } from "./types.js";
 import { publicSeatEnvironment } from "./seat-launch-environment.js";
 import { SEAT_ENV_KEYS_VAR, parseStoredSeatEnv, validateSeatEnvName } from "./seat-env.js";
 import { CLAUDE_PLUGIN_DIRS_ENV, SEAT_NODE_ENV, SEAT_PROJECT_DIR_ENV, seatCorePluginDir } from "./claude-core-plugin-env.js";
@@ -130,7 +131,19 @@ export class ClaudeManagedLaunch {
     const ref = readClaudeSeatTokenRef(this.db, nodeId);
     if (!ref) return null;
     const problem = claudeSeatTokenFileProblem(ref);
-    return { ref, step: claudeSeatTokenStep(ref, shellQuote), warnings: Object.freeze(problem ? [claudeSeatTokenFallbackNotice(ref, problem)] : []) };
+    return { ref, step: claudeSeatTokenStep(ref, shellQuote), warnings: Object.freeze(problem ? [this.tokenNotApplied(nodeId, ref, problem)] : []) };
+  }
+
+  /** Where a launch that didn't apply the seat's token is recorded (the daemon's event log); unset, it's only reported. */
+  onTokenNotApplied?: (event: Extract<RigEvent, { type: "seat.claude_token_not_applied" }>) => void;
+
+  /** A launch is starting Claude without the seat's own token: record it, and return what the launch reports. */
+  tokenNotApplied(nodeId: string, ref: ClaudeSeatTokenRef, reason: string): string {
+    try {
+      const rig = this.db.prepare("SELECT rig_id FROM nodes WHERE id = ?").get(nodeId) as { rig_id?: string } | undefined;
+      this.onTokenNotApplied?.({ type: "seat.claude_token_not_applied", rigId: rig?.rig_id ?? "", nodeId, label: ref.label, tokenFile: ref.tokenFile, reason });
+    } catch { /* recording is best-effort; the launch still starts and reports it */ }
+    return claudeSeatTokenFallbackNotice(ref, reason);
   }
 
   /** What would outrank the seat's own subscription token at its next managed launch: names its launch environment

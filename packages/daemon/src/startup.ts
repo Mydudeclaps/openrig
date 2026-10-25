@@ -698,6 +698,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const claudeManagedLaunch = new ClaudeManagedLaunch(db, { ...launchSessionEnv, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR }, {
     OPENRIG_CLAUDE_DISABLE_ALTERNATE_SCREEN: process.env.OPENRIG_CLAUDE_DISABLE_ALTERNATE_SCREEN,
   }, (session, key) => tmuxAdapter.getSessionEnv(session, key));
+  claudeManagedLaunch.onTokenNotApplied = (event) => { eventBus.emit(event); };
   // The compaction settings a managed restore reads, at each launch, so the launch grants those files too (#1940).
   const restoreReadPolicy = () => {
     try {

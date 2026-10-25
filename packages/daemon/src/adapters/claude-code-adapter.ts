@@ -294,13 +294,13 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     const session = binding.tmuxSession;
     const sendClassic = async (cmd: string) => {
       if (!this.seatLaunchEnvironment) {
-        if (seatToken) tokenWarnings.push(claudeSeatTokenFallbackNotice(seatToken.ref, "this launch path can't run the token step"));
+        if (seatToken) tokenWarnings.push(this.claudeManagedLaunch?.tokenNotApplied?.(binding.nodeId, seatToken.ref, "this launch path can't run the token step") ?? claudeSeatTokenFallbackNotice(seatToken.ref, "this launch path can't run the token step"));
         return this.tmux.sendText(session, cmd);
       }
       const staged = await this.seatLaunchEnvironment.command(session, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration,
         runtime: this.runtime, ...(seatToken ? { claudeTokenStep: seatToken.step } : {}) });
       if (seatToken && !staged.includes(seatToken.step)) {
-        tokenWarnings.push(claudeSeatTokenFallbackNotice(seatToken.ref, "the seat's pane shell can't run the token step"));
+        tokenWarnings.push(this.claudeManagedLaunch?.tokenNotApplied?.(binding.nodeId, seatToken.ref, "the seat's pane shell can't run the token step") ?? claudeSeatTokenFallbackNotice(seatToken.ref, "the seat's pane shell can't run the token step"));
       }
       return this.tmux.sendShellCommand(session, staged, undefined, { sourceInPane: true });
     };

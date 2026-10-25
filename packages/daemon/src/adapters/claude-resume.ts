@@ -113,13 +113,13 @@ export class ClaudeResumeAdapter {
 
     const sendClassic = async () => {
       if (!this.options.seatLaunchEnvironment) {
-        if (seatToken) tokenWarnings.push(claudeSeatTokenFallbackNotice(seatToken.ref, "this launch path can't run the token step"));
+        if (seatToken) tokenWarnings.push(this.options.claudeManagedLaunch?.tokenNotApplied?.(nodeId!, seatToken.ref, "this launch path can't run the token step") ?? claudeSeatTokenFallbackNotice(seatToken.ref, "this launch path can't run the token step"));
         return this.tmux.sendText(tmuxSessionName, cmd);
       }
       const staged = await this.options.seatLaunchEnvironment.command(tmuxSessionName, cmd, { runtime: "claude-code", nodeId,
         ...(seatToken ? { claudeTokenStep: seatToken.step } : {}) });
       if (seatToken && !staged.includes(seatToken.step)) {
-        tokenWarnings.push(claudeSeatTokenFallbackNotice(seatToken.ref, "the seat's pane shell can't run the token step"));
+        tokenWarnings.push(this.options.claudeManagedLaunch?.tokenNotApplied?.(nodeId!, seatToken.ref, "the seat's pane shell can't run the token step") ?? claudeSeatTokenFallbackNotice(seatToken.ref, "the seat's pane shell can't run the token step"));
       }
       return this.tmux.sendShellCommand(tmuxSessionName, staged, undefined, { sourceInPane: true });
     };
