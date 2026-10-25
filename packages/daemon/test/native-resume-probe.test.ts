@@ -930,6 +930,39 @@ describe("native resume probe", () => {
       .toMatchObject({ status: "inconclusive", code: "model_selection_gate" });
   });
 
+  // A chooser counts only while it's the last thing drawn. Chooser rows (or text quoting one) above a later composer
+  // are history, whether the pane reaches its bottom (the capture's final newline is its only blank) or is drawn high.
+  describe("a chooser above a later composer is history", () => {
+    const claudeResumed = ["Claude Code v2.1.310", "", "● Picked up where we left off.", "", "─".repeat(40), "❯ ", "─".repeat(40),
+      "  ⏵⏵ accept edits on (shift+tab to cycle)"].join("\n");
+    const codexResumed = ["╭────────────────────────────╮", "│ >_ OpenAI Codex (v0.164.0) │", "╰────────────────────────────╯", "",
+      "› Ask Codex to do anything", "", "  gpt-6-astra ultra · ~/code/openrig"].join("\n");
+    const shapes = { bottom: (pane: string) => `${pane}\n`, tall: (pane: string) => `${pane}\n${Array<string>(45).fill("").join("\n")}` };
+    const cases: Array<[string, "claude-code" | "codex", string]> = [
+      ["an old numbered Claude chooser", "claude-code", "Choose a conversation to resume:\n\n  1. project-foo (modified 2h ago)\n  2. project-bar (modified yesterday)\n\nEnter a number, or press q to cancel."],
+      ["an old › arrow Claude chooser", "claude-code", "Choose the conversation to resume:\n\n› 1. recent project\n  2. older project"],
+      ["an old two-choice Claude chooser", "claude-code", "How would you like to resume?\n\n❯ Resume from summary\n  Resume full session as-is"],
+      ["a reply quoting the whole Claude chooser", "claude-code", "● The chooser read:\nHow would you like to resume?\n❯ Resume from summary\n  Resume full session as-is"],
+      ["a reply naming the Claude chooser and ending in a list", "claude-code", "● Choose a conversation to resume only if asked. Next:\n  1. run the tests\n  2. push the branch"],
+      ["an old Codex model chooser", "codex", "› 1. gpt-5.1-codex-mini\n  2. gpt-5.4-codex\n\n  gpt-5.4 default · ~/code/openrig"],
+      ["a Codex answer listing two models", "codex", "• Two options:\n  1. gpt-6-astra for depth\n  2. gpt-6-sol for speed"],
+    ];
+    for (const [shape, wrap] of Object.entries(shapes)) {
+      it.each(cases)(`reads ${shape}: %s, then a resumed session, as resumed`, (_name, runtime, earlier) => {
+        const paneContent = wrap(`${earlier}\n\n${runtime === "codex" ? codexResumed : claudeResumed}`);
+        expect(assessNativeResumeProbe({ runtime, paneCommand: runtime === "codex" ? "codex" : "claude", paneContent }))
+          .toMatchObject({ status: "resumed", code: "active_runtime" });
+      });
+    }
+
+    it("doesn't let a numbered list borrow a chooser heading from above the window", () => {
+      const conversation = Array.from({ length: 35 }, (_, at) => `  line ${at} of the conversation`).join("\n");
+      const paneContent = `Choose a conversation to resume:\n${conversation}\n  1. run the tests\n  2. push the branch\n`;
+      expect(assessNativeResumeProbe({ runtime: "claude-code", paneCommand: "claude", paneContent }).status)
+        .not.toBe("attention_required");
+    });
+  });
+
   it("classifies Codex as resumed when an old update banner remains in scrollback but the live TUI is present", () => {
     expect(
       assessNativeResumeProbe({
