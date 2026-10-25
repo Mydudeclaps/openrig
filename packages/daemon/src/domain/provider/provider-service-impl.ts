@@ -4,6 +4,7 @@
 // is precheck-gated and NEVER fabricates success — the switch-execution + BR-1 action-record path
 // is the D seam; until it lands, switch returns an honest failed_safely with an operational reason.
 
+import fs from "node:fs";
 import nodePath from "node:path";
 import os from "node:os";
 import type Database from "better-sqlite3";
@@ -26,8 +27,59 @@ import type {
   ProviderPrecheckInput,
   ProviderSwitchInput,
   ProviderSwitchResult,
+  SeatRestart,
+  SeatSwitchReport,
 } from "./provider-service.js";
 import type { FourBlockReadModel, PrecheckResult, ProviderSignal } from "./provider-types.js";
+import { authList, authSave, authSwitch, resolveCodexHome } from "../codex-auth.js";
+import type { PeerReport } from "../seat-restart-in-place.js";
+
+/** The Codex logins saved in a home (`rig auth`'s file operations, which never return a token). */
+export interface CodexHomeLogins {
+  list(home: string): string[];
+  /** Saves the home's active login under a new name; never replaces a saved login. */
+  save(home: string, name: string): { ok: true; name: string } | { ok: false; reason: string };
+  activate(home: string, name: string): { ok: true } | { ok: false; reason: string };
+}
+
+type SeatCheck =
+  | { ok: false; verdict: Extract<PrecheckResult, { safe: false }> }
+  | { ok: true; verdict: Extract<PrecheckResult, { safe: true }>; home: string; peers: PeerReport[] };
+
+const codexHomeLogins: CodexHomeLogins = {
+  list: (home) => authList(resolveCodexHome({ CODEX_HOME: home })),
+  save: (home, name) => {
+    const paths = resolveCodexHome({ CODEX_HOME: home });
+    // An earlier switch's recovery copy stays its own, so its receipt's undo restores the bytes it saved.
+    try {
+      if (fs.lstatSync(nodePath.join(paths.profileDir, `${name}.json`), { throwIfNoEntry: false })) return { ok: false, reason: "name_taken" };
+    } catch {
+      return { ok: false, reason: "io_error" };
+    }
+    return authSave(paths, name);
+  },
+  activate: (home, name) => authSwitch(resolveCodexHome({ CODEX_HOME: home }), name),
+};
+
+/** One seat switch at a time per Codex home in this daemon: a switch's save, activation and restart finish before the
+ *  next switch on that home starts, so each restart loads the login its receipt names. */
+const switchesByHome = new Map<string, Promise<unknown>>();
+
+function oneSwitchPerHome<T>(home: string, run: () => Promise<T>): Promise<T> {
+  let key = home;
+  try { key = fs.realpathSync(home); } catch { /* an unresolvable home is keyed by its path */ }
+  const next = (switchesByHome.get(key) ?? Promise.resolve()).then(run);
+  const settled = next.catch(() => undefined);
+  switchesByHome.set(key, settled);
+  void settled.then(() => { if (switchesByHome.get(key) === settled) switchesByHome.delete(key); });
+  return next;
+}
+
+/** A peer on the same home keeps its current login only until its next token refresh, then stops until it's restarted. */
+function withRestartSteps(peers: PeerReport[]): SeatSwitchReport["peers"] {
+  return peers.map((peer) => peer.home === "same" && peer.sessionName
+    ? { ...peer, step: `rig seat restart ${peer.sessionName} --keep-conversation` } : peer);
+}
 
 export interface ProviderServiceImplDeps {
   db: Database.Database;
@@ -43,6 +95,8 @@ export interface ProviderServiceImplDeps {
   now?: () => string;
   /** Slice 01: Codex usage windows, served only while `enabled()` (provider.usage_windows) is true. */
   usageWindows?: { enabled: () => boolean; windows: CodexUsageWindows; claude?: ClaudeUsageWindows; claudeTokens?: import("./claude-token-usage.js").ClaudeTokenUsage };
+  /** The logins saved in a Codex home; defaults to `rig auth`'s files. A seat switch acts on the home the seat runs on. */
+  codexLogins?: CodexHomeLogins;
 }
 
 export class ProviderServiceImpl implements ProviderService {
@@ -141,7 +195,8 @@ export class ProviderServiceImpl implements ProviderService {
     return seats;
   }
 
-  async precheck(input: ProviderPrecheckInput): Promise<PrecheckResult> {
+  async precheck(input: ProviderPrecheckInput, seatRestart?: SeatRestart): Promise<PrecheckResult> {
+    if (seatRestart) return (await this.seatPrecheck(input, seatRestart)).verdict;
     const model = await this.getReadModel();
     const target = model.accounts.find((a) => a.accountId === input.toAccount);
     // Validate-at-use: an unknown target OR unknown auth fails closed (BR-3 — disk presence never
@@ -155,7 +210,8 @@ export class ProviderServiceImpl implements ProviderService {
     });
   }
 
-  async switchAccount(input: ProviderSwitchInput): Promise<ProviderSwitchResult> {
+  async switchAccount(input: ProviderSwitchInput, seatRestart?: SeatRestart): Promise<ProviderSwitchResult> {
+    if (seatRestart) return this.switchSeat(input, seatRestart);
     // Precheck-gate: never switch past an unsafe verdict unless explicitly forced.
     const verdict = await this.precheck({ seat: input.seat, toAccount: input.toAccount });
     if (verdict.safe === false && !input.forceUnsafe) {
@@ -165,5 +221,73 @@ export class ProviderServiceImpl implements ProviderService {
     // D seam (compose the rig-auth codex switch + BR-1 durable action record) is NOT yet wired.
     // Honest operational failure — never fabricate a succeeded/rebind_in_progress outcome.
     return { outcome: "failed_safely", reasons: ["switch_execution_not_yet_wired"] };
+  }
+
+  /** A seat's precheck reads the seat: its in-place restart plan (every gate, nothing stopped) names the Codex home the
+   *  running seat uses, and the login must be saved there. Every saved login's sign-in state reads unknown, so an
+   *  authorized move isn't refused for that; the restart's uptake evidence settles it. */
+  private async seatPrecheck(input: ProviderPrecheckInput, seatRestart: SeatRestart): Promise<SeatCheck> {
+    const plan = await seatRestart.plan(input.seat);
+    if (!plan.ok) {
+      return { ok: false, verdict: { safe: false, reasons: [plan.code === "not_codex" ? "rebind_unsupported_for_runtime" : "seat_restart_refused"],
+        message: `${plan.code}: ${plan.message}` } };
+    }
+    const seat = { home: plan.codexHome, activity: plan.activity.state, peers: plan.peers };
+    if (!this.codexLogins().list(plan.codexHome).includes(input.toAccount)) {
+      return { ok: false, verdict: { safe: false, reasons: ["target_not_in_seat_home"], seat,
+        message: `No login named "${input.toAccount}" is saved in ${plan.codexHome}, the Codex home this seat runs on. List them with: rig auth list --codex-home ${plan.codexHome}` } };
+    }
+    return { ok: true, verdict: { safe: true, seat }, home: plan.codexHome, peers: plan.peers };
+  }
+
+  /** Move one seat: keep the home's outgoing login, activate the chosen one, restart the seat in place (same conversation,
+   *  pane and launch settings), and report. A seat refusal can't be forced: there'd be nothing safe to restart, or no
+   *  such login. Nothing changes unless the outgoing login was saved first (or the home had none). Never retried: a
+   *  restart whose result isn't confirmed is reported with its recovery command. */
+  private async switchSeat(input: ProviderSwitchInput, seatRestart: SeatRestart): Promise<ProviderSwitchResult> {
+    const checked = await this.seatPrecheck(input, seatRestart);
+    if (!checked.ok) {
+      const { reasons, message } = checked.verdict;
+      return { outcome: "failed_safely", reasons: reasons as [string, ...string[]], ...(message ? { message } : {}) };
+    }
+    return oneSwitchPerHome(checked.home, () => this.switchOnHome(input, seatRestart, checked.home, checked.peers));
+  }
+
+  private async switchOnHome(input: ProviderSwitchInput, seatRestart: SeatRestart, home: string, peers: PeerReport[]): Promise<ProviderSwitchResult> {
+    const logins = this.codexLogins();
+    const stamp = (this.deps.now ?? (() => new Date().toISOString()))().replace(/[-:]/g, "");
+    const saved = logins.save(home, `before-switch-${stamp}`);
+    if (!saved.ok && saved.reason !== "not_configured") {
+      return { outcome: "failed_safely", reasons: ["outgoing_login_not_saved"],
+        message: `The login active in ${home} couldn't be saved first (${saved.reason}), so nothing changed: no login was activated and the seat wasn't restarted.` };
+    }
+    const savedBefore = saved.ok ? saved.name : null;
+    const report: SeatSwitchReport = { seat: input.seat, home, account: input.toAccount, loginChanged: false, savedBefore,
+      undo: savedBefore ? `rig auth switch --codex-home ${home} ${savedBefore}` : null, peers: withRestartSteps(peers) };
+    const activated = logins.activate(home, input.toAccount);
+    if (!activated.ok) {
+      return { outcome: "failed_safely", reasons: ["login_not_activated"], seat: report,
+        message: `The login "${input.toAccount}" couldn't be activated in ${home} (${activated.reason}); nothing was restarted.` };
+    }
+    report.loginChanged = true;
+    const restart = await seatRestart.run(input.seat, `rig provider switch --to-account ${input.toAccount}`);
+    if (!restart.ok) {
+      return { outcome: "failed_safely", reasons: ["login_changed_seat_not_restarted"], seat: report,
+        message: `${home} now uses "${input.toAccount}", but ${input.seat} wasn't restarted (${restart.code}: ${restart.message}). It and every other seat on this home keep their current login only until their next token refresh, when Codex stops them with "signed in to another account" until they're restarted: rig seat restart ${input.seat} --keep-conversation.${report.undo ? ` To switch the home back: ${report.undo}` : ""}` };
+    }
+    const outcome = restart.outcome ?? "native_unknown";
+    report.restart = { outcome, message: restart.message,
+      ...(restart.recoveryCommand ? { recoveryCommand: restart.recoveryCommand } : {}), ...(restart.remainingStep ? { remainingStep: restart.remainingStep } : {}) };
+    report.peers = withRestartSteps(restart.peers);
+    if (outcome === "restarted_account_unverified") {
+      report.next = `After the seat completes a turn with a tool call: rig seat restart ${input.seat} --keep-conversation --verify --expect-account <text its /status shows for "${input.toAccount}">`;
+      return { outcome: "rebind_in_progress", seat: report,
+        message: `Restarted ${input.seat} in place on "${input.toAccount}" in ${home}; the account isn't verified until a tool turn and its account line are seen.` };
+    }
+    return { outcome: "unknown", reasons: [`restart_${outcome}`], seat: report, message: `${restart.message} Not retried.` };
+  }
+
+  private codexLogins(): CodexHomeLogins {
+    return this.deps.codexLogins ?? codexHomeLogins;
   }
 }
