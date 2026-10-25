@@ -963,15 +963,20 @@ describe("native resume probe", () => {
     });
 
     // A composer whose draft starts with "1." looks like a numbered option row; Claude's input frame (a rule above the
-    // ❯ row and another below) tells them apart.
-    it.each([
-      ["numbered", "Choose a conversation to resume:\n\n  1. project-foo (modified 2h ago)\n  2. project-bar (modified yesterday)"],
-      ["two-choice", "How would you like to resume?\n\n❯ Resume from summary\n  Resume full session as-is"],
-    ])("reads an old %s chooser above a composer holding a numbered draft as resumed", (_shape, earlier) => {
-      const draft = ["─".repeat(40), "❯ 1. inspect the source", "  2. then fix it", "─".repeat(40), "  ⏵⏵ accept edits on (shift+tab to cycle)"].join("\n");
-      expect(assessNativeResumeProbe({ runtime: "claude-code", paneCommand: "claude", paneContent: `${earlier}\n\n${draft}\n` }))
-        .toMatchObject({ status: "resumed", code: "active_runtime" });
-    });
+    // ❯ row and another below) tells them apart. On a named session (OpenRig's seats) Claude 2.1.309 labels the top
+    // rule; these are its recorded 80-column rule rows (dev50-qa's #1955 native frame `b-question-cancel-observe`).
+    const plainRule = "─".repeat(80);
+    const labelledRule = `${"─".repeat(57)} probe-claude@r1955-b ─`;
+    const choosers = {
+      numbered: "Choose a conversation to resume:\n\n  1. project-foo (modified 2h ago)\n  2. project-bar (modified yesterday)",
+      "two-choice": "How would you like to resume?\n\n❯ Resume from summary\n  Resume full session as-is",
+    };
+    it.each(Object.entries(choosers).flatMap(([shape, earlier]) => [[shape, "plain", plainRule, earlier], [shape, "labelled", labelledRule, earlier]]))(
+      "reads an old %s chooser above a %s-frame composer holding a numbered draft as resumed", (_shape, _frame, topRule, earlier) => {
+        const draft = [topRule, "❯ 1. inspect the source", "  2. then fix it", plainRule, "  ⏵⏵ accept edits on (shift+tab to cycle)"].join("\n");
+        expect(assessNativeResumeProbe({ runtime: "claude-code", paneCommand: "claude", paneContent: `${earlier}\n\n${draft}\n` }))
+          .toMatchObject({ status: "resumed", code: "active_runtime" });
+      });
   });
 
   // A live conversation list can outgrow the window, pushing its heading above the last 30 drawn rows.

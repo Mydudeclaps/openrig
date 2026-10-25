@@ -378,7 +378,8 @@ function claudeDrawnAfter(rows: string[]): boolean {
     || line.includes("Claude Code v") || /^[●⏺]/.test(line));
 }
 
-const CLAUDE_INPUT_RULE = /^\s*─{3,}\s*$/;
+// On a named session Claude labels the frame's top rule (`─────…── probe-claude@rig ─`), so a rule may carry text after a space.
+const CLAUDE_INPUT_RULE = /^\s*─{3,}(?:\s.*)?$/;
 
 /** Claude's input frame: a rule, the ❯ row directly under it, and another rule below. A composer holding a draft that
  *  starts with "1." looks like a numbered option row; the frame is what tells them apart. */
