@@ -82,7 +82,7 @@ describe.skipIf(process.platform === "win32")("a Claude seat's own subscription 
       writeFileSync(cli, "#!/bin/sh\n", { mode: 0o700 });
       const identity: Record<string, string> = { OPENRIG_NODE_ID: "node", OPENRIG_SESSION_NAME: "seat@rig" };
       const tmux = { getPaneCommand: async () => shell, getSessionEnv: async (_session: string, key: string) => identity[key] } as unknown as TmuxAdapter;
-      const launch = new SeatLaunchEnvironment(tmux, { PATH: "/usr/bin:/bin", HOME: root }, root, cli);
+      const launch = new SeatLaunchEnvironment(tmux, { PATH: "/usr/bin:/bin", HOME: root, OPENRIG_HOME: path.join(root, "instance") }, root, cli);
       const step = "{ __openrig_token_step_fixture; }";
       const command = await launch.command("seat@rig", "claude --resume abc", { runtime: "claude-code", nodeId: "node", claudeTokenStep: step });
       expect(command.includes(step)).toBe(included);
