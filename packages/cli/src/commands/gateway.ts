@@ -636,7 +636,7 @@ Examples:
       if (!res.ok) { console.error(`refused: ${res.error}`); process.exitCode = 1; return; }
       // Their placement and, if it was them, the default go too; a later read would ignore them anyway, with a warning.
       const { removeParticipantEntry } = await import("@openrig/daemon/gateway-human-registry");
-      const side = removeParticipantEntry(entityId);
+      const side = removeParticipantEntry(entityId, undefined, { kind: "person" });
       console.log(JSON.stringify({ ok: true, removed: res.removed, archivedPath: res.archivedPath, ...(res.orphanRecordPath ? { orphanRecordPath: res.orphanRecordPath } : {}),
         participantFile: side.ok ? { path: side.path } : { error: side.error } }));
     });
@@ -686,7 +686,7 @@ Examples:
         process.exitCode = 1;
         return;
       }
-      const res = registry.removeParticipantEntry(id);
+      const res = registry.removeParticipantEntry(id, undefined, { kind: "shared-channel" });
       if (!res.ok) { console.error(`refused: ${res.error}`); process.exitCode = 1; return; }
       console.log(JSON.stringify({ ok: true, removed: id, path: res.path, ...(rowsRes.rows.length ? { orphanedRows: rowsRes.rows.map((r) => r.id) } : {}) }));
     });

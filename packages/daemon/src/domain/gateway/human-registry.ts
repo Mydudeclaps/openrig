@@ -273,6 +273,23 @@ export function humansDir(home: string = getOpenRigHome()): string {
 export function projectionPath(home: string = getOpenRigHome()): string {
   return join(home, "gateway", "humans.generated.yaml");
 }
+/** The participant side file (participants.ts owns its contents). Older daemons never read it. */
+export function participantsPath(home: string = getOpenRigHome()): string {
+  return join(home, "gateway", "participants.yaml");
+}
+
+/** People and shared channels share one address space (<id>@external): the shared channel registered under `entityId`,
+ *  if the participant file names one. A file that doesn't parse names none here — it never blocks registering a person,
+ *  and its own error is reported where it's read. */
+function sharedChannelWithId(entityId: string, home: string): string | null {
+  const path = participantsPath(home);
+  if (!existsSync(path)) return null;
+  let raw: unknown;
+  try { raw = parseYaml(readFileSync(path, "utf8")); } catch { return null; }
+  const entry = isObj(raw) && isObj(raw.participants) ? raw.participants[entityId] : undefined;
+  if (!isObj(entry) || entry.kind !== "shared-channel") return null;
+  return typeof entry.displayName === "string" ? entry.displayName : entityId;
+}
 
 /** @deprecated Historical spelling retained for readers of old records only.
  * Never a routing default: an address must resolve to an actual registry entity. */
@@ -424,6 +441,11 @@ export function addHumanFragment(
   const file = join(humansDir(home), `${v.fragment.entityId}.yaml`);
   if (!opts.replace && existsSync(file)) {
     return { ok: false, error: `human "${v.fragment.entityId}" already exists at ${file} — pass an explicit replace to update it (no silent overwrite)` };
+  }
+  // A person can't take a shared channel's id: they'd share <id>@external, and the participant file would stop reading.
+  const channel = sharedChannelWithId(v.fragment.entityId, home);
+  if (channel !== null) {
+    return { ok: false, error: `"${v.fragment.entityId}" is already the shared channel "${channel}" (${v.fragment.entityId}@${ADDRESS_DOMAIN}); choose another id for the person, or remove the channel first with rig gateway channel remove ${v.fragment.entityId}` };
   }
   // A6 v3 pin-1: reject a handle already claimed by a DIFFERENT human BEFORE writing (never leave a
   // conflicting fragment on disk with a failed re-projection). projectHumans is the load-time backstop.

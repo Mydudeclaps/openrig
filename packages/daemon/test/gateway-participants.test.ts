@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { addHumanFragment, humansDir, projectionPath } from "../src/domain/gateway/human-registry.js";
 import {
-  participantsPath, participantsView, readParticipantsFile, resolveDefaultPerson, updateParticipantsFile,
+  participantsPath, participantsView, readParticipantsFile, removeParticipantEntry, resolveDefaultPerson, updateParticipantsFile,
 } from "../src/domain/gateway/participants.js";
 import { projectHumans } from "../src/domain/gateway/human-registry.js";
 
@@ -48,10 +48,11 @@ describe("the participant side file", () => {
 
     const view = participantsView(home);
     if (!view.ok) throw new Error(view.error);
+    // Sorted by id, people and channels together.
     expect(view.participants.map((p) => [p.id, p.kind, p.address, p.default])).toEqual([
+      ["acme-customers", "shared-channel", "acme-customers@external", false],
       ["mike", "person", "mike@external", false],
       ["sarah", "person", "sarah@external", true],
-      ["acme-customers", "shared-channel", "acme-customers@external", false],
     ]);
     const sarah = view.participants.find((p) => p.id === "sarah")!;
     expect(sarah).toMatchObject({ organization: { id: "acme", name: "Acme" }, groups: [{ id: "support", name: "Support" }] });
@@ -129,5 +130,38 @@ describe("the participant side file", () => {
     expect(view.sideFile.error).toContain("organizations must be a mapping");
     expect(view.default).toMatchObject({ source: "none" });
     expect(projectHumans(home).ok).toBe(true);
+  });
+
+  it("refuses a person who'd take a shared channel's id, before any write: the channel, the default and the file stay intact", () => {
+    addPerson(home, "mike", "UMIKE");
+    addPerson(home, "sarah", "USARAH");
+    expect(organize().ok).toBe(true);
+    const sideBefore = readFileSync(participantsPath(home), "utf8");
+    const peopleBefore = readdirSync(humansDir(home)).sort();
+    const added = addHumanFragment({
+      entityId: "acme-customers", class: "human", displayName: "Someone", address: "acme-customers@external",
+      connectorBindings: [{ kind: "slack", connectorRef: "primary", secretsRef: "vault://slack/someone", role: "primary", handle: "USOMEONE" }],
+      prefs: { deliveryClass: "B" },
+    }, home);
+    expect(added.ok).toBe(false);
+    expect(added.ok ? "" : added.error).toContain('already the shared channel "Acme customers"');
+    expect(readdirSync(humansDir(home)).sort()).toEqual(peopleBefore);
+    expect(readFileSync(participantsPath(home), "utf8")).toBe(sideBefore);
+    const view = participantsView(home);
+    if (!view.ok) throw new Error(view.error);
+    expect(view.sideFile.error).toBeUndefined();
+    expect(view.default).toMatchObject({ source: "chosen", person: { entityId: "sarah" } });
+    expect(view.participants.find((p) => p.id === "acme-customers")?.kind).toBe("shared-channel");
+  });
+
+  it("removing a person's entry never removes a shared channel with that id", () => {
+    addPerson(home, "mike", "UMIKE");
+    addPerson(home, "sarah", "USARAH");
+    expect(organize().ok).toBe(true);
+    expect(removeParticipantEntry("acme-customers", home, { kind: "person" }).ok).toBe(true);
+    const read = readParticipantsFile(home, new Set(["mike", "sarah"]));
+    if (!read.ok) throw new Error(read.error);
+    expect(read.file.participants["acme-customers"]?.kind).toBe("shared-channel");
+    expect(read.file.default).toBe("sarah");
   });
 });

@@ -274,9 +274,11 @@ describe("rig gateway human lifecycle verbs (S12)", () => {
     logSpy.mockClear();
     await run("participants", "--json");
     const out = JSON.parse(logSpy.mock.calls.at(-1)![0] as string) as { participants: Array<Record<string, any>>; default: { id: string } };
-    expect(out.participants.map((p) => [p.id, p.kind])).toEqual([["ana", "person"], ["mike", "person"], ["acme-customers", "shared-channel"]]);
+    // Sorted by id, people and channels together.
+    expect(out.participants.map((p) => [p.id, p.kind])).toEqual([["acme-customers", "shared-channel"], ["ana", "person"], ["mike", "person"]]);
     expect(out.default).toMatchObject({ id: "ana", source: "chosen" });
-    expect(out.participants[0]!.policy.map((part: { source: string }) => part.source)).toEqual(["organization acme (Acme)", "participant"]);
+    const ana = out.participants.find((p) => p.id === "ana")!;
+    expect(ana.policy.map((part: { source: string }) => part.source)).toEqual(["organization acme (Acme)", "participant"]);
     // Nothing new went into a person's fragment: mike's is byte-identical, ana's carries v0.7.0's keys only.
     expect(readFileSync(join(humansDir(home), "mike.yaml"), "utf8")).toBe(mikeBytes);
     expect(Object.keys(parseYaml(readFileSync(join(humansDir(home), "ana.yaml"), "utf8")) as object).sort())

@@ -12,16 +12,14 @@
 // person whose fragment is gone is a warning and is ignored, never a reason to refuse the whole file.
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { getOpenRigHome } from "../../openrig-compat.js";
-import { ADDRESS_DOMAIN, ENTITY_ID_PATTERN, HANDLE_PATTERN, atomicWrite, projectHumans, type HumanFragment } from "./human-registry.js";
+import { ADDRESS_DOMAIN, ENTITY_ID_PATTERN, HANDLE_PATTERN, atomicWrite, participantsPath, projectHumans, type HumanFragment } from "./human-registry.js";
+
+// The path lives beside the person registry, which reads it to keep a person off a shared channel's id.
+export { participantsPath };
 
 export const PARTICIPANTS_FILE_VERSION = 1;
-
-export function participantsPath(home: string = getOpenRigHome()): string {
-  return join(home, "gateway", "participants.yaml");
-}
 
 export interface ParticipantOrganization { name: string; policy?: string }
 export interface ParticipantGroup { organization: string; name: string; policy?: string }
@@ -384,11 +382,16 @@ export function setSharedChannel(
 }
 
 /** Remove a participant's side-file entry (a shared channel, or a person's placement), and the default if it named
- *  them. Removing a person's fragment is `removeHumanFragment`'s job; it calls this afterwards. */
-export function removeParticipantEntry(id: string, home: string = getOpenRigHome()): UpdateParticipantsResult {
+ *  them. With `kind`, only an entry of that kind is removed: `human remove` passes "person", so it never deletes a
+ *  shared channel that happens to share the id. */
+export function removeParticipantEntry(
+  id: string,
+  home: string = getOpenRigHome(),
+  opts: { kind?: ParticipantEntry["kind"] } = {},
+): UpdateParticipantsResult {
   return updateParticipantsFile((file) => {
-    delete file.participants[id];
-    if (file.default === id) delete file.default;
+    if (!opts.kind || file.participants[id]?.kind === opts.kind) delete file.participants[id];
+    if (file.default === id && opts.kind !== "shared-channel") delete file.default;
     return file;
   }, home);
 }

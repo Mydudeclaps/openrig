@@ -70,8 +70,12 @@ never changes `workspace.operator_seat_name`, which keeps its own meaning.
 
 ## Upgrading
 
-Nothing to do. A one-person install keeps working as before: that person stays the default, pending rows keep their
-addresses, and no new file is written until you use one of the commands above.
+For a one-person install, nothing to do: it keeps working as before, that person stays the default, pending rows keep
+their addresses, and no new file is written until you use one of the commands above.
+
+**If several people are already registered** (earlier versions listed hand-added people with an advisory), choose a
+default with `rig gateway default <id>` after upgrading. Until you do, escalations report
+`undeliverable:no-default-person` instead of reaching whoever's id sorted first, and the notice digest waits.
 
 ## Rolling back to 0.7.1 or 0.7.0
 
