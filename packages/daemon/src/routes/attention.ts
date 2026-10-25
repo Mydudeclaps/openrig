@@ -90,8 +90,9 @@ export function attentionRoutes(): Hono {
           // An ask addressed to the person is answered on this row, as them: Steering's Approve, or, for an ask with questions,
           // mission control's answer (a choice, their own words, or sending a complete set's recorded answers back), which
           // Approve would close without returning. They can also open the asker's terminal (Chat). A row parked on them is
-          // resolved another way, so it carries neither.
+          // resolved with their decision in words, which unparks it for its owner.
           ...(toPerson && q.state === "pending" ? { answer: { verb: questions ? "answer" as const : "approve" as const, actorSession: q.destinationSession } } : {}),
+          ...(!toPerson && q.state === "blocked" && q.blockedOn && isHumanSeatSessionRef(q.blockedOn) ? { answer: { verb: "resolve" as const, actorSession: q.blockedOn } } : {}),
           ...(toPerson ? { asker: q.sourceSession } : {}),
           ...(questions ? { humanQuestions: questions, humanAnswers: q.humanAnswers ?? {} } : {}),
           summary: q.summary || q.body.trim().split(/\r?\n/).find(Boolean) || "Request summary unavailable", urgency: q.priority, unblocks, at: q.tsUpdated, scope: p ? `project ${p.id}` : "instance · project unknown", project: p ? { id: p.id, root: p.root } : null, source: `/api/queue/${encodeURIComponent(q.qitemId)}` };

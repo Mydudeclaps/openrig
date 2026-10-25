@@ -48,7 +48,7 @@ import {
   MissionControlActionLogError,
   type MissionControlVerb,
 } from "./mission-control-action-log.js";
-import { isHumanSeatSession } from "../human-route-enforcer.js";
+import { isHumanSeatSessionRef } from "../session-name.js";
 import { humanAnswerText, formatHumanAnswers, unansweredQuestions, type HumanAnswers } from "../human-questions.js";
 import { resolveDefaultPerson } from "../gateway/participants.js";
 
@@ -405,7 +405,8 @@ export class MissionControlWriteContract {
         { qitemId: input.qitemId },
       );
     }
-    if (source.state !== "blocked" || !isHumanSeatSession(source.blockedOn)) {
+    // Parked on a person: a legacy human seat or a registered person's address, as the Feed lists it.
+    if (source.state !== "blocked" || !source.blockedOn || !isHumanSeatSessionRef(source.blockedOn)) {
       throw new MissionControlWriteContractError(
         "qitem_not_leg1_parked",
         `verb=resolve requires a leg-1 parked qitem (state=blocked with a human-seat blocked_on); ` +

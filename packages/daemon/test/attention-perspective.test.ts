@@ -117,6 +117,14 @@ describe("the Feed shows one person's queue, or everyone's, and acts with the pr
       actingAs: { person: "mike@external", authority: "primary-user" } });
   });
 
+  it("a row parked on a person is resolved from the Feed in words, as an ask to them is answered", async () => {
+    register("mike", "sarah");
+    const work = await repo.create({ sourceSession: "orch-lead@r", destinationSession: "designer@rig", body: "Layout", summary: "Layout", nudge: false });
+    await repo.update({ qitemId: work.qitemId, actorSession: "designer@rig", state: "blocked", blockedOn: "sarah@external" } as never);
+    const item = (await read("?view=sarah")).items.find((i) => i.id === `queue:${work.qitemId}`);
+    expect(item).toMatchObject({ recipient: "sarah@external", answer: { verb: "resolve", actorSession: "sarah@external" } });
+  });
+
   it("with no registered person there is no perspective, and the Feed is as before", async () => {
     await askTo("human@host", "A seat's ask");
     const r = await read("?view=default");

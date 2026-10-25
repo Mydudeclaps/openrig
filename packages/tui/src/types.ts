@@ -576,7 +576,7 @@ export type Action =
   | { type: "act"; act: "run"; rigId: string; agent: string }
   /** Answer a request on its own row, as the person the Feed served: Steering's Approve, or a choice
    * (questionId + optionId) or their own words (decision) through mission control's answer. */
-  | { type: "act"; act: "answer"; qitemId: string; verb: "approve" | "answer"; actorSession: string; questionId?: string; optionId?: string; decision?: string }
+  | { type: "act"; act: "answer"; qitemId: string; verb: "approve" | "answer" | "resolve"; actorSession: string; questionId?: string; optionId?: string; decision?: string }
   /** Answer the open request in your own words (the `reply` command); main resolves it to the served answer act. */
   | { type: "attention-reply"; text: string }
   | { type: "notice"; message: string };

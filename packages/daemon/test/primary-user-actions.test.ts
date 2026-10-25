@@ -103,6 +103,16 @@ describe("the primary user acts on anyone's ask, recorded as themselves on that 
     expect(audit(work.qitemId).notes).toEqual({ authority: "primary-user", asked: "human-sarah@host" });
   });
 
+  it("resolves a row parked on a registered person's address, which the Feed lists, and only with the authority", async () => {
+    register("mike", "sarah"); expect(setDefaultPerson("mike", home).ok).toBe(true);
+    const work = await repo.create({ sourceSession: ASKER, destinationSession: "designer@rig", body: "Layout", summary: "Layout", nudge: false });
+    await repo.update({ qitemId: work.qitemId, actorSession: "designer@rig", state: "blocked", blockedOn: "sarah@external" } as never);
+    expect(await act({ verb: "resolve", qitemId: work.qitemId, actorSession: "mike@external", decision: "Wide" })).toMatchObject({ status: 400, body: { error: "answer_not_recorded" } });
+    expect((await act({ verb: "resolve", qitemId: work.qitemId, actorSession: "mike@external", authority: "primary-user", decision: "Wide" })).status).toBe(200);
+    expect(lastTransition(work.qitemId)).toMatchObject({ state: "in-progress", actor_session: "mike@external",
+      transition_note: "Wide; by mike@external, the primary user at the terminal, on sarah@external's ask" });
+  });
+
   it("with several people and no default, the primary user is unnamed and recorded as the generic human seat", async () => {
     register("mike", "sarah");
     const sarahs = await ask("sarah@external");

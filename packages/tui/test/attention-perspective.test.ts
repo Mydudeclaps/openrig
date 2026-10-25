@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import { DaemonClient } from "../src/daemon-client.js";
 import { hydrateSnapshot } from "../src/hydrate.js";
 import { createViewState, emptySnapshot } from "../src/state.js";
-import { attentionLines, opensOnDefaultFeed, answerRequest } from "../src/attention/attention-model.js";
+import { attentionLines, opensOnDefaultFeed, answerRequest, replyAct } from "../src/attention/attention-model.js";
 import { parseCommand } from "../src/grammar.js";
 import type { AttentionRead } from "@openrig/daemon/attention";
 import type { Action, FleetSnapshot } from "../src/types.js";
@@ -92,4 +92,17 @@ it("an act on someone else's ask says who acts and whose ask it is, and carries 
     { verb: "approve", qitemId: "sarahs", actorSession: "sarah@external", authority: "primary-user" });
   // With no one registered, the label is as before.
   expect(approve(served()).text).toContain("Approve as sarah@external (closes");
+});
+
+it("a row parked on someone is resolved with reply, in words, as the primary user", () => {
+  const item = { id: "queue:parked", kind: "action" as const, summary: "Layout", unblocks: "Layout", urgency: "routine", at: "2026-10-25T10:00:00Z",
+    scope: "instance · project unknown", project: null, source: "/api/queue/parked", recipient: "sarah@external",
+    answer: { verb: "resolve" as const, actorSession: "sarah@external" } };
+  const snap: FleetSnapshot = { ...emptySnapshot(), attentionRead: { ...read(perspective("sarah@external", "chosen-here")), items: [item], detail: { item, lines: [], files: [] } } };
+  const state = { ...createViewState({ instanceId: "perspective" }).get(), section: "needs", attentionOpen: item.id };
+  const text = attentionLines(state, snap, 160).map(l => l.text).join("\n");
+  expect(text).toContain("Resolve it in your own words: reply <your decision>, as mike@external on sarah@external's ask");
+  const act = replyAct(snap.attentionRead, item.id, "Use the wide layout");
+  expect(act).toEqual({ type: "act", act: "answer", qitemId: "parked", verb: "resolve", actorSession: "sarah@external", decision: "Use the wide layout" });
+  expect(answerRequest(act as Extract<Action, { type: "act"; act: "answer" }>)).toMatchObject({ verb: "resolve", decision: "Use the wide layout", authority: "primary-user" });
 });

@@ -70,7 +70,9 @@ export function attentionLines(state: ViewState, snap: FleetSnapshot, width: num
         const actor = actingAs(read, actorSession);
         const as = `as ${actor}${d.item.recipient && d.item.recipient !== actor && read.perspective ? ` on ${d.item.recipient}'s ask` : ""}`;
         const open = (d.item.humanQuestions ?? []).filter(q => answerOf(d.item, q.id) == null);
-        if (verb === "approve") {
+        if (verb === "resolve") {
+          lines.push({ text: `Resolve it in your own words: reply <your decision>, ${as} (it unparks the row for its owner).` });
+        } else if (verb === "approve") {
           lines.push(listItem(`Approve ${as} (closes this request, as Steering's Approve does)`, { type: "act", act: "answer", qitemId, verb, actorSession }));
         } else if (!open.length) {
           lines.push(listItem(`Send the recorded answers back to ${d.item.asker ?? "the asker"} and close this request`, { type: "act", act: "answer", qitemId, verb, actorSession }));
@@ -79,7 +81,7 @@ export function attentionLines(state: ViewState, snap: FleetSnapshot, width: num
             for (const o of q.options) lines.push(listItem(`Answer "${q.question}": ${o.label}${o.recommended ? " (recommended)" : ""}`,
               { type: "act", act: "answer", qitemId, verb, actorSession, questionId: q.id, optionId: o.id }));
         }
-        if (verb === "approve" || open.length) {
+        if (verb !== "resolve" && (verb === "approve" || open.length)) {
           lines.push({ text: `Or answer in your own words: reply <text>, ${as}${verb === "answer" ? " (it fills the first unanswered question and closes the request)" : ""}.` });
         }
       }
@@ -145,7 +147,8 @@ export function replyAct(read: AttentionRead | null | undefined, openId: string 
   if (!item?.answer || item.id !== openId || !item.id.startsWith("queue:") || !text.trim()) {
     return { type: "notice", message: "reply answers the open request addressed to a person: open it in the Feed, then reply <your words>." };
   }
-  return { type: "act", act: "answer", qitemId: item.id.slice("queue:".length), verb: "answer", actorSession: item.answer.actorSession, decision: text.trim() };
+  return { type: "act", act: "answer", qitemId: item.id.slice("queue:".length), verb: item.answer.verb === "resolve" ? "resolve" : "answer",
+    actorSession: item.answer.actorSession, decision: text.trim() };
 }
 
 /** A question's recorded answer, by own key only (a question id like "constructor" isn't an answer). */
