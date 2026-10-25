@@ -22,7 +22,7 @@ export const USAGE_ACROSS_HOSTS_REFRESH_TIMEOUT_MS = 75_000;
 
 type Peer = { logicalId: string; sessionName: string | null; home?: "same" | "different" | "unknown"; effect: string; step?: string };
 type SeatView = { home?: string; activity?: string; peers: Peer[] };
-type SwitchReport = { home: string; account: string; loginChanged: boolean; undo: string | null; peers: Peer[];
+type SwitchReport = { home?: string; account: string; tokenFile?: string; conversation?: string | null; loginChanged: boolean; undo: string | null; peers: Peer[];
   restart?: { recoveryCommand?: string }; next?: string };
 
 // A switch waits as long as `rig seat restart` does: the seat's in-place restart runs inside it.
@@ -36,6 +36,22 @@ function printSeat(seat: SeatView): void {
     console.log(`${where}: ${peer.sessionName ?? peer.logicalId}: ${peer.effect}`);
     if (peer.step) console.log(`  then: ${peer.step}`);
   }
+}
+
+type AccountOpts = { toAccount?: string; tokenFile?: string; storedLogin?: boolean };
+
+/** The account a switch names: a Codex login's saved name, a Claude token's label with its file, or a Claude seat's stored
+ *  login. Null when neither --to-account nor --stored-login was given. */
+function targetAccount(opts: AccountOpts): { toAccount: string; tokenFile?: string | null } | null {
+  if (opts.storedLogin) return { toAccount: "stored-login", tokenFile: null };
+  if (!opts.toAccount) return null;
+  return { toAccount: opts.toAccount, ...(opts.tokenFile !== undefined ? { tokenFile: opts.tokenFile } : {}) };
+}
+
+function printClaude(claude: { label: string; tokenFile: string | null; checked: string[]; notChecked: string[] }): void {
+  console.log(`Claude token: ${claude.tokenFile ? `"${claude.label}", read from ${claude.tokenFile} when Claude starts` : "none (the config dir's stored login)"}`);
+  if (claude.checked.length) console.log(`checked for anything that outranks it: ${claude.checked.join("; ")}`);
+  if (claude.notChecked.length) console.log(`not checked (the seat's /status shows what it uses): ${claude.notChecked.join("; ")}`);
 }
 
 export function providerCommand(depsOverride?: StatusDeps): Command {
@@ -491,31 +507,44 @@ export function providerCommand(depsOverride?: StatusDeps): Command {
     .command("precheck")
     .description("Whether a seat can move to a login: its in-place restart plan (nothing is stopped) and the login saved in the Codex home it runs on")
     .requiredOption("--seat <s>", "The seat session")
-    .requiredOption("--to-account <a>", "The login's saved name in the seat's Codex home (rig auth list --codex-home <home>)")
+    .option("--to-account <a>", "Codex: the login's saved name in the seat's Codex home (rig auth list --codex-home <home>). Claude: your label for the token")
+    .option("--token-file <path>", "Claude: the absolute path of a 0600 file holding the seat's own subscription token; it's read only as Claude starts")
+    .option("--stored-login", "Claude: move the seat back to its config dir's stored login")
     .option("--json", "Output as parseable JSON")
-    .action(async (opts: { seat: string; toAccount: string; json?: boolean }) => {
+    .action(async (opts: AccountOpts & { seat: string; json?: boolean }) => {
+      const target = targetAccount(opts);
+      if (!target) {
+        console.error("Name the account: --to-account <name> (with --token-file <path> for a Claude seat), or --stored-login for a Claude seat.");
+        process.exitCode = 1;
+        return;
+      }
       const client = await getClient(getDeps());
       if (!client) {
         process.exitCode = 1;
         return;
       }
-      const qs = new URLSearchParams({ seat: opts.seat, toAccount: opts.toAccount });
-      const res = await client.get<{ safe: boolean; reasons?: string[]; message?: string; seat?: SeatView }>(`/api/provider/precheck?${qs.toString()}`);
+      const qs = new URLSearchParams({ seat: opts.seat, toAccount: target.toAccount,
+        ...(target.tokenFile === null ? { storedLogin: "1" } : target.tokenFile !== undefined ? { tokenFile: target.tokenFile } : {}) });
+      const res = await client.get<{ safe: boolean; reasons?: string[]; message?: string; seat?: SeatView;
+        claude?: Parameters<typeof printClaude>[0] }>(`/api/provider/precheck?${qs.toString()}`);
       if (handleHttpError(res, "precheck")) return;
       if (opts.json) console.log(JSON.stringify(res.data));
       else {
         console.log(res.data.safe ? "SAFE" : `UNSAFE: ${(res.data.reasons ?? []).join(", ")}`);
         if (res.data.message) console.log(res.data.message);
         if (res.data.seat) printSeat(res.data.seat);
+        if (res.data.claude) printClaude(res.data.claude);
       }
       if (!res.data.safe) process.exitCode = 1; // let scripts gate on an unsafe verdict
     });
 
   cmd
     .command("switch")
-    .description("Move one Codex seat to another login saved in the Codex home it runs on, keeping its conversation (Codex only, Linux only)")
+    .description("Move one seat to another subscription login, keeping its conversation: a Codex seat to a login saved in its Codex home (Linux only), a Claude seat to its own token file")
     .requiredOption("--seat <s>", "The seat session")
-    .requiredOption("--to-account <a>", "The login's saved name in the seat's Codex home (rig auth list --codex-home <home>)")
+    .option("--to-account <a>", "Codex: the login's saved name in the seat's Codex home (rig auth list --codex-home <home>). Claude: your label for the token")
+    .option("--token-file <path>", "Claude: the absolute path of a 0600 file holding the seat's own subscription token; it's read only as Claude starts")
+    .option("--stored-login", "Claude: move the seat back to its config dir's stored login")
     .option("--force-unsafe", "Kept for scripts; a seat's checks can't be overridden, since each means nothing safe to restart or no such login")
     .option("--json", "Output as parseable JSON")
     .addHelpText("after", `
@@ -528,11 +557,28 @@ Codex stops it with "signed in to another account" until it's restarted, so the 
 time per home. The account isn't verified until the seat completes a tool turn: run the printed rig seat restart
 --keep-conversation --verify --expect-account. An uncertain restart is reported, never retried.
 
-Limits of this first increment:
-- Codex seats only. A Claude seat is refused (rebind_unsupported_for_runtime).
+Codex limits:
 - Linux only: the in-place restart reads the running process from /proc, so elsewhere it refuses before anything changes.
-- Same home: the login must already be saved in the home the seat runs on; the seat doesn't move to another home.`)
-    .action(async (opts: { seat: string; toAccount: string; forceUnsafe?: boolean; json?: boolean }) => {
+- Same home: the login must already be saved in the home the seat runs on; the seat doesn't move to another home.
+
+A Claude seat keeps its config dir and gets its own subscription token: --to-account <your label> --token-file <absolute path
+to a 0600 file holding the token>. Only the path is kept, as the seat's reference; the launch reads the file as Claude starts,
+so the token never passes through OpenRig. First the daemon checks that the file would apply and that nothing Claude Code ranks
+above the token is set (a cloud provider, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_API_KEY, an apiKeyHelper), and refuses with each one
+and its remedy if it is. It takes a snapshot and checks that the snapshot resumes the seat's conversation. Then it sets the
+reference, stops the seat (rig seat stop) and launches it from that snapshot (rig launch <rig> <seat> --snapshot-id), which
+resumes the same conversation in a new tmux session at the same address. Work in flight when it stopped doesn't carry over.
+Seats sharing the config dir keep their own login: Claude Code reads the token from that one process's environment and doesn't
+save it. A token-authenticated seat can make model requests but can't use claude.ai connectors or Remote Control; its local MCP
+servers still work. --stored-login moves it back to the config dir's stored login. Claude's /status shows token auth with no
+account email, so the label is yours, not an observed account.`)
+    .action(async (opts: AccountOpts & { seat: string; forceUnsafe?: boolean; json?: boolean }) => {
+      const target = targetAccount(opts);
+      if (!target) {
+        console.error("Name the account: --to-account <name> (with --token-file <path> for a Claude seat), or --stored-login for a Claude seat.");
+        process.exitCode = 1;
+        return;
+      }
       const client = await getClient(getDeps());
       if (!client) {
         process.exitCode = 1;
@@ -543,14 +589,14 @@ Limits of this first increment:
       try {
         res = await client.post<SwitchResponse["data"]>("/api/provider/switch", {
           seat: opts.seat,
-          toAccount: opts.toAccount,
+          ...target,
           forceUnsafe: opts.forceUnsafe ?? false,
         }, { timeoutMs: SWITCH_TIMEOUT_MS });
       } catch (err) {
         if (!(err instanceof DaemonTimeoutError)) throw err;
         // The daemon may still be switching: a timeout is neither a failure nor a reason to send it again.
         res = { status: 200, data: { outcome: "unknown", reasons: ["switch_outcome_unknown"],
-          message: `The CLI timed out waiting for the daemon; the switch may still be in progress. Check before running it again: rig seat restart ${opts.seat} --keep-conversation --plan refuses with restart_in_progress while the seat restarts, then shows its result as lastRestart.` } };
+          message: `The CLI timed out waiting for the daemon; the switch may still be in progress. Check before running it again: rig seat status ${opts.seat} shows whether the seat runs, and for a Codex seat rig seat restart ${opts.seat} --keep-conversation --plan refuses with restart_in_progress while the seat restarts, then shows its result as lastRestart.` } };
       }
       if (handleHttpError(res, "switch")) return;
       if (opts.json) console.log(JSON.stringify(res.data));
@@ -558,9 +604,15 @@ Limits of this first increment:
         const { outcome, reasons, message, seat } = res.data;
         console.log(reasons?.length ? `${outcome ?? "unknown"}: ${reasons.join(", ")}` : outcome ?? "unknown");
         if (message) console.log(message);
-        if (seat) {
+        if (seat?.home) {
           console.log(`home: ${seat.home}${seat.loginChanged ? ` (now "${seat.account}")` : ""}`);
           if (seat.undo) console.log(`to switch the home back: ${seat.undo}`);
+        } else if (seat) {
+          console.log(`Claude token: ${seat.tokenFile ? `"${seat.account}", read from ${seat.tokenFile}` : "the config dir's stored login"}${seat.loginChanged ? " (set)" : ""}`);
+          if (seat.conversation) console.log(`conversation: ${seat.conversation}`);
+          if (seat.undo) console.log(`to switch back: ${seat.undo}`);
+        }
+        if (seat) {
           if (seat.restart?.recoveryCommand) console.log(`recovery: ${seat.restart.recoveryCommand}`);
           printSeat({ peers: seat.peers });
           if (seat.next) console.log(`next: ${seat.next}`);

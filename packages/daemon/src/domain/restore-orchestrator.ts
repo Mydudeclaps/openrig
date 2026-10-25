@@ -142,7 +142,7 @@ function seatFacts(data: SnapshotData, nodeId: string, savedRuntime: string | nu
 /** What `rig launch` does for this node from this snapshot without --fresh, read as the restore path reads it: the
  *  occupant, then the pre-launch stop-and-ask check, then the resume decision (restoreNodeWithCompensation and the
  *  resume step after it). An exited agent's message offers stop-then-launch as a resume only when this says so. */
-function snapshotLaunchOutcome(data: SnapshotData, nodeId: string, runtime: string | null, savedRuntime: string | null):
+export function snapshotLaunchOutcome(data: SnapshotData, nodeId: string, runtime: string | null, savedRuntime: string | null):
   { kind: "resume" } | { kind: "fresh" | "decision" | "unrecoverable"; why: string } {
   const occupant = resolveActiveSnapshotSession(data, nodeId);
   if (occupant.kind === "ambiguous") return { kind: "unrecoverable", why: "can't tell which saved session is this seat's" };

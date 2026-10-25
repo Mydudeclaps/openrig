@@ -1399,6 +1399,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
         legacyProviderUsageDirectory(OPENRIG_HOME),
       ),
       agentActivityStore,
+      // A Claude seat switch checks what would outrank the seat's own token before it stops anything.
+      claudePrecedence: (nodeId: string) => claudeManagedLaunch.credentialPrecedence(nodeId),
       // Slice 01: Codex and Claude usage windows, off unless provider.usage_windows is on (read per call). The native
       // readers (Codex's app-server; Claude's auth status, for identity) run only on an explicit refresh, with the
       // PATH, HOME, CODEX_HOME and CLAUDE_CONFIG_DIR a seat session gets. Claude's windows are the seats' status-line
