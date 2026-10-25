@@ -371,11 +371,11 @@ function looksLikeClaudeResumeSelectionPrompt(paneContent: string): boolean {
   return lastOption >= 0 && !claudeDrawnAfter(drawn.slice(lastOption + 1)) && !hasClaudeInputFrame(drawn.slice(verb + 1));
 }
 
-/** Claude's own UI drawn after a chooser's options: its composer (a ❯ row that isn't a numbered option, or any ❯ row
- *  inside its input frame), its version header or a reply. Hint rows and blank rows under the options belong to the chooser. */
+/** Claude's own UI drawn after a chooser's options: its framed input box, its version header or a reply. A bare ❯ row
+ *  doesn't count: it can sit under a live chooser, and a missed chooser reads resumed. Hint rows and blank rows under the
+ *  options belong to the chooser. */
 function claudeDrawnAfter(rows: string[]): boolean {
-  return hasClaudeInputFrame(rows) || rows.some((line) => (/^\s*❯/.test(line) && !/^\s*❯\s*\d+\.\s/.test(line))
-    || line.includes("Claude Code v") || /^[●⏺]/.test(line));
+  return hasClaudeInputFrame(rows) || rows.some((line) => line.includes("Claude Code v") || /^[●⏺]/.test(line));
 }
 
 // On a named session Claude labels the frame's top rule (`─────…── probe-claude@rig ─`), so a rule may carry text after a space.

@@ -992,6 +992,17 @@ describe("native resume probe", () => {
         .toMatchObject({ status: "attention_required", code: "claude_resume_selection_prompt" });
     });
 
+    // A bare ❯ row and a mode footer under a live chooser (restore-orchestrator's headerless chooser screen) aren't Claude's
+    // framed input box, so the chooser stands.
+    it.each([
+      ["conversation list", "Choose a conversation to resume:\n  1. example"],
+      ["two-choice", "How would you like to resume?\n\n❯ Resume from summary\n  Resume full session as-is"],
+    ])("keeps a live %s with a bare ❯ row and a mode footer under it a chooser", (_shape, chooser) => {
+      const paneContent = `${chooser}\n❯ \n  ⏵⏵ bypass permissions on (shift+tab to cycle)\n`;
+      expect(assessNativeResumeProbe({ runtime: "claude-code", paneCommand: "claude", paneContent }))
+        .toMatchObject({ status: "attention_required", code: "claude_resume_selection_prompt" });
+    });
+
     it("keeps a ❯ row that isn't inside Claude's input frame an option, not a composer", () => {
       const paneContent = "Choose a conversation to resume:\n\n  1. project-foo\n  2. project-bar\n❯ 3. project-baz\n\nEnter a number, or press q to cancel.\n";
       expect(assessNativeResumeProbe({ runtime: "claude-code", paneCommand: "claude", paneContent }))
