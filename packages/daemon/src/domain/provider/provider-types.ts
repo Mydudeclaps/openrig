@@ -18,6 +18,7 @@ export interface ProviderAccount {
 }
 
 import type { HostUsageRow } from "./host-usage-rollup.js";
+import type { PeerReport } from "../seat-restart-in-place.js";
 
 export type BindingAnomalyKind = "same_account_on_n_seats" | "seat_with_no_account";
 
@@ -127,11 +128,22 @@ export type PrecheckReason =
   | "target_needs_reauth" // target authState === "needs_reauth"
   | "target_auth_unknown" // target authState === "unknown" — fails closed, NOT relabeled as re-auth
   | "signal_unknown_or_stale"
-  | "rebind_unsupported_for_runtime";
+  | "rebind_unsupported_for_runtime"
+  | "seat_restart_refused" // the seat's in-place restart plan refused, so nothing would change
+  | "target_not_in_seat_home"; // no login by that name is saved in the Codex home the seat runs on
 
-export type PrecheckResult = { safe: true } | { safe: false; reasons: PrecheckReason[] };
+/** What a seat-aware precheck saw: the Codex home the seat runs on, what the seat is doing, and its peers on that home. */
+export interface SeatSwitchView {
+  home: string;
+  activity: string;
+  peers: PeerReport[];
+}
 
-export type SwitchOutcome = "succeeded" | "rebind_in_progress" | "failed_safely";
+export type PrecheckResult =
+  | { safe: true; seat?: SeatSwitchView }
+  | { safe: false; reasons: PrecheckReason[]; message?: string; seat?: SeatSwitchView };
+
+export type SwitchOutcome = "succeeded" | "rebind_in_progress" | "failed_safely" | "unknown";
 
 /** The whole four-block read model, emitted by `rig provider status --json`. */
 export interface FourBlockReadModel {

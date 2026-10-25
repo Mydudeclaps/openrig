@@ -20,9 +20,20 @@ export const USAGE_ACROSS_HOSTS_READ_TIMEOUT_MS = 20_000;
 // deadline: 50 s + 15 s + a 10 s margin = 75 s.
 export const USAGE_ACROSS_HOSTS_REFRESH_TIMEOUT_MS = 75_000;
 
+type Peer = { logicalId: string; sessionName: string | null; effect: string };
+type SeatView = { home?: string; activity?: string; peers: Peer[] };
+type SwitchReport = { home: string; account: string; loginChanged: boolean; undo: string | null; peers: Peer[];
+  restart?: { recoveryCommand?: string }; next?: string };
+
+function printSeat(seat: SeatView): void {
+  if (seat.home) console.log(`home: ${seat.home}`);
+  if (seat.activity) console.log(`seat activity: ${seat.activity}`);
+  for (const peer of seat.peers) console.log(`peer on this home: ${peer.sessionName ?? peer.logicalId}: ${peer.effect}`);
+}
+
 export function providerCommand(depsOverride?: StatusDeps): Command {
   const cmd = new Command("provider").description(
-    "Provider accounts and usage signals, plus a switch precheck (switching itself isn't carried out yet)",
+    "Provider accounts and usage signals, and moving one Codex seat to another login saved in its Codex home",
   );
   const getDeps = (): StatusDeps =>
     depsOverride ?? { lifecycleDeps: realDeps(), clientFactory: (url: string) => new DaemonClient(url) };
@@ -471,9 +482,9 @@ export function providerCommand(depsOverride?: StatusDeps): Command {
 
   cmd
     .command("precheck")
-    .description("Whether switching a seat to an account is safe (never offers an unsafe switch)")
+    .description("Whether a seat can move to a login: its in-place restart plan (nothing is stopped) and the login saved in the Codex home it runs on")
     .requiredOption("--seat <s>", "The seat session")
-    .requiredOption("--to-account <a>", "The target account ref")
+    .requiredOption("--to-account <a>", "The login's saved name in the seat's Codex home (rig auth list --codex-home <home>)")
     .option("--json", "Output as parseable JSON")
     .action(async (opts: { seat: string; toAccount: string; json?: boolean }) => {
       const client = await getClient(getDeps());
@@ -482,35 +493,61 @@ export function providerCommand(depsOverride?: StatusDeps): Command {
         return;
       }
       const qs = new URLSearchParams({ seat: opts.seat, toAccount: opts.toAccount });
-      const res = await client.get<{ safe: boolean; reasons?: string[] }>(`/api/provider/precheck?${qs.toString()}`);
+      const res = await client.get<{ safe: boolean; reasons?: string[]; message?: string; seat?: SeatView }>(`/api/provider/precheck?${qs.toString()}`);
       if (handleHttpError(res, "precheck")) return;
       if (opts.json) console.log(JSON.stringify(res.data));
-      else console.log(res.data.safe ? "SAFE" : `UNSAFE: ${(res.data.reasons ?? []).join(", ")}`);
+      else {
+        console.log(res.data.safe ? "SAFE" : `UNSAFE: ${(res.data.reasons ?? []).join(", ")}`);
+        if (res.data.message) console.log(res.data.message);
+        if (res.data.seat) printSeat(res.data.seat);
+      }
       if (!res.data.safe) process.exitCode = 1; // let scripts gate on an unsafe verdict
     });
 
   cmd
     .command("switch")
-    .description("Request a seat's switch to an account. Not carried out yet: the daemon runs the precheck and answers failed_safely (reasons in --json), so no account changes")
+    .description("Move one Codex seat to another login saved in the Codex home it runs on, keeping its conversation (Codex only, Linux only)")
     .requiredOption("--seat <s>", "The seat session")
-    .requiredOption("--to-account <a>", "The target account ref")
-    .option("--force-unsafe", "Skip the precheck's refusal; the switch still isn't carried out (switch_execution_not_yet_wired)")
+    .requiredOption("--to-account <a>", "The login's saved name in the seat's Codex home (rig auth list --codex-home <home>)")
+    .option("--force-unsafe", "Kept for scripts; a seat's checks can't be overridden, since each means nothing safe to restart or no such login")
     .option("--json", "Output as parseable JSON")
+    .addHelpText("after", `
+The daemon plans the seat's in-place restart first (rig seat restart --plan), so a refusal changes nothing. It then saves the
+home's current login as before-switch-<time>, activates the chosen one there (rig auth switch), and restarts the seat in place
+with the same conversation, pane and launch settings. Every seat on that home shares its login, so peers are listed: they're
+not restarted, and pick up the login at their next start. The account isn't verified until the seat completes a tool turn:
+run the printed rig seat restart --keep-conversation --verify --expect-account. An uncertain restart is reported, never retried.
+
+Limits of this first increment:
+- Codex seats only. A Claude seat is refused (rebind_unsupported_for_runtime).
+- Linux only: the in-place restart reads the running process from /proc, so elsewhere it refuses before anything changes.
+- Same home: the login must already be saved in the home the seat runs on; the seat doesn't move to another home.`)
     .action(async (opts: { seat: string; toAccount: string; forceUnsafe?: boolean; json?: boolean }) => {
       const client = await getClient(getDeps());
       if (!client) {
         process.exitCode = 1;
         return;
       }
-      const res = await client.post<{ outcome?: string; reasons?: string[] }>("/api/provider/switch", {
+      const res = await client.post<{ outcome?: string; reasons?: string[]; message?: string; seat?: SwitchReport }>("/api/provider/switch", {
         seat: opts.seat,
         toAccount: opts.toAccount,
         forceUnsafe: opts.forceUnsafe ?? false,
       });
       if (handleHttpError(res, "switch")) return;
       if (opts.json) console.log(JSON.stringify(res.data));
-      else console.log(res.data.outcome ?? "unknown");
-      if (res.data.outcome === "failed_safely") process.exitCode = 1;
+      else {
+        const { outcome, reasons, message, seat } = res.data;
+        console.log(reasons?.length ? `${outcome ?? "unknown"}: ${reasons.join(", ")}` : outcome ?? "unknown");
+        if (message) console.log(message);
+        if (seat) {
+          console.log(`home: ${seat.home}${seat.loginChanged ? ` (now "${seat.account}")` : ""}`);
+          if (seat.undo) console.log(`to switch the home back: ${seat.undo}`);
+          if (seat.restart?.recoveryCommand) console.log(`recovery: ${seat.restart.recoveryCommand}`);
+          printSeat({ peers: seat.peers });
+          if (seat.next) console.log(`next: ${seat.next}`);
+        }
+      }
+      if (res.data.outcome !== "rebind_in_progress" && res.data.outcome !== "succeeded") process.exitCode = 1;
     });
 
   // Slice 18 — subscription move reports: what the agent that moved a Codex home reports, kept as queue items tagged
