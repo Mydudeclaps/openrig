@@ -3,7 +3,7 @@ import { terminalPolicySchema } from "../../src/db/migrations/128_terminal_polic
 import { seatRuntimeSwitchesSchema } from "../../src/db/migrations/132_seat_runtime_switches.js";
 import { seatIdentityPanePidSchema } from "../../src/db/migrations/119_seat_identity_pane_pid.js";
 import { seatIdentityProcessEvidenceSchema } from "../../src/db/migrations/135_seat_identity_process_evidence.js";
-import { nodeClaudeTokenRefSchema } from "../../src/db/migrations/136_node_claude_token_ref.js";
+import { nodeClaudeTokenRefSchema } from "../../src/db/migrations/138_node_claude_token_ref.js";
 import { rigStartupLayersSchema } from "../../src/db/migrations/121_rig_startup_layers.js";
 import { humanOperatingModesSchema } from "../../src/db/migrations/122_human_operating_modes.js";
 import { queueDelegatedDecisionSchema } from "../../src/db/migrations/123_queue_delegated_decision.js";

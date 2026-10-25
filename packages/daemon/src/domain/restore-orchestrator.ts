@@ -1985,6 +1985,7 @@ export class RestoreOrchestrator {
         if (notice) warnings?.push(`${sessionName}: ${notice}`);
         const planNote = planModelAliasNotice("claude-code", { model, permissionMode }, sessionName);
         if (planNote) warnings?.push(`${sessionName}: ${planNote}`);
+        for (const note of result.warnings ?? []) warnings?.push(`${sessionName}: ${note}`);
         if (result.appliedLaunch && launchGeneration) this.appliedLaunchStore.recordGeneration(launchGeneration, result.appliedLaunch);
         return { kind: "resumed", ...(result.launchedProcess ? { launchedProcess: result.launchedProcess } : {}) };
       }

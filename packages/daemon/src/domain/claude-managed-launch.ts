@@ -12,7 +12,7 @@ import { parseClaudePermissionModes } from "./permission-drift.js";
 import { validateNativePermissionSelection } from "./native-permission-selection.js";
 import { seatLaunchAdditionsForLaunch } from "./seat-launch-additions.js";
 import { effectiveRuntimeHome } from "./seat-runtime-home.js";
-import { claudeSeatTokenStep, readClaudeSeatTokenRef } from "./claude-seat-token.js";
+import { claudeSeatTokenFallbackNotice, claudeSeatTokenFileProblem, claudeSeatTokenStep, readClaudeSeatTokenRef, type ClaudeSeatTokenRef } from "./claude-seat-token.js";
 import { OUTRANKING_TOKEN_ENV, projectRootForLocalSettings, settingsFileConflicts, type CredentialConflict, type CredentialPrecedence } from "./claude-credential-precedence.js";
 
 export interface ClaudeLaunchTarget {
@@ -123,6 +123,16 @@ export class ClaudeManagedLaunch {
     return row;
   }
 
+  /** The launch step that gives the seat's Claude its own subscription token (`rig provider switch --seat`), and the
+   *  launch's warning when the file won't apply (checked without reading it); null for a seat without a reference.
+   *  Launches without an explicit permission mode use it too, through the seat launch environment. */
+  seatTokenLaunch(nodeId: string): { ref: ClaudeSeatTokenRef; step: string; warnings: readonly string[] } | null {
+    const ref = readClaudeSeatTokenRef(this.db, nodeId);
+    if (!ref) return null;
+    const problem = claudeSeatTokenFileProblem(ref);
+    return { ref, step: claudeSeatTokenStep(ref, shellQuote), warnings: Object.freeze(problem ? [claudeSeatTokenFallbackNotice(ref, problem)] : []) };
+  }
+
   /** What would outrank the seat's own subscription token at its next managed launch: names its launch environment
    *  carries, and the settings files it loads. Managed settings (a file, MDM or the server) aren't read; the restarted
    *  seat's /status is the evidence for those. */
@@ -220,6 +230,8 @@ export class ClaudeManagedLaunch {
 
   async prepare(request: ClaudeLaunchTarget, mode: string): Promise<{
     assertCurrent: () => void; command: (args: readonly string[], launchEnv?: Readonly<Record<string, string>>) => string; configDir: string; executable: string; executableIsScript: boolean;
+    /** Launch notes for the person, such as a seat token that won't apply. */
+    warnings: readonly string[];
   }> {
     const target = Object.freeze({ ...request, ...(request.runtimeSwitch ? { runtimeSwitch: Object.freeze({ ...request.runtimeSwitch }) } : {}) });
     const switching = target.runtimeSwitch;
@@ -288,9 +300,10 @@ export class ClaudeManagedLaunch {
     terminal.push(`if [ -n "$${WAYLAND_DISPLAY_VAR}" ]; then export WAYLAND_DISPLAY="$${WAYLAND_DISPLAY_VAR}";${otherwise("WAYLAND_DISPLAY")} fi`);
     // A seat's own subscription token (rig provider switch --seat) is read from its file as Claude starts, after the
     // environment is reduced, so the value never passes through OpenRig; an unreadable file stops the launch.
-    const tokenRef = readClaudeSeatTokenRef(this.db, target.nodeId);
-    const tokenStep = tokenRef ? `${claudeSeatTokenStep(tokenRef, shellQuote)} && ` : "";
-    return Object.freeze({ assertCurrent, configDir: context.configDir, executable: context.executable, executableIsScript: context.executableIsScript, command: (args: readonly string[], launchEnv: Readonly<Record<string, string>> = {}) => {
+    const token = this.seatTokenLaunch(target.nodeId);
+    const tokenStep = token ? `${token.step} && ` : "";
+    const warnings = token?.warnings ?? Object.freeze([]);
+    return Object.freeze({ assertCurrent, warnings, configDir: context.configDir, executable: context.executable, executableIsScript: context.executableIsScript, command: (args: readonly string[], launchEnv: Readonly<Record<string, string>> = {}) => {
       assertCurrent();
       const launch = Object.entries(launchEnv).map(([key, value]) => `export ${shellQuote(`${key}=${value}`)}`);
       const keep = [...selectedKeys, ...terminalKeys, "WAYLAND_DISPLAY", ...Object.keys(launchEnv)];

@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import fs from "node:fs";
 import path from "node:path";
 
 /** A Claude seat's own subscription credential: an operator label and an absolute token-file path. A reference only: the
@@ -38,11 +39,30 @@ export function readClaudeSeatTokenRef(db: Database.Database, nodeId: string): C
   return parseClaudeSeatTokenRef(row?.ref);
 }
 
+/** Why the seat's token file won't give Claude its token at the next launch, or null when it's readable and not empty. It
+ *  checks the file without reading its contents. */
+export function claudeSeatTokenFileProblem(ref: ClaudeSeatTokenRef): string | null {
+  let stat: fs.Stats;
+  try { stat = fs.statSync(ref.tokenFile); } catch { return `the token file ${ref.tokenFile} doesn't exist`; }
+  if (!stat.isFile()) return `${ref.tokenFile} isn't a regular file`;
+  if (stat.size === 0) return `the token file ${ref.tokenFile} is empty`;
+  try { fs.accessSync(ref.tokenFile, fs.constants.R_OK); } catch { return `the token file ${ref.tokenFile} isn't readable by the daemon's user`; }
+  return null;
+}
+
+/** What a launch that couldn't apply the seat's token says, wherever it's reported. */
+export function claudeSeatTokenFallbackNotice(ref: ClaudeSeatTokenRef, problem: string): string {
+  return `This seat's Claude subscription token (${ref.label}) wasn't applied: ${problem}. Claude started without it, on its config dir's `
+    + "stored login (or a token the daemon gives every seat), which may be another account. Fix the file, or choose another with "
+    + "rig provider switch --seat.";
+}
+
 /** The launch-script step that gives Claude the seat's token, read from its file as Claude starts. When the file can't be
- *  read (or is empty), the step fails and Claude isn't started, rather than run on the config dir's stored login. */
+ *  read or is empty, Claude still starts, on the config dir's stored login, and the pane says so; any token the launch
+ *  already carried is kept, and an empty one is never exported. */
 export function claudeSeatTokenStep(ref: ClaudeSeatTokenRef, quote: (value: string) => string): string {
-  const refusal = `OpenRig: this seat's Claude token file (${ref.label}) can't be read: ${ref.tokenFile}. Claude wasn't started, `
-    + "so it doesn't run on another login. Fix the file, or choose another with rig provider switch.";
-  return `{ CLAUDE_CODE_OAUTH_TOKEN=$(/bin/cat -- ${quote(ref.tokenFile)} 2>/dev/null) && [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] `
-    + `&& export CLAUDE_CODE_OAUTH_TOKEN || { printf '%s\\n' ${quote(refusal)} >&2; false; }; }`;
+  const notice = claudeSeatTokenFallbackNotice(ref, `${ref.tokenFile} couldn't be read when Claude started`);
+  return `{ __openrig_token=$(/bin/cat -- ${quote(ref.tokenFile)} 2>/dev/null); if [ -n "$__openrig_token" ]; `
+    + `then CLAUDE_CODE_OAUTH_TOKEN=$__openrig_token; export CLAUDE_CODE_OAUTH_TOKEN; `
+    + `else printf '%s\\n' ${quote(`OpenRig: ${notice}`)} >&2; fi; unset __openrig_token; }`;
 }
