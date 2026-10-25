@@ -389,8 +389,9 @@ export class DaemonClient {
    * returns the QueueItem or 404). Used for the BLOCKED ON AGENTS bounded per-row
    * lookup: blockedOn is a qitem POINTER, so the blocking agent is that qitem's
    * owner (destinationSession). NOT a new endpoint. */
-  humanAttention(item?: string | null) {
-    return this.get(`/api/attention${item ? `?item=${encodeURIComponent(item)}` : ""}`);
+  humanAttention(item?: string | null, view?: string | null) {
+    const query = [item ? `item=${encodeURIComponent(item)}` : null, view ? `view=${encodeURIComponent(view)}` : null].filter(Boolean).join("&");
+    return this.get(`/api/attention${query ? `?${query}` : ""}`);
   }
   queueItem(qitemId: string, options: { optional?: boolean } = {}) {
     return this.get(`/api/queue/${encodeURIComponent(qitemId)}`, options.optional ? this.optionalFetchImpl : this.fetchImpl);

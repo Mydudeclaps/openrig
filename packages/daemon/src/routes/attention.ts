@@ -11,7 +11,7 @@ import { listProjects, insideProject, projectMission, type ProjectRead } from ".
 import { readMissionReadiness } from "../domain/proof/judgments.js";
 import { WorkflowInstanceStore } from "../domain/workflow-instance-store.js";
 import { WorkflowStepTrailLog } from "../domain/workflow-step-trail-log.js";
-import { primaryUserAddress } from "../domain/primary-user.js";
+import { resolveDefaultPerson } from "../domain/gateway/participants.js";
 import { resolveRegisteredHumanAddress } from "../domain/gateway/human-registry.js";
 
 export function attentionRoutes(): Hono {
@@ -41,13 +41,16 @@ export function attentionRoutes(): Hono {
     if (entities.length) {
       const person = (session: string | null | undefined) => resolveRegisteredHumanAddress(session, entities);
       const requested = c.req.query("view")?.trim() || undefined;
-      const primary = primaryUserAddress(entities.map(e => e.address));
+      // The primary user is the default person: the participants file's `default`, else the only registered person.
+      const primaryUser = resolveDefaultPerson(entities);
+      const primary = primaryUser.person?.address ?? null;
       const named = requested !== undefined && requested !== "all" && requested !== "default";
       const chosen = named && requested ? person(requested) ?? person(`${requested}@external`) : null;
       const viewing = requested === "default" ? primary : chosen;
       const basis: NonNullable<AttentionRead["perspective"]>["basis"] = requested === "default" ? (primary ? "default" : "all")
         : named ? (chosen ? "chosen-here" : "unknown") : "all";
-      result.perspective = { viewing, basis, ...(basis === "unknown" ? { requested } : {}), actingAs: { person: primary, authority: "primary-user" } };
+      result.perspective = { viewing, basis, ...(basis === "unknown" ? { requested } : {}), defaultSource: primaryUser.source,
+        actingAs: { person: primary, authority: "primary-user" } };
       // A person's items are in their view. Items for no registered person (instance facts, a bare human seat) are the
       // primary user's, so they're in theirs.
       if (basis === "unknown") inView = () => false;

@@ -43,7 +43,8 @@ export function composeHumanUpdates(attention: AttentionRead | null, updates: De
 
 export function attentionLines(state: ViewState, snap: FleetSnapshot, width: number): ContentLine[] {
   const read = snap.attentionRead;
-  const lines: ContentLine[] = [{ text: "FEED · Instance / All humans" }];
+  const lines: ContentLine[] = [{ text: feedTitle(read?.perspective) }];
+  if (read?.perspective?.defaultSource === "none") lines.push({ text: "No default person is chosen: rig gateway default <id> chooses one." });
   if (!read) return wrapDetailLines([...lines, { text: "Unavailable: Feed sources have not answered." }, ...snap.readErrors.map(text => ({ text }))], width);
   if (state.attentionOpen) {
     const d = read.detail;
@@ -108,6 +109,19 @@ export function attentionLines(state: ViewState, snap: FleetSnapshot, width: num
   }
   lines.push({ text: "" }, { text: "Viewing is not approval. Each request's detail says whether it went to Slack and where to answer it." });
   return wrapDetailLines(lines, width);
+}
+
+/** The TUI opens on the default person's Feed only when the participants file chose one, and only while the person hasn't
+ *  moved off the opening view. With none chosen it stays on the topology, as before. */
+export function opensOnDefaultFeed(read: AttentionRead | null | undefined, state: ViewState, untouched: boolean): boolean {
+  return untouched && state.section === "topology" && read?.perspective?.defaultSource === "chosen";
+}
+
+/** Whose queue the Feed shows, and who acts on it: the primary user, whichever queue is shown. */
+function feedTitle(p: AttentionRead["perspective"]): string {
+  if (!p) return "FEED · Instance / All humans";
+  const viewing = p.basis === "unknown" ? `no registered person "${p.requested}"` : p.viewing ?? "everyone";
+  return `FEED · Viewing ${viewing} · you act as ${p.actingAs.person ?? "the primary user"}`;
 }
 
 /** The `reply` command on the open request: the person's own words, answered on that row as the person the Feed served. */

@@ -518,6 +518,8 @@ export type Action =
   | { type: "attention-category"; category: "action" | "update" }
   | { type: "attention-open"; id: string }
   | { type: "attention-source"; path: string }
+  /** Whose Feed queue to show: a person, "all" or "default". A view, never who acts. */
+  | { type: "attention-view"; view: string }
   | { type: "file-open"; target: import("./reading.js").FileTarget }
   | { type: "external-open"; url: string }
   /** Leave the TUI briefly and print `value` as one unbroken line for exact copying; Enter returns. */
@@ -594,6 +596,8 @@ export interface ViewState {
   terminalView?: string | null;
   terminalPage?: number;
   attentionOpen?: string | null;
+  /** Whose Feed queue is shown: a person, or "all"; null is the default person's (or everyone's when there is none). */
+  attentionView?: string | null;
   attentionCategory?: "action" | "update" | null;
   file?: import("./reading.js").FileTarget | null;
   externalUrl?: string | null;

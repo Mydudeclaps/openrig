@@ -33,7 +33,8 @@ import { restoreKeyAction, type RestoreInputEvent } from "./crash-cart/restore-i
 import { evaluateOneClickGate, restoreConfirmMessage } from "./crash-cart/one-click-gate.js";
 import { daemonStartArgs } from "./crash-cart/start-daemon.js";
 import { readLocal } from "./local-reading.js";
-import { replyAct } from "./attention/attention-model.js";
+import { replyAct, opensOnDefaultFeed } from "./attention/attention-model.js";
+import type { AttentionRead } from "@openrig/daemon/attention";
 import { StartupController } from "./startup.js";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -168,6 +169,19 @@ async function run(): Promise<void> {
     } });
     return true;
   }
+  // Once, at startup: the chosen default person's Feed opens first (see opensOnDefaultFeed).
+  let defaultFeedChecked = false;
+  function openChosenDefaultFeed(): void {
+    if (defaultFeedChecked || !client) return;
+    defaultFeedChecked = true;
+    const revision = inputRevision;
+    void client.humanAttention(null, "default").then((read) => {
+      if (!opensOnDefaultFeed(read as AttentionRead | null, view.get(), revision === inputRevision)) return;
+      view.dispatch({ type: "jump", section: "needs" });
+      draw();
+      void live?.refresh();
+    }, () => {});
+  }
   function commandContext() {
     return currentCommandContext(startup && startup.state.connection !== "up" ? "unverified" : crashCartOpts.daemonState ?? null);
   }
@@ -235,7 +249,7 @@ async function run(): Promise<void> {
       draw();
       // Skip during the probe must remain skipped, but can start reads when
       // the connection later answers. This never changes the chosen page.
-      if (!startup?.state.open && startup?.state.connection === "up" && !liveEnabled && enableLive()) void live?.refresh();
+      if (!startup?.state.open && startup?.state.connection === "up" && !liveEnabled && enableLive()) { void live?.refresh(); openChosenDefaultFeed(); }
     },
     onHelp: () => { view.dispatch({ type: "palette-open" }); draw(); },
     readLocal: (request) => readLocal(cliEntry, request),

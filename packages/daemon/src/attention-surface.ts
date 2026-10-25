@@ -42,6 +42,9 @@ export interface AttentionRead {
     viewing: string | null;
     basis: "all" | "default" | "chosen-here" | "unknown";
     requested?: string;
+    /** Where the default person came from: the participants file (`chosen`), the only registered person, or nowhere. The TUI
+     *  opens on the default's Feed only when one was chosen. */
+    defaultSource: "chosen" | "only-person" | "none";
     actingAs: { person: string | null; authority: "primary-user" };
   };
 }
