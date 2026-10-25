@@ -18,7 +18,6 @@ export interface ProviderAccount {
 }
 
 import type { HostUsageRow } from "./host-usage-rollup.js";
-import type { PeerReport } from "../seat-restart-in-place.js";
 
 export type BindingAnomalyKind = "same_account_on_n_seats" | "seat_with_no_account";
 
@@ -132,11 +131,20 @@ export type PrecheckReason =
   | "seat_restart_refused" // the seat's in-place restart plan refused, so nothing would change
   | "target_not_in_seat_home"; // no login by that name is saved in the Codex home the seat runs on
 
+/** A seat on the same Codex home, as the in-place restart reports it (its `PeerReport`). Declared here rather than
+ *  imported, so the provider types don't import the restart module and its tmux dependencies. */
+export interface SeatPeer {
+  logicalId: string;
+  sessionName: string | null;
+  home: "same" | "different" | "unknown";
+  effect: string;
+}
+
 /** What a seat-aware precheck saw: the Codex home the seat runs on, what the seat is doing, and its peers on that home. */
 export interface SeatSwitchView {
   home: string;
   activity: string;
-  peers: PeerReport[];
+  peers: SeatPeer[];
 }
 
 export type PrecheckResult =
