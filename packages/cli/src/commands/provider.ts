@@ -523,10 +523,11 @@ The daemon plans the seat's in-place restart first (rig seat restart --plan), so
 home's current login as before-switch-<time>, activates the chosen one there (rig auth switch), and restarts the seat in place
 with the same conversation, pane and launch settings. If the current login can't be saved first, nothing changes. Every seat
 on that home shares its login. Peers aren't restarted: each keeps its current login only until its next token refresh, when
-Codex stops it with "signed in to another account" until it's restarted, so the report prints rig seat restart <peer>
---keep-conversation for each. Signing in again there would replace the login you just switched to. One switch runs at a
-time per home. The account isn't verified until the seat completes a tool turn: run the printed rig seat restart
---keep-conversation --verify --expect-account. An uncertain restart is reported, never retried.
+Codex stops it with "signed in to another account" until it's restarted, so the report prints the rig seat restart <peer>
+--keep-conversation --reason "..." to paste for each. Signing in again there would replace the login you just switched to.
+One switch runs at a time per home; a switch that waited checks the seat again before it changes anything. The account
+isn't verified until the seat completes a tool turn: run the printed rig seat restart --keep-conversation --verify
+--expect-account. An uncertain restart is reported, never retried.
 
 Limits of this first increment:
 - Codex seats only. A Claude seat is refused (rebind_unsupported_for_runtime).
@@ -540,6 +541,7 @@ Limits of this first increment:
       }
       type SwitchResponse = { status: number; data: { outcome?: string; reasons?: string[]; message?: string; seat?: SwitchReport } };
       let res: SwitchResponse;
+      const startedAt = new Date().toISOString();
       try {
         res = await client.post<SwitchResponse["data"]>("/api/provider/switch", {
           seat: opts.seat,
@@ -550,7 +552,9 @@ Limits of this first increment:
         if (!(err instanceof DaemonTimeoutError)) throw err;
         // The daemon may still be switching: a timeout is neither a failure nor a reason to send it again.
         res = { status: 200, data: { outcome: "unknown", reasons: ["switch_outcome_unknown"],
-          message: `The CLI timed out waiting for the daemon; the switch may still be in progress. Check before running it again: rig seat restart ${opts.seat} --keep-conversation --plan refuses with restart_in_progress while the seat restarts, then shows its result as lastRestart.` } };
+          message: `The CLI timed out waiting for the daemon. The switch may still be running, or queued behind another switch on the same Codex home; a queued switch hasn't changed anything yet. `
+            + `It has restarted the seat once rig seat restart ${opts.seat} --keep-conversation --plan shows a lastRestart that started after ${startedAt}. `
+            + `Until then an eligible plan, or an older lastRestart, doesn't mean it ended, so don't run the switch again: a second one would queue behind it.` } };
       }
       if (handleHttpError(res, "switch")) return;
       if (opts.json) console.log(JSON.stringify(res.data));
