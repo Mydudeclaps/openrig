@@ -955,11 +955,42 @@ describe("native resume probe", () => {
       });
     }
 
-    it("doesn't let a numbered list borrow a chooser heading from above the window", () => {
+    it("reads an old heading far above a later numbered list and Claude's composer as resumed", () => {
       const conversation = Array.from({ length: 35 }, (_, at) => `  line ${at} of the conversation`).join("\n");
-      const paneContent = `Choose a conversation to resume:\n${conversation}\n  1. run the tests\n  2. push the branch\n`;
-      expect(assessNativeResumeProbe({ runtime: "claude-code", paneCommand: "claude", paneContent }).status)
-        .not.toBe("attention_required");
+      const paneContent = `Choose a conversation to resume:\n${conversation}\n  1. run the tests\n  2. push the branch\n\n${claudeResumed}\n`;
+      expect(assessNativeResumeProbe({ runtime: "claude-code", paneCommand: "claude", paneContent }))
+        .toMatchObject({ status: "resumed", code: "active_runtime" });
+    });
+
+    // A composer whose draft starts with "1." looks like a numbered option row; Claude's input frame (a rule above the
+    // ❯ row and another below) tells them apart.
+    it.each([
+      ["numbered", "Choose a conversation to resume:\n\n  1. project-foo (modified 2h ago)\n  2. project-bar (modified yesterday)"],
+      ["two-choice", "How would you like to resume?\n\n❯ Resume from summary\n  Resume full session as-is"],
+    ])("reads an old %s chooser above a composer holding a numbered draft as resumed", (_shape, earlier) => {
+      const draft = ["─".repeat(40), "❯ 1. inspect the source", "  2. then fix it", "─".repeat(40), "  ⏵⏵ accept edits on (shift+tab to cycle)"].join("\n");
+      expect(assessNativeResumeProbe({ runtime: "claude-code", paneCommand: "claude", paneContent: `${earlier}\n\n${draft}\n` }))
+        .toMatchObject({ status: "resumed", code: "active_runtime" });
+    });
+  });
+
+  // A live conversation list can outgrow the window, pushing its heading above the last 30 drawn rows.
+  describe("a live conversation list longer than the window", () => {
+    const list = (rows: number) => ["Choose a conversation to resume:", "",
+      ...Array.from({ length: rows }, (_, at) => `  ${at + 1}. project-${at + 1} (modified ${at + 1}h ago)`), "",
+      "Enter a number, or press q to cancel."].join("\n");
+    it.each([
+      ["bottom-reaching", `${list(40)}\n`],
+      ["drawn high", `${list(40)}\n${Array<string>(20).fill("").join("\n")}`],
+    ])("still reads as attention_required, %s", (_shape, paneContent) => {
+      expect(assessNativeResumeProbe({ runtime: "claude-code", paneCommand: "claude", paneContent }))
+        .toMatchObject({ status: "attention_required", code: "claude_resume_selection_prompt" });
+    });
+
+    it("keeps a ❯ row that isn't inside Claude's input frame an option, not a composer", () => {
+      const paneContent = "Choose a conversation to resume:\n\n  1. project-foo\n  2. project-bar\n❯ 3. project-baz\n\nEnter a number, or press q to cancel.\n";
+      expect(assessNativeResumeProbe({ runtime: "claude-code", paneCommand: "claude", paneContent }))
+        .toMatchObject({ status: "attention_required", code: "claude_resume_selection_prompt" });
     });
   });
 

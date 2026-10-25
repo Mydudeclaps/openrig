@@ -344,7 +344,8 @@ function looksLikeClaudeResumeSelectionPrompt(paneContent: string): boolean {
   // at the top of a tall pane sits above blank rows, so count from the last drawn row.
   // A chooser counts only while it is the last thing drawn: a composer, header or reply
   // after its options means it is history above a session that resumed.
-  const recentLines = paneContent.trimEnd().split("\n").slice(-30);
+  const drawn = paneContent.trimEnd().split("\n");
+  const recentLines = drawn.slice(-30);
   const heading = recentLines.map((line) => line.trim() === "How would you like to resume?").lastIndexOf(true);
   if (heading >= 0) {
     const after = recentLines.slice(heading + 1);
@@ -359,20 +360,31 @@ function looksLikeClaudeResumeSelectionPrompt(paneContent: string): boolean {
   }
 
   // Stable substring is the explicit "Choose ... conversation" verb plus the
-  // numbered/arrow option marker that Claude prints after it. Both must be in the
-  // window so we don't false-positive on similar TUI strings.
-  const verb = recentLines.map((line) => /Choose (?:a|the) conversation|Select a conversation/.test(line)).lastIndexOf(true);
+  // numbered/arrow option marker that Claude prints after it. A long list can push the
+  // heading above the window, so it's read from the whole capture; the last option must be
+  // in the window, and nothing of Claude's own may be drawn after it.
+  const verb = drawn.map((line) => /Choose (?:a|the) conversation|Select a conversation/.test(line)).lastIndexOf(true);
   if (verb < 0) return false;
-  const after = recentLines.slice(verb + 1);
-  const lastOption = after.map((line) => /^\s*(?:[›»]\s*)?\d+\.\s+\S/.test(line)).lastIndexOf(true);
-  return lastOption >= 0 && !claudeDrawnAfter(after.slice(lastOption + 1));
+  const recentStart = Math.max(verb + 1, drawn.length - 30);
+  const lastOption = drawn.map((line, at) => at >= recentStart && /^\s*(?:[›»]\s*)?\d+\.\s+\S/.test(line)).lastIndexOf(true);
+  // A draft's own numbered rows can read as the last options, so the input frame counts anywhere after the heading.
+  return lastOption >= 0 && !claudeDrawnAfter(drawn.slice(lastOption + 1)) && !hasClaudeInputFrame(drawn.slice(verb + 1));
 }
 
-/** Claude's own UI drawn after a chooser's options: its composer (a ❯ row that isn't a numbered option), its version
- *  header or a reply. Hint rows and blank rows under the options belong to the chooser. */
+/** Claude's own UI drawn after a chooser's options: its composer (a ❯ row that isn't a numbered option, or any ❯ row
+ *  inside its input frame), its version header or a reply. Hint rows and blank rows under the options belong to the chooser. */
 function claudeDrawnAfter(rows: string[]): boolean {
-  return rows.some((line) => (/^\s*❯/.test(line) && !/^\s*❯\s*\d+\.\s/.test(line))
+  return hasClaudeInputFrame(rows) || rows.some((line) => (/^\s*❯/.test(line) && !/^\s*❯\s*\d+\.\s/.test(line))
     || line.includes("Claude Code v") || /^[●⏺]/.test(line));
+}
+
+const CLAUDE_INPUT_RULE = /^\s*─{3,}\s*$/;
+
+/** Claude's input frame: a rule, the ❯ row directly under it, and another rule below. A composer holding a draft that
+ *  starts with "1." looks like a numbered option row; the frame is what tells them apart. */
+function hasClaudeInputFrame(rows: string[]): boolean {
+  return rows.some((line, at) => CLAUDE_INPUT_RULE.test(line) && /^\s*❯/.test(rows[at + 1] ?? "")
+    && rows.slice(at + 2).some((row) => CLAUDE_INPUT_RULE.test(row)));
 }
 
 // Claude's interactive refusals of a request for a missing, expired or revoked login (code.claude.com/docs/en/errors).
