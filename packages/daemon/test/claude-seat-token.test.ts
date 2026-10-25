@@ -40,10 +40,12 @@ printf '{"TOKEN":"%s"}' "\${CLAUDE_CODE_OAUTH_TOKEN-absent}"
   db.prepare("INSERT INTO nodes VALUES ('node', 'rig', 'claude-code', ?, NULL, ?)").run(cwd, ref ? JSON.stringify(ref) : null);
   db.exec("INSERT INTO bindings VALUES ('b', 'node', 'seat@rig', '%1'); INSERT INTO occupant_tenures VALUES ('node', 'gen', 1)");
   const managed = new ClaudeManagedLaunch(db, { PATH: `${bin}:/usr/bin:/bin`, HOME: home }, {}, async () => undefined);
+  const events: unknown[] = [];
+  managed.onTokenNotApplied = (event) => { events.push(event); };
   const prepare = () => managed.prepare({ nodeId: "node", session: "seat@rig", pane: "%1" }, "auto");
   const command = async () => (await prepare()).command(["--permission-mode", "auto"]);
   const run = (cmd: string) => exec("/bin/sh", ["-c", cmd], { env: { PATH: "/usr/bin:/bin" }, timeout: 5000 });
-  return { root, command, prepare, run };
+  return { root, command, prepare, run, events };
 }
 
 describe.skipIf(process.platform === "win32")("a Claude seat's own subscription token file", () => {
@@ -56,15 +58,20 @@ describe.skipIf(process.platform === "win32")("a Claude seat's own subscription 
     expect(command).not.toContain(SYNTHETIC);
     expect(command).toContain(tokenFile);
     expect(JSON.parse((await f.run(command)).stdout)).toEqual({ TOKEN: SYNTHETIC });
+    expect(f.events).toEqual([]);
   });
 
   it("starts Claude on its stored login when the token file can't be read, and the pane says so", async () => {
-    const f = fixture({ label: "work", tokenFile: path.join(tmpdir(), "no-such-dir-claude-seat-token", "claude-work.token") });
+    const tokenFile = path.join(tmpdir(), "no-such-dir-claude-seat-token", "claude-work.token");
+    const f = fixture({ label: "work", tokenFile });
     const { stdout, stderr } = await f.run(await f.command());
     expect(JSON.parse(stdout)).toEqual({ TOKEN: "absent" });
     expect(stderr).toContain("subscription token (work) wasn't applied");
     // The launch result says so too, checked without reading the file.
     expect((await f.prepare()).warnings).toEqual([expect.stringContaining("subscription token (work) wasn't applied")]);
+    // And each launch records it: the seat ran without its own token, and why.
+    expect(f.events).toEqual(Array(2).fill({ type: "seat.claude_token_not_applied", rigId: "rig", nodeId: "node", label: "work", tokenFile,
+      reason: `the token file ${tokenFile} doesn't exist` }));
   });
 
   it.each([["bash", true], ["zsh", true], ["fish", false]] as const)(
