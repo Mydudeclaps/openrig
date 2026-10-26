@@ -194,14 +194,15 @@ describe("rig slack post-open-asks through the gateway", () => {
     const row = await park();
     await enable();
     const w = wire();
-    db.exec("ALTER TABLE human_quiet_windows RENAME TO human_quiet_windows_away"); // the consult can't read quiet hours
+    // The delivery rules can't read the person's quiet hours. (A missing table reads as no quiet hours, so the read throws.)
+    const unreadable = vi.spyOn(HumanQuietStore.prototype, "quietStateFor").mockImplementation(() => { throw new Error("database is locked"); });
     const result = await run(w);
-    expect(resultFor(result, row)).toMatchObject({ outcome: "state-unavailable", detail: expect.stringMatching(/^not posted: /) });
+    expect(resultFor(result, row)).toMatchObject({ outcome: "state-unavailable", detail: "not posted: database is locked" });
     expect(posts).toHaveLength(0);
     expect(new DispatchBuffer(home).pending(), "nothing is left queued").toHaveLength(0);
     expect(notes(row).some((n) => n.startsWith(`slack-re-present-state-unavailable notification_key=${keyOf(row)} detail=`))).toBe(true);
 
-    db.exec("ALTER TABLE human_quiet_windows_away RENAME TO human_quiet_windows");
+    unreadable.mockRestore();
     const again = await run(w);
     expect(resultFor(again, row)).toMatchObject({ outcome: "posted", reshown: true });
     expect(posts).toHaveLength(1);
