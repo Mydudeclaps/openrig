@@ -58,6 +58,13 @@ not fill in; if so, follow the form.
    one, it is refused.
 10. Run `rig slack setup --channel <channel-id> --secrets-env-file <path>`, then
     `rig slack verify`, then `rig slack enable`.
+11. Enabling treats the asks already open as seen, so none of them post. To see them in Slack, run
+    `rig slack post-open-asks`. Each goes through ordinary delivery at the level it was asked at
+    (quiet hours, digest and the posting floor apply), and the command says what became of each:
+    posted, already posted, queued awaiting its receipt, held, below the posting floor, no longer
+    active, superseded, recipient changed, state unavailable, transport failed or uncertain. An ask
+    asked at RECORD stays on Steering and the Feed without a post. Running it again doesn't post an
+    ask twice. `--wait <seconds>` (default 10) is how long it waits for Slack receipts.
 
 ## What the app asks for
 
@@ -190,7 +197,8 @@ app is in all of them. A saved change reaches a running connector when it next r
 daemon restart does (`rig daemon stop`, then `rig daemon start`). `rig slack disable --reason
 "<why>"` then `rig slack enable` rewires too, but alerts still waiting to be posted when it's
 re-enabled are treated as already seen and aren't posted. Only an earlier post that failed or
-didn't finish still posts: an alert whose row is still open, a decision-resolved notice, or a digest. The TUI's Connections page says whether the running
+didn't finish still posts: an alert whose row is still open, a decision-resolved notice, or a digest. `rig slack post-open-asks`
+then shows the asks still open. The TUI's Connections page says whether the running
 configuration matches the file.
 
 The map is stored as `channelMap` in `slack-connector.json`, as a list of `{ "match", "channel" }`
@@ -258,7 +266,7 @@ reaches a running connector when it next rewires, which a daemon restart does (`
 then `rig daemon start`). `rig slack disable --reason "<why>"` then `rig slack enable` rewires too,
 but alerts still waiting to be posted when it's re-enabled are treated as already seen and aren't
 posted. Only an earlier post that failed or didn't finish still posts: an alert whose row is still
-open, a decision-resolved notice, or a digest.
+open, a decision-resolved notice, or a digest. `rig slack post-open-asks` then shows the asks still open.
 
 ## One app across machines (optional)
 

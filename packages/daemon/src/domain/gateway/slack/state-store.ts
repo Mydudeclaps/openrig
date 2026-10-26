@@ -84,6 +84,19 @@ export class SeenStore {
     return new Set(parseLines(raw).map((r) => (r as SeenRecord).id).filter((id) => typeof id === "string"));
   }
 
+  /** Each id's latest status, for a reader that must tell why an id is seen ("seeded-at-enable" isn't "posted"). */
+  statuses(): Map<string, string> {
+    let raw: string;
+    try {
+      raw = this.fsops.readFileSync(this.file);
+    } catch {
+      return new Map();
+    }
+    const out = new Map<string, string>();
+    for (const r of parseLines(raw) as SeenRecord[]) if (typeof r.id === "string") out.set(r.id, String(r.status));
+    return out;
+  }
+
   /** Append a seen record. MUST be called only after the guarded side effect succeeds. */
   mark(id: string, status: string): void {
     this.fsops.mkdirp(path.dirname(this.file));

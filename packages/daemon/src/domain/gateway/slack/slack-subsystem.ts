@@ -59,7 +59,8 @@ import {
   type DeliveryDecision,
 } from "../delivery-rules-engine.js";
 import { armDeliveryDeferral } from "../../policies/delivery-deferral.js";
-import { confirmReleaseAtPost, holdForQuiet } from "../../policies/quiet-release.js";
+import { confirmReleaseAtPost, currentAskVerdict, holdForQuiet } from "../../policies/quiet-release.js";
+import { noteRePresentNotPosted, RE_PRESENT_DECISION_PREFIX } from "./open-asks.js";
 import { quietHoldFor } from "../human-quiet-windows.js";
 import { WatchdogJobsRepository } from "../../watchdog-jobs-repository.js";
 
@@ -806,6 +807,31 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       releaseRef(p.qitemId);
       return { ok: true as const };
     }
+    // An open ask shown again after enable (`rig slack post-open-asks`): checked here, at post time, against the row, the
+    // recipient and the posting threshold as they are now, then delivered like any fresh ask below (the delivery rules,
+    // quiet hours, digest, thread). One that's no longer current, or can't be checked, posts nothing and its row says why.
+    if (decision.decisionId.startsWith(RE_PRESENT_DECISION_PREFIX) && p.qitemId) {
+      const key = p.notificationKey ?? p.qitemId;
+      if (opts.queueRepo.transitionLog.hasOwnerNotificationReceipt(p.qitemId, key)) {
+        releaseRef(key);
+        return { ok: true as const };
+      }
+      const settled = await resolveEarlierAttempt(decision);
+      if (settled) return settled;
+      const verdict = await currentAskVerdict({
+        queueRepo: opts.queueRepo,
+        home: opts.home,
+        registry: { loadHumanRegistry: () => registrySurface.loadHumanRegistry(opts.home) },
+        entityId: (p.destinationSession ?? "").split("@")[0] ?? "",
+        qitemId: p.qitemId,
+        notificationKey: key,
+      });
+      if (verdict.kind !== "post") {
+        noteRePresentNotPosted(opts.queueRepo, p.qitemId, key, verdict);
+        releaseRef(key);
+        return { ok: true as const };
+      }
+    }
     if (p.deliveryDeferralFire) {
       const fireKey = p.notificationKey ?? p.qitemId;
       if (p.qitemId && opts.queueRepo.transitionLog.hasOwnerNotificationReceipt(p.qitemId, fireKey)) {
@@ -836,6 +862,11 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
       // The decision couldn't be made (for example the person's quiet hours couldn't be read): post nothing and record
       // nothing. Releasing the in-flight guard lets the outbound sweep offer this still-unseen ask again and decide afresh.
       log(`delivery decision for ${p.qitemId} deferred: ${(error as Error).message}`);
+      // A re-shown ask is seen, so no sweep offers it again: its row says it wasn't posted, and the person who ran
+      // `rig slack post-open-asks` runs it again once the state reads (same decision id).
+      if (decision.decisionId.startsWith(RE_PRESENT_DECISION_PREFIX) && p.qitemId) {
+        noteRePresentNotPosted(opts.queueRepo, p.qitemId, p.notificationKey ?? p.qitemId, { kind: "unavailable", detail: (error as Error).message });
+      }
       // Released by notification key, the guard's own key: nothing marks this ask seen, so the next sweep must see it.
       releaseRef(p.notificationKey ?? p.qitemId!);
       return { ok: true as const };
