@@ -82,7 +82,7 @@ describe("rig slack post-open-asks through the gateway", () => {
   async function park(): Promise<QueueItem> {
     const row = await repo.create({ sourceSession: "dev-qa@r", destinationSession: "orch-lead@r", body: `decision body ${++n}`, nudge: false });
     repo.update({ qitemId: row.qitemId, actorSession: "orch-lead@r", state: "blocked", blockedOn: `${HUMAN}@kernel`,
-      summary: `Choose ${n}`, transitionNote: "parked" });
+      summary: `Choose ${n}`, evidenceRef: `/proof/${n}.md`, transitionNote: "parked" });
     return row;
   }
   const seenPath = () => join(home, "state", "slack-outbound-seen.jsonl");
@@ -141,7 +141,7 @@ describe("rig slack post-open-asks through the gateway", () => {
 
   it("reports an ask asked at RECORD as below the floor and leaves an open ask ordinary delivery hasn't offered yet to it", async () => {
     registry = registryWith({ deliveryClass: "B", availability: "available" }, [{ destination: { connector: "slack" }, filter: { preset: "urgent-only" } }]);
-    const quietAsk = await repo.create({ sourceSession: "dev-qa@r", destinationSession: `${HUMAN}@external`, summary: "Steering only", body: "a plain ask", nudge: false });
+    const quietAsk = await repo.create({ sourceSession: "dev-qa@r", destinationSession: `${HUMAN}@external`, summary: "Steering only", body: "a plain ask", evidenceRef: "/proof/steering.md", nudge: false });
     await enable();
     const fresh = await park(); // after enable: unseen, so the sweep owns it
     const w = wire();
