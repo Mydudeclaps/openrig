@@ -11,6 +11,8 @@
 //   left to its sweep.
 // - Each ask's outcome is reported from what its row records, never from the dispatch: a dispatch accepted is "queued,
 //   awaiting receipt" until the receipt exists. Nothing claims exactly once.
+// - A record it can't read (the dispatch buffer, the seen store, the attempt record) is never taken as absent: the ask is
+//   reported as state unavailable and isn't offered, or as uncertain once offered.
 
 import path from "node:path";
 import type { QueueRepository } from "../../queue-repository.js";
@@ -123,20 +125,35 @@ export async function postOpenAsks(input: PostOpenAsksInput): Promise<PostOpenAs
   const seen = new SeenStore(input.seenPath ?? path.join(input.home, "state", "slack-outbound-seen.jsonl"));
   const attempted = new SeenStore(path.join(input.home, "state", "slack-attempted-decisions.jsonl"));
   const notesOf = (qitemId: string) => queueRepo.listTransitions(qitemId).map((t) => t.transitionNote ?? "");
-  /** A decision for this episode still waiting in the gateway's buffer (any id): ordinary delivery owns it. */
-  const pendingFor = (key: string) => {
-    const pending = new DispatchBuffer(input.home).pending().filter((d) =>
-      ((d.payload ?? {}) as OutboundPostPayload).notificationKey === key);
+  const message = (error: unknown) => (error as Error).message;
+  /** A decision for this episode still waiting in the gateway's buffer (any id): ordinary delivery owns it. Strict reads:
+   *  a buffer or attempt record that can't be read is "can't tell", never "none" (an absent file is "none"). */
+  const pendingFor = (key: string): { outcome: OpenAskOutcome; detail: string } | { unreadable: string } | null => {
+    let decisions: ReturnType<DispatchBuffer["pendingStrict"]>;
+    try {
+      decisions = new DispatchBuffer(input.home).pendingStrict();
+    } catch (error) {
+      return { unreadable: message(error) };
+    }
+    const pending = decisions.filter((d) => ((d.payload ?? {}) as OutboundPostPayload).notificationKey === key);
     if (pending.length === 0) return null;
-    const tried = attempted.load();
+    let tried: Map<string, string>;
+    try {
+      tried = attempted.statuses();
+    } catch (error) {
+      return { outcome: "uncertain", detail: `an earlier decision for it is waiting, and whether it reached Slack can't be read (${message(error)})` };
+    }
     return pending.some((d) => tried.has(d.decisionId) || tried.has(`${d.decisionId}:part:1`))
-      ? { outcome: "uncertain" as const, detail: "an earlier attempt may already be in Slack; delivery checks Slack before it posts again" }
-      : { outcome: "queued" as const, detail: "an earlier decision for it is waiting for delivery" };
+      ? { outcome: "uncertain", detail: "an earlier attempt may already be in Slack; delivery checks Slack before it posts again" }
+      : { outcome: "queued", detail: "an earlier decision for it is waiting for delivery" };
   };
+  const notOffered = (what: string, error: string) => ({ outcome: "state-unavailable" as const,
+    detail: `not offered: the gateway's ${what} couldn't be read (${error}), so whether it already has this ask can't be told` });
 
   const results: OpenAskResult[] = [];
   const reshown: Array<{ result: OpenAskResult; from: number }> = [];
-  const statuses = seen.statuses();
+  let statuses: Map<string, string> | { unreadable: string };
+  try { statuses = seen.statuses(); } catch (error) { statuses = { unreadable: message(error) }; }
   for (const { item, posted, eligible } of episodes) {
     const key = item.notificationKey ?? item.qitemId;
     const result: OpenAskResult = { qitemId: item.qitemId, notificationKey: key, recipient: item.destinationSession ?? "",
@@ -152,6 +169,10 @@ export async function postOpenAsks(input: PostOpenAsksInput): Promise<PostOpenAs
     const notes = notesOf(item.qitemId);
     const fact = deliveryFact(notes, key);
     const pending = pendingFor(key);
+    if (pending && "unreadable" in pending) {
+      Object.assign(result, fact && fact.outcome !== "state-unavailable" ? fact : notOffered("dispatch buffer", pending.unreadable));
+      continue;
+    }
     if (pending) {
       Object.assign(result, fact?.outcome === "transport-failed"
         ? { outcome: "transport-failed", detail: `${fact.detail ?? "failed"}; kept for another try when the gateway next starts` }
@@ -159,6 +180,7 @@ export async function postOpenAsks(input: PostOpenAsksInput): Promise<PostOpenAs
       continue;
     }
     if (fact && fact.outcome !== "state-unavailable") { Object.assign(result, fact); continue; }
+    if (!(statuses instanceof Map)) { Object.assign(result, notOffered("seen store", statuses.unreadable)); continue; }
     const status = statuses.get(key);
     if (status === "log-class-contained") { Object.assign(result, LOG_ONLY); continue; }
     if (status === undefined) {
@@ -187,12 +209,17 @@ export async function postOpenAsks(input: PostOpenAsksInput): Promise<PostOpenAs
   // What became of each re-shown ask: only what its row records after this run's request counts.
   const settle = (): boolean => {
     let open = false;
-    const latest = seen.statuses();
+    let latest: Map<string, string> | null;
+    try { latest = seen.statuses(); } catch { latest = null; }
     for (const { result, from } of reshown) {
       const fact = deliveryFact(notesOf(result.qitemId).slice(from), result.notificationKey);
-      const pending = fact ? null : pendingFor(result.notificationKey);
-      const settled = fact ?? pending ?? (latest.get(result.notificationKey) === "log-class-contained" ? LOG_ONLY
-        : { outcome: "uncertain" as const, detail: "delivery finished with it but its row records no outcome" });
+      const found = fact ? null : pendingFor(result.notificationKey);
+      const pending = found && "unreadable" in found
+        ? { outcome: "uncertain" as const, detail: `the gateway's dispatch buffer couldn't be read (${found.unreadable}), so its outcome isn't known yet` }
+        : found;
+      const settled = fact ?? pending ?? (latest?.get(result.notificationKey) === "log-class-contained" ? LOG_ONLY
+        : { outcome: "uncertain" as const, detail: latest ? "delivery finished with it but its row records no outcome"
+          : "delivery finished with it, its row records no outcome, and the seen store couldn't be read" });
       Object.assign(result, { outcome: settled.outcome, detail: settled.detail });
       if (!fact && pending) open = true;
     }

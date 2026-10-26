@@ -809,15 +809,17 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
     }
     // An open ask shown again after enable (`rig slack post-open-asks`): checked here, at post time, against the row, the
     // recipient and the posting threshold as they are now, then delivered like any fresh ask below (the delivery rules,
-    // quiet hours, digest, thread). One that's no longer current, or can't be checked, posts nothing and its row says why.
+    // quiet hours, digest, thread). One that's no longer current, or can't be checked, posts nothing and its row says why,
+    // unless an earlier attempt of it may already be in Slack (below).
     if (decision.decisionId.startsWith(RE_PRESENT_DECISION_PREFIX) && p.qitemId) {
       const key = p.notificationKey ?? p.qitemId;
       if (opts.queueRepo.transitionLog.hasOwnerNotificationReceipt(p.qitemId, key)) {
         releaseRef(key);
         return { ok: true as const };
       }
-      const settled = await resolveEarlierAttempt(decision);
-      if (settled) return settled;
+      // An earlier attempt of this decision found in Slack goes to delivery, which records it.
+      const landing = "landing" in deliver ? await (deliver as { landing: (d: typeof decision) => Promise<string> }).landing(decision) : "unattempted";
+      if (landing === "found" || landing === "partial") return deliver(decision);
       const verdict = await currentAskVerdict({
         queueRepo: opts.queueRepo,
         home: opts.home,
@@ -827,6 +829,13 @@ export function buildSlackGatewayWire(opts: SlackWireOpts): GatewayWire {
         notificationKey: key,
       });
       if (verdict.kind !== "post") {
+        // One whose earlier attempt Slack couldn't rule out may already be posted: it's never recorded as not posted, and
+        // it stays in the buffer, so its replay decides again (and reconciles) instead of the uncertainty being dropped.
+        if (landing === "maybe") {
+          const why = verdict.kind === "unavailable" ? verdict.detail : verdict.reason;
+          log(`re-shown ${decision.decisionId} retained: an earlier attempt may be in Slack, and it can't go on now (${why})`);
+          return { ok: false as const, class: "re-present-earlier-attempt-unconfirmed", detail: why };
+        }
         noteRePresentNotPosted(opts.queueRepo, p.qitemId, key, verdict);
         releaseRef(key);
         return { ok: true as const };

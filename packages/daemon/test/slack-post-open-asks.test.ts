@@ -2,8 +2,8 @@
 // ordinary delivery, and reports what became of each. Real SQLite (all migrations), the real queue, the real gateway wire
 // over a recording fetch, the real dispatch buffer, seen store and quiet-hours release job. No Slack.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { Hono } from "hono";
 import type Database from "better-sqlite3";
@@ -16,7 +16,7 @@ import { makeQueuePorts, seedBacklogAsHistory } from "../src/domain/gateway/slac
 import { DEFAULT_CONFIG, saveConfig } from "../src/domain/gateway/slack/config.js";
 import { buildSlackGatewayWire } from "../src/domain/gateway/slack/slack-subsystem.js";
 import { OUTBOUND_OP, toPayload } from "../src/domain/gateway/slack/outbound-driver.js";
-import { DispatchBuffer } from "../src/domain/gateway/dispatch-buffer.js";
+import { DispatchBuffer, dispatchBufferPath } from "../src/domain/gateway/dispatch-buffer.js";
 import { SeenStore } from "../src/domain/gateway/slack/state-store.js";
 import { resolveSlackHandle, addHumanFragment } from "../src/domain/gateway/human-registry.js";
 import { WatchdogJobsRepository } from "../src/domain/watchdog-jobs-repository.js";
@@ -45,6 +45,8 @@ describe("rig slack post-open-asks through the gateway", () => {
   let home: string;
   let registry: ReturnType<typeof registryWith>;
   let failPosts: boolean;
+  let historyFails: boolean;
+  let historyReads: number;
   const posts: Array<Record<string, unknown>> = [];
   const stops: Array<() => void> = [];
 
@@ -56,6 +58,8 @@ describe("rig slack post-open-asks through the gateway", () => {
     home = mkdtempSync(join(tmpdir(), "post-open-asks-"));
     posts.length = 0;
     failPosts = false;
+    historyFails = false;
+    historyReads = 0;
   });
   afterEach(() => { for (const stop of stops.splice(0)) stop(); db.close(); rmSync(home, { recursive: true, force: true }); });
 
@@ -70,6 +74,10 @@ describe("rig slack post-open-asks through the gateway", () => {
           if (failPosts) throw new TypeError("fetch failed");
           posts.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
           return new Response(JSON.stringify({ ok: true, ts: `1724.9${posts.length}` }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        if (String(url).includes("conversations.")) {
+          historyReads += 1;
+          if (historyFails) return new Response(JSON.stringify({ ok: false, error: "internal_error" }), { status: 200, headers: { "content-type": "application/json" } });
         }
         return new Response(JSON.stringify({ ok: true, messages: [] }), { status: 200, headers: { "content-type": "application/json" } });
       },
@@ -217,6 +225,68 @@ describe("rig slack post-open-asks through the gateway", () => {
     const result = await run(w, 0);
     expect(resultFor(result, row)).toMatchObject({ outcome: "queued", reshown: false });
     expect(new DispatchBuffer(home).pending().map((d) => d.decisionId)).toEqual(["earlier-1"]);
+  });
+
+  it("X-F1: a dispatch buffer it can't read isn't taken as empty: nothing is offered and the buffer is left as it was", async () => {
+    const row = await park();
+    await enable();
+    const bufferPath = dispatchBufferPath(home);
+    mkdirSync(dirname(bufferPath), { recursive: true });
+    writeFileSync(bufferPath, "{ not json");
+    const w = wire();
+    const result = await run(w, 0);
+    expect(resultFor(result, row)).toMatchObject({ outcome: "state-unavailable", reshown: false, detail: expect.stringMatching(/^not offered: the gateway's dispatch buffer couldn't be read/) });
+    expect(readFileSync(bufferPath, "utf8"), "the unreadable buffer isn't replaced").toBe("{ not json");
+    expect(notes(row).some((n) => n.startsWith("slack-re-present-requested "))).toBe(false);
+  });
+
+  it("X-F1: a seen store it can't read doesn't promise the ordinary sweep, and nothing is offered", async () => {
+    const row = await park();
+    await enable(); // the ask is seeded, so the ordinary sweep won't offer it
+    renameSync(seenPath(), `${seenPath()}.away`);
+    mkdirSync(seenPath()); // exists, can't be read as a file
+    const w = wire();
+    const result = await run(w, 0);
+    expect(resultFor(result, row)).toMatchObject({ outcome: "state-unavailable", reshown: false, detail: expect.stringMatching(/^not offered: the gateway's seen store couldn't be read/) });
+    expect(resultFor(result, row)?.detail).not.toMatch(/sweep/);
+    expect(new DispatchBuffer(home).pending()).toHaveLength(0);
+  });
+
+  it("X-F1: an earlier decision whose attempt record can't be read reads uncertain, not queued", async () => {
+    const row = await park();
+    await enable();
+    const [open] = await makeQueuePorts(repo, { loadHumanRegistry: () => registry }).listOpenAsks({ minimumLevel: "NOTICE" });
+    new DispatchBuffer(home).enqueue({ kind: "outbound_decision", decisionId: "earlier-2", op: OUTBOUND_OP, entityBindingRef: `${HUMAN}@external`, payload: toPayload(open!.item) });
+    mkdirSync(join(home, "state", "slack-attempted-decisions.jsonl"), { recursive: true });
+    const w = wire();
+    const result = await run(w, 0);
+    expect(resultFor(result, row)).toMatchObject({ outcome: "uncertain", reshown: false, detail: expect.stringMatching(/whether it reached Slack can't be read/) });
+    expect(new DispatchBuffer(home).pending().map((d) => d.decisionId)).toEqual(["earlier-2"]);
+  });
+
+  it("X-F2: an attempted re-shown ask whose Slack outcome can't be confirmed, and whose state can't be read, stays uncertain and kept", async () => {
+    const row = await park();
+    await enable();
+    const [open] = await makeQueuePorts(repo, { loadHumanRegistry: () => registry }).listOpenAsks({ minimumLevel: "NOTICE" });
+    const decisionId = rePresentDecisionId(keyOf(row));
+    // An earlier run offered it, the post was attempted, and its reply was lost: it's still in the buffer.
+    new DispatchBuffer(home).enqueue({ kind: "outbound_decision", decisionId, op: OUTBOUND_OP, entityBindingRef: `${HUMAN}@external`, payload: toPayload(open!.item) });
+    new SeenStore(join(home, "state", "slack-attempted-decisions.jsonl")).mark(decisionId, "attempted");
+    const readable = registry;
+    historyFails = true; // the replay's Slack scan is inconclusive
+    registry = { ok: false, error: "the human registry couldn't be read" } as never; // and the current state can't be read
+    const w = wire();
+    w.startServices?.(); // replays the kept decision
+    await vi.waitFor(() => expect(historyReads).toBeGreaterThan(0));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(posts, "never forced past the check").toHaveLength(0);
+    expect(new DispatchBuffer(home).pending().map((d) => d.decisionId), "kept for its next replay").toEqual([decisionId]);
+    expect(notes(row).some((n) => n.startsWith("slack-re-present-state-unavailable ") || n.startsWith("slack-re-present-disposition ")),
+      "no not-posted record for an ask that may be in Slack").toBe(false);
+
+    registry = readable;
+    const result = await run(w, 0);
+    expect(resultFor(result, row)).toMatchObject({ outcome: "uncertain", reshown: false });
   });
 
   it("at post time, a re-shown ask that's no longer current posts nothing and its row says why", async () => {

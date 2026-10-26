@@ -31,7 +31,7 @@ describe("rig slack post-open-asks", () => {
     expect(logs[0]).toBe("3 open ask(s): 1 posted, 1 held, 1 queued, awaiting receipt");
     expect(logs[1]).toBe("  posted: q-1 for alex@external: Pick a port");
     expect(logs[2]).toBe("  held: q-2 for alex@external: Name it (quiet hours: their release posts it when quiet hours end)");
-    expect(logs.join("\n")).toMatch(/Run `rig slack post-open-asks` again later .* doesn't post them twice/);
+    expect(logs.join("\n")).toMatch(/Run `rig slack post-open-asks` again later .* reuses each ask's decision rather than offering it again/);
   });
 
   it("says the daemon's reason and exits 1 when Slack isn't posting, and when the daemon can't be reached", async () => {
@@ -72,8 +72,8 @@ describe("rig slack post-open-asks", () => {
       { qitemId: "q-5", recipient: "alex@external", summary: "S", outcome: "below-floor", detail: "asked at RECORD: it waits on Steering and the Feed without a Slack post" },
       { qitemId: "q-6", recipient: "alex@external", summary: "T", outcome: "transport-failed", detail: "transport" },
     ]);
-    expect(lines[0]).toBe("3 open ask(s): 1 state unavailable, not posted, 1 below the posting floor, 1 transport failed");
-    expect(lines.join("\n")).toMatch(/its row says what failed/);
+    expect(lines[0]).toBe("3 open ask(s): 1 state unavailable, 1 below the posting floor, 1 transport failed");
+    expect(lines.join("\n")).toMatch(/its detail says what couldn't be read/);
     expect(lines.join("\n")).toMatch(/rig queue undelivered/);
   });
 });

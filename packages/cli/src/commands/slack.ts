@@ -135,7 +135,7 @@ const OUTCOME_LABEL: Record<OpenAskOutcome, string> = {
   "no-longer-active": "no longer active",
   superseded: "superseded",
   "recipient-changed": "recipient changed",
-  "state-unavailable": "state unavailable, not posted",
+  "state-unavailable": "state unavailable",
   "transport-failed": "transport failed",
   uncertain: "uncertain",
 };
@@ -151,10 +151,10 @@ export function describeOpenAsks(asks: OpenAsk[]): string[] {
     lines.push(`  ${OUTCOME_LABEL[ask.outcome]}: ${ask.qitemId} for ${ask.recipient}: ${ask.summary ?? "(no summary)"}${detail}`);
   }
   if (counts.has("queued") || counts.has("uncertain")) {
-    lines.push(`Queued or uncertain asks have no Slack receipt yet. Run ${POST_OPEN_ASKS} again later to see where they landed; it doesn't post them twice.`);
+    lines.push(`Queued or uncertain asks have no Slack receipt yet. Run ${POST_OPEN_ASKS} again later to see where they landed; it reuses each ask's decision rather than offering it again.`);
   }
   if (counts.has("state-unavailable")) {
-    lines.push(`An ask whose delivery state couldn't be read wasn't posted; its row says what failed. Run ${POST_OPEN_ASKS} again once that reads, and the same ask continues.`);
+    lines.push(`An ask whose state couldn't be read wasn't posted; its detail says what couldn't be read. Run ${POST_OPEN_ASKS} again once that reads, and the same ask continues.`);
   }
   if (counts.has("transport-failed")) lines.push("A transport failure is on the ask's row, and `rig queue undelivered` lists it for the seat that asked.");
   return lines;

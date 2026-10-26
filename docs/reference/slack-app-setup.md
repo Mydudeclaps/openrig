@@ -63,8 +63,10 @@ not fill in; if so, follow the form.
     (quiet hours, digest and the posting floor apply), and the command says what became of each:
     posted, already posted, queued awaiting its receipt, held, below the posting floor, no longer
     active, superseded, recipient changed, state unavailable, transport failed or uncertain. An ask
-    asked at RECORD stays on Steering and the Feed without a post. Running it again doesn't post an
-    ask twice. `--wait <seconds>` (default 10) is how long it waits for Slack receipts.
+    asked at RECORD stays on Steering and the Feed without a post. Running it again reuses each ask's
+    one decision rather than making another, so an ask whose post is confirmed isn't posted again. As
+    with any Slack post, one whose earlier attempt Slack couldn't confirm may post once more, marked as
+    a possible repeat. `--wait <seconds>` (default 10) is how long it waits for Slack receipts.
 
 ## What the app asks for
 
